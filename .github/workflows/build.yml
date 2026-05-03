@@ -30,7 +30,8 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-latest,    suffix: linux-x86_64  }
-          - { os: ubuntu-24.04-arm, suffix: linux-aarch64 }
+          # linux-aarch64 dropped for 0.1.0: OpenJFX 21.x doesn't publish that classifier
+          # on Maven Central. Re-enable when we bump JavaFX past 21.x.
           - { os: macos-latest,     suffix: macos-aarch64 }
           - { os: windows-latest,   suffix: windows-x86_64 }
     runs-on: ${{ matrix.os }}
@@ -51,7 +52,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libfreetype6-dev libgl1-mesa-dev libgtk-3-dev \
-            libpango1.0-dev libxtst-dev libavcodec-dev libavformat-dev
+            libpango1.0-dev libxtst-dev \
+            libasound2-dev libavcodec-dev libavformat-dev libavutil-dev
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
