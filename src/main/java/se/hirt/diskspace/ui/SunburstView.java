@@ -212,8 +212,9 @@ public final class SunburstView {
                     }
                     e.consume();
                 }
-                case RIGHT -> {
+                case RIGHT, DOWN -> {
                     // Forward: pop the most recently traversed-up node and drill back into it.
+                    // Right pairs with Left; Down pairs with Up — both bound here.
                     // Always consume so an empty-stack press doesn't fall through to the TabPane.
                     if (!forwardStack.isEmpty()) {
                         DirectoryNode next = forwardStack.pop();

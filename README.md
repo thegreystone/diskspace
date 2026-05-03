@@ -41,7 +41,7 @@ mvn javafx:run
 | Key       | Action                                                                       |
 |-----------|------------------------------------------------------------------------------|
 | `←` / `↑` | Go up one level. Stops at the scan root.                                     |
-| `→`       | Go forward — replay a step you went up from. Stops when there's nothing left.|
+| `→` / `↓` | Go forward. Replay a step you went up from. Stops when there's nothing left. |
 | `E`       | Open the hovered sector (or the current view) in your system file explorer.  |
 
 You can also click any segment of the breadcrumb in the top-left to jump directly to that ancestor, or click the center hub to reset all the way back to the scan root.
