@@ -43,6 +43,8 @@ mvn javafx:run
 | `←` / `↑` | Go up one level. Stops at the scan root.                                     |
 | `→` / `↓` | Go forward. Replay a step you went up from. Stops when there's nothing left. |
 | `E`       | Open the hovered sector (or the current view) in your system file explorer.  |
+| `Del`     | Stage selected rows (or the current section) for deletion. Press again on a staged row to unstage. |
+| `R`       | Re-scan the current disk from scratch.                                       |
 
 You can also click any segment of the breadcrumb in the top-left to jump directly to that ancestor, or click the center hub to reset all the way back to the scan root.
 

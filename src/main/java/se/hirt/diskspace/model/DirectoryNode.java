@@ -90,6 +90,28 @@ public final class DirectoryNode {
         }
     }
 
+    /** Reverses {@link #addFile} after a file at this dir is deleted on disk. */
+    public void removeFile(long size) {
+        ownBytes.addAndGet(-size);
+        for (DirectoryNode n = this; n != null; n = n.parent) {
+            n.totalBytes.addAndGet(-size);
+            n.totalFileCount.addAndGet(-1);
+        }
+    }
+
+    /** Removes a child subtree after it has been deleted on disk. Subtracts the child's
+     *  contribution from this node and every ancestor. */
+    public void removeChild(DirectoryNode child) {
+        if (child == null) return;
+        long bytes = child.totalBytes();
+        int count = child.totalFileCount();
+        if (!children.remove(child)) return;
+        for (DirectoryNode n = this; n != null; n = n.parent) {
+            n.totalBytes.addAndGet(-bytes);
+            n.totalFileCount.addAndGet(-count);
+        }
+    }
+
     /** After scan completion: sort children by size desc, recursively. */
     public void sortBySizeRecursive() {
         for (DirectoryNode c : children) {

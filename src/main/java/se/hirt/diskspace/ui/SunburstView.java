@@ -115,6 +115,9 @@ public final class SunburstView {
     private final Label stagingFooterLabel = new Label();
     private final SplitPane rightSplit = new SplitPane();
     private BorderPane stagingPane;
+    private Button cancelStagingButton;
+    private Button deleteStagedButton;
+    private volatile boolean deleting;
 
     private final List<SectorRect> sectors = new ArrayList<>();
     private DirectoryNode scanRoot;
@@ -249,6 +252,11 @@ public final class SunburstView {
                 }
                 case DELETE -> {
                     handleDeleteKey();
+                    e.consume();
+                }
+                case R -> {
+                    // Full rescan. Useful after external changes (e.g. something deleted outside diskspace).
+                    if (!deleting) rescan();
                     e.consume();
                 }
                 default -> { /* let it bubble */ }
@@ -400,26 +408,15 @@ public final class SunburstView {
                 "-fx-text-fill: " + css(scheme.textMuted()) + ";"
                         + "-fx-font-size: 11px;");
 
-        Button cancel = new Button("Cancel");
-        cancel.setOnAction(e -> stagedItems.clear());
+        cancelStagingButton = new Button("Cancel");
+        cancelStagingButton.setOnAction(e -> stagedItems.clear());
 
-        Button delete = new Button("Delete…");
-        delete.setOnAction(e -> {
-            // Stub for the v0.1 staging UI — actual filesystem deletion is intentionally not
-            // implemented yet. Surface a clear message rather than silently doing nothing.
-            Alert alert = new Alert(Alert.AlertType.INFORMATION,
-                    "Deletion is not implemented yet.\n\n"
-                            + "This preview only stages items so the UI flow can be reviewed.\n"
-                            + "Use the system file explorer to delete for now (press E).",
-                    ButtonType.OK);
-            alert.setHeaderText(null);
-            alert.setTitle("Not implemented");
-            alert.showAndWait();
-        });
+        deleteStagedButton = new Button(canMoveToTrash() ? "Move to Trash…" : "Delete…");
+        deleteStagedButton.setOnAction(e -> confirmAndDelete());
 
         Region grow = new Region();
         HBox.setHgrow(grow, javafx.scene.layout.Priority.ALWAYS);
-        HBox footer = new HBox(8, stagingFooterLabel, grow, cancel, delete);
+        HBox footer = new HBox(8, stagingFooterLabel, grow, cancelStagingButton, deleteStagedButton);
         footer.setAlignment(Pos.CENTER_LEFT);
         footer.setPadding(new Insets(8, 12, 8, 12));
         footer.setStyle(bg(scheme.background()));
@@ -429,6 +426,234 @@ public final class SunburstView {
         pane.setBottom(footer);
         pane.setStyle(bg(scheme.background()));
         return pane;
+    }
+
+    // ---- deletion --------------------------------------------------------
+
+    private static boolean canMoveToTrash() {
+        try {
+            return java.awt.Desktop.isDesktopSupported()
+                    && java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.MOVE_TO_TRASH);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private void confirmAndDelete() {
+        if (stagedItems.isEmpty() || deleting) return;
+        boolean trash = canMoveToTrash();
+        long total = 0;
+        for (StagedItem si : stagedItems) total += si.currentSize();
+
+        StringBuilder body = new StringBuilder();
+        int shown = Math.min(stagedItems.size(), 10);
+        for (int i = 0; i < shown; i++) {
+            body.append(stagedItems.get(i).displayPath()).append('\n');
+        }
+        if (stagedItems.size() > shown) {
+            body.append("\n… and ").append(stagedItems.size() - shown).append(" more");
+        }
+
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle(trash ? "Move to Trash" : "Delete permanently");
+        alert.setHeaderText((trash ? "Move " : "Permanently delete ")
+                + stagedItems.size() + " item" + (stagedItems.size() == 1 ? "" : "s")
+                + " (" + humanSize(total) + ")?");
+        alert.setContentText(body.toString());
+        ButtonType go = new ButtonType(trash ? "Move to Trash" : "Delete",
+                javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+        alert.getButtonTypes().setAll(go, ButtonType.CANCEL);
+
+        var result = alert.showAndWait();
+        if (result.isEmpty() || result.get() != go) return;
+
+        performDelete(new ArrayList<>(stagedItems));
+    }
+
+    private void performDelete(List<StagedItem> items) {
+        deleting = true;
+        cancelStagingButton.setDisable(true);
+        deleteStagedButton.setDisable(true);
+        stagingFooterLabel.setText("Deleting " + items.size() + " items…");
+
+        Thread t = new Thread(() -> {
+            DeleteResult r = doDeleteWork(items);
+            Platform.runLater(() -> onDeleteComplete(r));
+        }, "diskspace-delete");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private DeleteResult doDeleteWork(List<StagedItem> items) {
+        boolean trash = canMoveToTrash();
+        List<StagedItem> deleted = new ArrayList<>();
+        List<String> failures = new ArrayList<>();
+        for (StagedItem si : items) {
+            try {
+                if (si.path() == null || !Files.exists(si.path(), LinkOption.NOFOLLOW_LINKS)) {
+                    failures.add(si.displayPath() + ": no longer exists");
+                    continue;
+                }
+                if (trash) {
+                    boolean ok = java.awt.Desktop.getDesktop().moveToTrash(si.path().toFile());
+                    if (!ok) throw new java.io.IOException("moveToTrash returned false");
+                } else {
+                    deleteRecursive(si.path());
+                }
+                deleted.add(si);
+            } catch (Throwable ex) {
+                failures.add(si.displayPath() + ": " + ex.getMessage());
+            }
+        }
+        return new DeleteResult(deleted, failures);
+    }
+
+    private static void deleteRecursive(Path path) throws java.io.IOException {
+        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+            Files.walkFileTree(path, new java.nio.file.SimpleFileVisitor<Path>() {
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file,
+                        java.nio.file.attribute.BasicFileAttributes attrs) throws java.io.IOException {
+                    Files.delete(file);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+                @Override
+                public java.nio.file.FileVisitResult postVisitDirectory(Path dir,
+                        java.io.IOException exc) throws java.io.IOException {
+                    Files.delete(dir);
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+        } else {
+            Files.delete(path);
+        }
+    }
+
+    private void onDeleteComplete(DeleteResult result) {
+        deleting = false;
+        cancelStagingButton.setDisable(false);
+        deleteStagedButton.setDisable(false);
+
+        // Apply the deltas to the in-memory tree before clearing the staging list, so we
+        // know which items were actually deleted (we only patch the tree for those).
+        updateAfterDelete(result.deleted);
+        stagedItems.clear();
+
+        if (!result.failures.isEmpty()) {
+            Alert a = new Alert(Alert.AlertType.WARNING);
+            a.setTitle("Some items could not be deleted");
+            a.setHeaderText(result.succeeded() + " deleted, " + result.failures.size() + " failed");
+            int shown = Math.min(result.failures.size(), 10);
+            StringBuilder body = new StringBuilder();
+            for (int i = 0; i < shown; i++) body.append(result.failures.get(i)).append('\n');
+            if (result.failures.size() > shown) {
+                body.append("\n… and ").append(result.failures.size() - shown).append(" more");
+            }
+            a.setContentText(body.toString());
+            a.show();
+        }
+    }
+
+    private void updateAfterDelete(List<StagedItem> deleted) {
+        if (deleted.isEmpty()) return;
+
+        // Snapshot the pre-delete layout so we can lerp from it to the post-delete layout.
+        Map<DirectoryNode, Layout> beforeLayout = computeLayout(viewRoot);
+        DirectoryNode previousViewRoot = viewRoot;
+
+        boolean filesListChanged = false;
+        boolean viewRootInvalidated = false;
+
+        for (StagedItem si : deleted) {
+            if (si.isDirectory()) {
+                DirectoryNode node = si.dirNode();
+                DirectoryNode parent = si.parentNode();
+                if (parent != null && node != null) {
+                    parent.removeChild(node);
+                }
+                if (node != null && isAncestorOrSame(node, viewRoot)) {
+                    viewRootInvalidated = true;
+                }
+            } else {
+                DirectoryNode parent = si.parentNode();
+                if (parent != null) {
+                    parent.removeFile(si.sizeAtStaging());
+                    if (parent == viewRoot) filesListChanged = true;
+                }
+            }
+        }
+
+        if (viewRootInvalidated) {
+            // Walk up until we find a node still attached to the tree.
+            DirectoryNode v = viewRoot;
+            while (v != null && v != scanRoot && isOrphaned(v)) {
+                v = v.parent();
+            }
+            viewRoot = (v != null) ? v : scanRoot;
+            forwardStack.clear();
+        }
+
+        // Hover state can be stale (e.g., hovering a sector that was just deleted).
+        hoverNode = null;
+        hoveringHub = false;
+
+        if (filesListChanged) {
+            // Force file-list re-read for current viewRoot (its files moved to trash on disk).
+            lastListedRoot = null;
+            currentFiles = List.of();
+        }
+
+        refreshTable();
+        rebuildBreadcrumb();
+
+        // Snapshot the post-delete layout and run the standard old→new tween. Deleted
+        // sectors are "in old only" (shrink in place); surviving siblings whose sweeps
+        // grew (less weight in the parent) tween into their new wider positions.
+        Map<DirectoryNode, Layout> afterLayout = computeLayout(viewRoot);
+        animOldViewRoot = previousViewRoot;
+        animNewViewRoot = viewRoot;
+        animOld = beforeLayout;
+        animNew = afterLayout;
+        animStartNanos = System.nanoTime();
+        animating = true;
+        animTimer.start();
+    }
+
+    private static boolean isAncestorOrSame(DirectoryNode candidate, DirectoryNode target) {
+        for (DirectoryNode n = target; n != null; n = n.parent()) {
+            if (n == candidate) return true;
+        }
+        return false;
+    }
+
+    private static boolean isOrphaned(DirectoryNode node) {
+        DirectoryNode parent = node.parent();
+        return parent != null && !parent.children().contains(node);
+    }
+
+    private void rescan() {
+        scanner.cancel();
+        liveTicker.stop();
+        scanRoot = null;
+        viewRoot = null;
+        hoverNode = null;
+        hoveringHub = false;
+        forwardStack.clear();
+        progressFiles = 0;
+        progressBytes = 0;
+        progressPath = null;
+        scanning = true;
+        lastListedRoot = null;
+        currentFiles = List.of();
+        tableItems.clear();
+        sectors.clear();
+        rebuildBreadcrumb();
+        redraw();
+        startScan();
+    }
+
+    private record DeleteResult(List<StagedItem> deleted, List<String> failures) {
+        int succeeded() { return deleted.size(); }
     }
 
     private void handleDeleteKey() {
@@ -476,12 +701,13 @@ public final class SunburstView {
         java.nio.file.Path filePath = (viewRoot != null && viewRoot.path() != null)
                 ? viewRoot.path().resolve(e.name())
                 : null;
-        return new StagedItem(false, filePath, e.staticSize(), null);
+        // For a file row, the parent node is whatever directory we're currently viewing.
+        return new StagedItem(false, filePath, e.staticSize(), null, viewRoot);
     }
 
     private StagedItem dirToStaged(DirectoryNode n) {
         if (n == null) return null;
-        return new StagedItem(true, n.path(), n.totalBytes(), n);
+        return new StagedItem(true, n.path(), n.totalBytes(), n, n.parent());
     }
 
     private void updateStagingVisibility() {
@@ -1151,8 +1377,11 @@ public final class SunburstView {
 
     private record FrameEntry(DirectoryNode node, double depth, double start, double sweep, double alphaScale) {}
 
-    /** Row in the staging (delete-tray) table: a folder or file the user has marked for deletion. */
-    private record StagedItem(boolean isDirectory, java.nio.file.Path path, long sizeAtStaging, DirectoryNode dirNode) {
+    /** Row in the staging (delete-tray) table: a folder or file the user has marked for deletion.
+     *  {@code parentNode} is captured at staging time so a successful delete can apply size/count
+     *  deltas to the in-memory tree without re-walking. */
+    private record StagedItem(boolean isDirectory, java.nio.file.Path path, long sizeAtStaging,
+                              DirectoryNode dirNode, DirectoryNode parentNode) {
         long currentSize() {
             return isDirectory && dirNode != null ? dirNode.totalBytes() : sizeAtStaging;
         }
