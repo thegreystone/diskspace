@@ -5,7 +5,7 @@
 [![GraalVM Native](https://img.shields.io/badge/GraalVM-native--image-orange)](https://www.graalvm.org/)
 [![License: BSD-3](https://img.shields.io/badge/License-BSD--3-green)](https://opensource.org/licenses/BSD-3-Clause)
 
-A cross-platform disk space visualizer using a sunburst view of where your space went, deliberately minimal feature surface, distributed as native binaries via GraalVM.
+A cross-platform disk space visualizer using a sunburst view of where your space went, deliberately minimal feature surface, distributed as native binaries as well as runnable with Java.
 
 ![diskspace sunburst view, drilled into Program Files](docs/screenshots/diskspace.png)
 
