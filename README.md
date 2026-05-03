@@ -7,6 +7,8 @@
 
 A cross-platform disk space visualizer using a sunburst view of where your space went, deliberately minimal feature surface, distributed as native binaries via GraalVM.
 
+![diskspace sunburst view, drilled into Program Files](docs/screenshots/diskspace.png)
+
 ## Status
 
 Early prototype. The picker view enumerates mounted volumes and the tabbed shell works; sunburst rendering and scanning are stubs.
