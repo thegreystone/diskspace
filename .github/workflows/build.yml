@@ -1,0 +1,66 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  # ── JVM compile + tests on a single Linux runner ─────────────────────
+  jvm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build and test
+        run: mvn -B package -DskipTests=false
+
+  # ── Sanity-build native image on each release platform ───────────────
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    suffix: linux-x86_64  }
+          - { os: ubuntu-24.04-arm, suffix: linux-aarch64 }
+          - { os: macos-latest,     suffix: macos-aarch64 }
+          - { os: windows-latest,   suffix: windows-x86_64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up GraalVM 21 LTS
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Install JavaFX native deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfreetype6-dev libgl1-mesa-dev libgtk-3-dev \
+            libpango1.0-dev libxtst-dev libavcodec-dev libavformat-dev
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Native build
+        run: mvn -B -Pnative gluonfx:build
+
+      - name: Locate binary
+        shell: bash
+        run: |
+          find target/gluonfx -maxdepth 3 -type f \( -name 'diskspace' -o -name 'diskspace.exe' \) -ls

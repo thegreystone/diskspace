@@ -1,0 +1,52 @@
+# Working / personal notes — not for the repo
+DESIGN.md
+
+# Build output
+target/
+build/
+out/
+*.class
+dependency-reduced-pom.xml
+
+# GraalVM / Gluon native-image
+*.exe
+*.so
+*.dylib
+*.dll
+gluonfx/
+native-image-agent/
+META-INF/native-image/agent-output/
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.project
+.classpath
+.settings/
+.factorypath
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+.eclipse/
+bin/
+
+# Logs
+*.log
+logs/
+hs_err_pid*
+replay_pid*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Env / local config
+.env
+.env.local
+*.local

@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Native images, one per release platform ──────────────────────────
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    suffix: linux-x86_64,   exe: diskspace      }
+          - { os: ubuntu-24.04-arm, suffix: linux-aarch64,  exe: diskspace      }
+          - { os: macos-latest,     suffix: macos-aarch64,  exe: diskspace      }
+          - { os: windows-latest,   suffix: windows-x86_64, exe: diskspace.exe  }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up GraalVM 21 LTS
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+
+      - name: Install JavaFX native deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libfreetype6-dev libgl1-mesa-dev libgtk-3-dev \
+            libpango1.0-dev libxtst-dev libavcodec-dev libavformat-dev
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set version from tag
+        shell: bash
+        run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
+
+      - name: Native build
+        run: mvn -B -Pnative gluonfx:build
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SRC=$(find target/gluonfx -maxdepth 3 -type f -name '${{ matrix.exe }}' | head -n 1)
+          if [ -z "$SRC" ]; then echo "binary not found" >&2; exit 1; fi
+          if [ "${{ matrix.exe }}" = "diskspace.exe" ]; then
+            DST="target/diskspace-${VERSION}-${{ matrix.suffix }}.exe"
+          else
+            DST="target/diskspace-${VERSION}-${{ matrix.suffix }}"
+          fi
+          cp "$SRC" "$DST"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: native-${{ matrix.suffix }}
+          path: |
+            target/diskspace-*-${{ matrix.suffix }}
+            target/diskspace-*-${{ matrix.suffix }}.exe
+
+  # ── Create GitHub release with all artifacts ─────────────────────────
+  release:
+    needs: [native]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*
