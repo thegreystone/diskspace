@@ -30,6 +30,7 @@ package se.hirt.diskspace;
 
 import javafx.application.Application;
 import javafx.scene.Scene;
+import javafx.scene.image.Image;
 import javafx.stage.Stage;
 import se.hirt.diskspace.ui.MainWindow;
 import se.hirt.diskspace.ui.theme.ColorScheme;
@@ -51,8 +52,23 @@ public final class App extends Application {
         }
 
         stage.setTitle("diskspace");
+        stage.getIcons().addAll(loadAppIcons());
         stage.setScene(scene);
         stage.show();
+    }
+
+    /** Loads the runtime window icons in all available pre-rendered sizes. JavaFX picks the
+     *  closest match for each display context (titlebar at 16, taskbar at 32, alt-tab at 256).
+     *  The bundle icon (.exe / .app / .desktop) is a separate, build-time artifact. */
+    private static java.util.List<Image> loadAppIcons() {
+        java.util.List<Image> icons = new java.util.ArrayList<>();
+        for (int size : new int[]{16, 32, 64, 128, 256}) {
+            var url = App.class.getResource("/se/hirt/diskspace/icon-" + size + ".png");
+            if (url != null) {
+                icons.add(new Image(url.toExternalForm()));
+            }
+        }
+        return icons;
     }
 
     public static void main(String[] args) {

@@ -9,10 +9,12 @@ out/
 dependency-reduced-pom.xml
 
 # GraalVM / Gluon native-image
-*.exe
-*.so
-*.dylib
-*.dll
+target/**/*.exe
+target/**/*.so
+target/**/*.dylib
+target/**/*.dll
+# Note: icon assets under src/<platform>/assets/ (icon.ico, icon.icns, icon.png) are
+# tracked deliberately; they're checked-in bundle assets, not build output.
 gluonfx/
 native-image-agent/
 META-INF/native-image/agent-output/

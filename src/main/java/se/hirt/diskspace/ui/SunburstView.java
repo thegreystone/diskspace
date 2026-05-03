@@ -47,15 +47,21 @@ import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
+import javafx.collections.ListChangeListener;
 import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
+import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.geometry.VPos;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
 import javafx.scene.control.Label;
+import javafx.scene.control.SelectionMode;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.TableCell;
 import javafx.scene.control.TableColumn;
@@ -102,6 +108,13 @@ public final class SunburstView {
     private final ObservableList<Entry> tableItems = FXCollections.observableArrayList();
     private DirectoryNode lastListedRoot;
     private List<Entry> currentFiles = List.of();
+
+    // ---- staging (delete-tray) state ------------------------------------
+    private final TableView<StagedItem> stagingTable = new TableView<>();
+    private final ObservableList<StagedItem> stagedItems = FXCollections.observableArrayList();
+    private final Label stagingFooterLabel = new Label();
+    private final SplitPane rightSplit = new SplitPane();
+    private BorderPane stagingPane;
 
     private final List<SectorRect> sectors = new ArrayList<>();
     private DirectoryNode scanRoot;
@@ -156,11 +169,19 @@ public final class SunburstView {
         leftStack.setStyle(bg(scheme.background()));
 
         configureTable();
+        table.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
+        configureStagingTable();
+        stagingPane = buildStagingPane();
+        rightSplit.setOrientation(Orientation.VERTICAL);
+        rightSplit.setStyle(bg(scheme.background()));
+        rightSplit.getItems().add(table);
+        stagedItems.addListener((ListChangeListener<StagedItem>) c -> updateStagingVisibility());
+
         rightHeader = new Label("  " + target.displayName() + "  —  scanning…");
         rightHeader.setStyle(
                 "-fx-text-fill: " + css(scheme.textMuted()) + ";"
                         + "-fx-font-size: 11px; -fx-padding: 8 12 8 12;");
-        BorderPane right = new BorderPane(table);
+        BorderPane right = new BorderPane(rightSplit);
         right.setTop(rightHeader);
         right.setStyle(bg(scheme.background()));
 
@@ -175,6 +196,10 @@ public final class SunburstView {
                 if (now - lastTickNanos < LIVE_REFRESH_INTERVAL_NANOS) return;
                 lastTickNanos = now;
                 refreshTable();
+                if (!stagedItems.isEmpty()) {
+                    stagingTable.refresh();
+                    updateStagingFooter();
+                }
                 if (!animating) redraw();
             }
         };
@@ -220,6 +245,10 @@ public final class SunburstView {
                         DirectoryNode next = forwardStack.pop();
                         select(next, false);
                     }
+                    e.consume();
+                }
+                case DELETE -> {
+                    handleDeleteKey();
                     e.consume();
                 }
                 default -> { /* let it bubble */ }
@@ -293,6 +322,186 @@ public final class SunburstView {
                 }
             }
         });
+    }
+
+    // ---- staging UI ------------------------------------------------------
+
+    private void configureStagingTable() {
+        stagingTable.setItems(stagedItems);
+        stagingTable.setPlaceholder(new Label(""));
+        stagingTable.setStyle(
+                "-fx-background-color: " + css(scheme.background()) + ";"
+                        + "-fx-control-inner-background: " + css(scheme.background()) + ";"
+                        + "-fx-text-fill: " + css(scheme.textPrimary()) + ";"
+                        + "-fx-table-cell-border-color: transparent;");
+        stagingTable.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
+
+        TableColumn<StagedItem, String> nameCol = new TableColumn<>("Path");
+        nameCol.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().displayPath()));
+        nameCol.setPrefWidth(180);
+        nameCol.setCellFactory(col -> new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setStyle("");
+                    return;
+                }
+                setText(item);
+                StagedItem si = (getTableRow() == null) ? null : getTableRow().getItem();
+                setStyle(si != null && si.isDirectory() ? "-fx-font-weight: bold;" : "");
+            }
+        });
+
+        TableColumn<StagedItem, String> sizeCol = new TableColumn<>("Size");
+        sizeCol.setCellValueFactory(d -> new SimpleStringProperty(humanSize(d.getValue().currentSize())));
+        sizeCol.setPrefWidth(80);
+        sizeCol.setStyle("-fx-alignment: CENTER-RIGHT;");
+        sizeCol.setCellFactory(col -> new TableCell<>() {
+            @Override
+            protected void updateItem(String item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setText(null);
+                    setStyle("");
+                } else {
+                    setText(item);
+                    setStyle("-fx-font-family: 'Consolas', 'Menlo', monospace; -fx-alignment: CENTER-RIGHT;");
+                }
+            }
+        });
+
+        stagingTable.getColumns().setAll(List.of(nameCol, sizeCol));
+        stagingTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_SUBSEQUENT_COLUMNS);
+
+        stagingTable.setRowFactory(tv -> new javafx.scene.control.TableRow<>() {
+            @Override
+            protected void updateItem(StagedItem item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null || !item.isDirectory()) {
+                    setStyle("");
+                } else {
+                    setStyle("-fx-background-color: rgba(255, 255, 255, 0.045);");
+                }
+            }
+        });
+    }
+
+    private BorderPane buildStagingPane() {
+        Label header = new Label("  Scheduled for deletion");
+        header.setStyle(
+                "-fx-text-fill: " + css(scheme.textMuted()) + ";"
+                        + "-fx-font-size: 11px; -fx-padding: 8 12 8 12;"
+                        + "-fx-border-color: " + css(scheme.surface()) + " transparent transparent transparent;"
+                        + "-fx-border-width: 1 0 0 0;");
+
+        stagingFooterLabel.setStyle(
+                "-fx-text-fill: " + css(scheme.textMuted()) + ";"
+                        + "-fx-font-size: 11px;");
+
+        Button cancel = new Button("Cancel");
+        cancel.setOnAction(e -> stagedItems.clear());
+
+        Button delete = new Button("Delete…");
+        delete.setOnAction(e -> {
+            // Stub for the v0.1 staging UI — actual filesystem deletion is intentionally not
+            // implemented yet. Surface a clear message rather than silently doing nothing.
+            Alert alert = new Alert(Alert.AlertType.INFORMATION,
+                    "Deletion is not implemented yet.\n\n"
+                            + "This preview only stages items so the UI flow can be reviewed.\n"
+                            + "Use the system file explorer to delete for now (press E).",
+                    ButtonType.OK);
+            alert.setHeaderText(null);
+            alert.setTitle("Not implemented");
+            alert.showAndWait();
+        });
+
+        Region grow = new Region();
+        HBox.setHgrow(grow, javafx.scene.layout.Priority.ALWAYS);
+        HBox footer = new HBox(8, stagingFooterLabel, grow, cancel, delete);
+        footer.setAlignment(Pos.CENTER_LEFT);
+        footer.setPadding(new Insets(8, 12, 8, 12));
+        footer.setStyle(bg(scheme.background()));
+
+        BorderPane pane = new BorderPane(stagingTable);
+        pane.setTop(header);
+        pane.setBottom(footer);
+        pane.setStyle(bg(scheme.background()));
+        return pane;
+    }
+
+    private void handleDeleteKey() {
+        // Priority:
+        //  1. If staging table has rows selected → unstage those.
+        //  2. Else if contents table has rows selected → stage those.
+        //  3. Else if drilled in → stage the current viewRoot section.
+        ObservableList<StagedItem> stagingSel = stagingTable.getSelectionModel().getSelectedItems();
+        if (stagingTable.isFocused() && !stagingSel.isEmpty()) {
+            stagedItems.removeAll(new ArrayList<>(stagingSel));
+            return;
+        }
+
+        ObservableList<Entry> contentsSel = table.getSelectionModel().getSelectedItems();
+        if (!contentsSel.isEmpty()) {
+            for (Entry entry : new ArrayList<>(contentsSel)) {
+                stage(entryToStaged(entry));
+            }
+            return;
+        }
+
+        if (viewRoot != null && viewRoot != scanRoot) {
+            stage(dirToStaged(viewRoot));
+        }
+    }
+
+    private void stage(StagedItem candidate) {
+        if (candidate == null || candidate.path() == null) return;
+        // If an ancestor is already staged, the candidate is already covered.
+        for (StagedItem existing : stagedItems) {
+            if (candidate.path().equals(existing.path())) return;
+            if (candidate.path().startsWith(existing.path())) return;
+        }
+        // Remove any existing item that the candidate covers (descendants of candidate).
+        stagedItems.removeIf(existing ->
+                !existing.path().equals(candidate.path())
+                        && existing.path().startsWith(candidate.path()));
+        stagedItems.add(candidate);
+    }
+
+    private StagedItem entryToStaged(Entry e) {
+        if (e.isDirectory()) {
+            return dirToStaged(e.dirNode());
+        }
+        java.nio.file.Path filePath = (viewRoot != null && viewRoot.path() != null)
+                ? viewRoot.path().resolve(e.name())
+                : null;
+        return new StagedItem(false, filePath, e.staticSize(), null);
+    }
+
+    private StagedItem dirToStaged(DirectoryNode n) {
+        if (n == null) return null;
+        return new StagedItem(true, n.path(), n.totalBytes(), n);
+    }
+
+    private void updateStagingVisibility() {
+        boolean show = !stagedItems.isEmpty();
+        boolean alreadyShown = rightSplit.getItems().contains(stagingPane);
+        if (show && !alreadyShown) {
+            rightSplit.getItems().add(stagingPane);
+            rightSplit.setDividerPositions(0.65);
+        } else if (!show && alreadyShown) {
+            rightSplit.getItems().remove(stagingPane);
+        }
+        if (show) {
+            updateStagingFooter();
+        }
+    }
+
+    private void updateStagingFooter() {
+        long total = 0;
+        for (StagedItem si : stagedItems) total += si.currentSize();
+        stagingFooterLabel.setText(stagedItems.size() + " items · " + humanSize(total));
     }
 
     private void startScan() {
@@ -941,6 +1150,16 @@ public final class SunburstView {
     private record Layout(double depth, double startDeg, double sweepDeg) {}
 
     private record FrameEntry(DirectoryNode node, double depth, double start, double sweep, double alphaScale) {}
+
+    /** Row in the staging (delete-tray) table: a folder or file the user has marked for deletion. */
+    private record StagedItem(boolean isDirectory, java.nio.file.Path path, long sizeAtStaging, DirectoryNode dirNode) {
+        long currentSize() {
+            return isDirectory && dirNode != null ? dirNode.totalBytes() : sizeAtStaging;
+        }
+        String displayPath() {
+            return path == null ? "" : path.toString();
+        }
+    }
 
     /** Row in the right-side table: either a child directory or an immediate file of the viewRoot. */
     private record Entry(boolean isDirectory, String name, long staticSize, DirectoryNode dirNode) {
