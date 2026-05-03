@@ -11,7 +11,7 @@ A cross-platform disk space visualizer using a sunburst view of where your space
 
 ## Status
 
-Early prototype. The picker view enumerates mounted volumes and the tabbed shell works; sunburst rendering and scanning are stubs.
+Working preview. Sunburst with live scan-as-you-watch, animated drill-down, breadcrumb navigation, and a folders-and-files table are all in. The native build pipeline is verified on Windows (Oracle GraalVM 21 LTS); macOS and Linux build in CI but haven't been smoke-tested locally yet. Visualize-only by design — no deletion features in v1.
 
 ## Quick Start
 

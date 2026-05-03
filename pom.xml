@@ -44,7 +44,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-        <javafx.version>21.0.6</javafx.version>
+        <javafx.version>21.0.7</javafx.version>
         <main.class>se.hirt.diskspace.App</main.class>
 
         <compiler-plugin.version>3.13.0</compiler-plugin.version>
