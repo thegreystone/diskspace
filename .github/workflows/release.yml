@@ -49,12 +49,7 @@ jobs:
         shell: bash
         run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
 
-      - name: Native build (Linux / Windows)
-        if: runner.os != 'macOS'
-        run: mvn -B -Pnative gluonfx:build
-
-      - name: Native build (macOS)
-        if: runner.os == 'macOS'
+      - name: Native build
         run: mvn -B -Pnative gluonfx:build
 
       - name: Rename binary (Linux / Windows)
@@ -71,9 +66,34 @@ jobs:
           fi
           cp "$SRC" "$DST"
 
-      - name: Assemble, sign and package DMG (macOS)
+      - name: Import signing certificate (macOS)
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          KEYCHAIN_PWD=$(openssl rand -base64 32)
+          echo "KEYCHAIN_PWD=$KEYCHAIN_PWD" >> "$GITHUB_ENV"
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
+
+      - name: Assemble, sign, notarize and package DMG (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARIZATION_APPLE_ID: ${{ secrets.NOTARIZATION_APPLE_ID }}
+          NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
+          NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           BINARY=$(find target/gluonfx -maxdepth 3 -type f -name 'diskspace' | head -n 1)
@@ -84,9 +104,22 @@ jobs:
           chmod +x "$APP/Contents/MacOS/diskspace"
           cp src/macos/assets/icon.icns "$APP/Contents/Resources/icon.icns"
           sed "s/__VERSION__/${VERSION}/g" src/macos/Info.plist > "$APP/Contents/Info.plist"
-          codesign --force --deep --sign - "$APP"
+          codesign --force --deep --options runtime \
+            --sign "$MACOS_SIGNING_IDENTITY" "$APP"
           DMG="target/diskspace-${VERSION}-${{ matrix.suffix }}.dmg"
           hdiutil create -volname "diskspace" -srcfolder "$APP" -ov -format UDZO "$DMG"
+          codesign --force --sign "$MACOS_SIGNING_IDENTITY" "$DMG"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$NOTARIZATION_APPLE_ID" \
+            --password "$NOTARIZATION_PASSWORD" \
+            --team-id "$NOTARIZATION_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Clean up keychain (macOS)
+        if: runner.os == 'macOS' && always()
+        shell: bash
+        run: security delete-keychain "$RUNNER_TEMP/build.keychain"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
