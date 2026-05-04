@@ -86,6 +86,13 @@ import se.hirt.diskspace.ui.theme.SectorPalette;
 
 public final class SunburstView {
 
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(SunburstView.class.getName());
+
+    private static final java.util.prefs.Preferences PREFS =
+            java.util.prefs.Preferences.userNodeForPackage(SunburstView.class);
+    private static final String PREF_FDA_SKIP = "fda.prompt.skip";
+
     private static final int MAX_DEPTH = 6;
     private static final double HUB_RADIUS = 78;
     private static final double MIN_VISIBLE_SWEEP_DEG = 0.6;
@@ -124,6 +131,7 @@ public final class SunburstView {
     private DirectoryNode viewRoot;
     private DirectoryNode hoverNode;
     private boolean hoveringHub;
+    private boolean hoveringFreeSpace;
     private volatile boolean scanning = true;
 
     private long progressFiles;
@@ -156,7 +164,7 @@ public final class SunburstView {
         canvas.widthProperty().addListener((o, a, b) -> redraw());
         canvas.heightProperty().addListener((o, a, b) -> redraw());
         canvas.setOnMouseMoved(e -> handleMouseMove(e.getX(), e.getY()));
-        canvas.setOnMouseExited(e -> { hoverNode = null; hoveringHub = false; redraw(); });
+        canvas.setOnMouseExited(e -> { hoverNode = null; hoveringHub = false; hoveringFreeSpace = false; redraw(); });
         canvas.setOnMouseClicked(e -> handleClick(e.getX(), e.getY()));
 
         breadcrumb = new HBox(4);
@@ -281,19 +289,45 @@ public final class SunburstView {
 
         TableColumn<Entry, String> nameCol = new TableColumn<>("Name");
         nameCol.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().name()));
-        nameCol.setPrefWidth(180);
+        nameCol.setPrefWidth(200);
         nameCol.setCellFactory(col -> new TableCell<>() {
+            private final javafx.scene.shape.Rectangle swatch = new javafx.scene.shape.Rectangle(9, 9);
+            { swatch.setArcWidth(3); swatch.setArcHeight(3); }
+
             @Override
             protected void updateItem(String item, boolean empty) {
                 super.updateItem(item, empty);
                 if (empty || item == null) {
                     setText(null);
+                    setGraphic(null);
                     setStyle("");
                     return;
                 }
-                setText(item);
                 Entry e = (getTableRow() == null) ? null : getTableRow().getItem();
-                setStyle(e != null && e.isDirectory() ? "-fx-font-weight: bold;" : "");
+                if (e != null && e.isDirectory() && e.dirNode() != null) {
+                    DirectoryNode node = e.dirNode();
+                    swatch.setFill(SectorPalette.forName(node.name(), 0));
+                    setGraphic(swatch);
+                    switch (node.state()) {
+                        case QUEUED -> {
+                            setText(item + "  <queued>");
+                            setStyle("-fx-font-weight: bold; -fx-text-fill: "
+                                    + css(scheme.textMuted().darker()) + ";");
+                        }
+                        case SCANNING -> {
+                            setText(item + "  <scanning>");
+                            setStyle("-fx-font-weight: bold; -fx-opacity: 0.75;");
+                        }
+                        default -> {
+                            setText(item);
+                            setStyle("-fx-font-weight: bold;");
+                        }
+                    }
+                } else {
+                    setGraphic(null);
+                    setText(item);
+                    setStyle("");
+                }
             }
         });
 
@@ -638,6 +672,7 @@ public final class SunburstView {
         viewRoot = null;
         hoverNode = null;
         hoveringHub = false;
+        hoveringFreeSpace = false;
         forwardStack.clear();
         progressFiles = 0;
         progressBytes = 0;
@@ -730,7 +765,97 @@ public final class SunburstView {
         stagingFooterLabel.setText(stagedItems.size() + " items · " + humanSize(total));
     }
 
+    private void logScanSummary(DirectoryNode root) {
+        List<DirectoryNode> children = new ArrayList<>(root.children());
+        children.sort(Comparator.comparingLong(DirectoryNode::totalBytes).reversed());
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("Scan complete: %s%n", target.displayName()));
+        sb.append(String.format("  Volume total : %s%n", humanSize(target.totalBytes())));
+        sb.append(String.format("  OS used      : %s%n", humanSize(target.usedBytes())));
+        sb.append(String.format("  OS free      : %s%n", humanSize(target.usableBytes())));
+        sb.append(String.format("  Scanned      : %s  (%d files)%n",
+                humanSize(root.totalBytes()), root.totalFileCount()));
+        sb.append(String.format("  Unaccounted  : %s%n",
+                humanSize(Math.abs(target.usedBytes() - root.totalBytes()))));
+        sb.append("  Root breakdown (by size):\n");
+        for (DirectoryNode child : children) {
+            double pct = root.totalBytes() > 0
+                    ? 100.0 * child.totalBytes() / root.totalBytes() : 0;
+            sb.append(String.format("    %-32s %10s  (%4.1f%%)%n",
+                    child.name(), humanSize(child.totalBytes()), pct));
+        }
+        LOG.info(sb.toString());
+    }
+
+    private void showPermissionDeniedDialog(long count) {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.setTitle("Limited Access");
+        alert.setHeaderText(count + " location" + (count == 1 ? "" : "s") + " couldn't be read");
+        alert.setContentText(
+                "Grant DiskSpace Full Disk Access in System Settings\n"
+                + "to include protected directories in the scan.");
+        ButtonType openSettings = new ButtonType("Open System Settings");
+        alert.getButtonTypes().setAll(openSettings, ButtonType.CANCEL);
+        alert.showAndWait()
+             .filter(b -> b == openSettings)
+             .ifPresent(b -> {
+                 try {
+                     new ProcessBuilder("open",
+                             "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+                             .start();
+                 } catch (java.io.IOException ignore) {}
+             });
+    }
+
     private void startScan() {
+        if (isMac() && !isFdaGranted() && !PREFS.getBoolean(PREF_FDA_SKIP, false)) {
+            promptForFda();
+        }
+        doStartScan();
+    }
+
+    private static boolean isMac() {
+        return System.getProperty("os.name", "").toLowerCase().contains("mac");
+    }
+
+    private static boolean isFdaGranted() {
+        Path tcc = Path.of("/Library/Application Support/com.apple.TCC");
+        if (!Files.exists(tcc)) return true;
+        try (var ignored = Files.newDirectoryStream(tcc)) {
+            return true;
+        } catch (java.io.IOException e) {
+            return false;
+        }
+    }
+
+    private void promptForFda() {
+        Alert alert = new Alert(Alert.AlertType.INFORMATION);
+        alert.setTitle("Full Disk Access");
+        alert.setHeaderText("Full Disk Access needed for a complete scan");
+        alert.setContentText(
+                "Without Full Disk Access, protected folders like Mail, Messages,\n"
+                + "and system directories won't be included in the scan.\n\n"
+                + "DiskSpace only reads names, sizes, and folder structure.\n"
+                + "It never reads file contents, and never modifies files\n"
+                + "without your explicit action.");
+        ButtonType openSettings = new ButtonType("Open System Settings…");
+        ButtonType scanAnyway = new ButtonType("Scan without Full Access");
+        alert.getButtonTypes().setAll(openSettings, scanAnyway);
+        alert.showAndWait().ifPresent(b -> {
+            if (b == openSettings) {
+                try {
+                    new ProcessBuilder("open",
+                            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+                            .start();
+                } catch (java.io.IOException ignore) {}
+            } else {
+                PREFS.putBoolean(PREF_FDA_SKIP, true);
+            }
+        });
+    }
+
+    private void doStartScan() {
         scanner.scan(target.root(), new Scanner.ScanListener() {
             @Override
             public void onStart(DirectoryNode liveRoot) {
@@ -753,7 +878,13 @@ public final class SunburstView {
             }
 
             @Override
+            public void onPermissionsDenied(long count) {
+                Platform.runLater(() -> showPermissionDeniedDialog(count));
+            }
+
+            @Override
             public void onComplete(DirectoryNode result) {
+                logScanSummary(result);
                 Platform.runLater(() -> {
                     scanning = false;
                     liveTicker.stop();
@@ -893,7 +1024,9 @@ public final class SunburstView {
             out.put(rootForView, new Layout(1, 90.0, 360.0));
             layoutChildrenInto(rootForView, 2, 90.0, 360.0, out);
         } else {
-            layoutChildrenInto(rootForView, 1, 90.0, 360.0, out);
+            double usedSweep = target.totalBytes() > 0 ? target.usedFraction() * 360.0 : 360.0;
+            double startAngle = 90.0 - usedSweep / 2.0;
+            layoutChildrenInto(rootForView, 1, startAngle, usedSweep, out);
         }
         return out;
     }
@@ -978,6 +1111,21 @@ public final class SunburstView {
             Color fill = base.deriveColor(0, 1, 1, alpha);
             drawAnnularSector(g, cx, cy, r1, r2, l.startDeg(), l.sweepDeg(), fill);
             sectors.add(new SectorRect(node, (int) l.depth(), l.startDeg(), l.sweepDeg(), r1, r2));
+        }
+
+        if (viewRoot == scanRoot && target.totalBytes() > 0) {
+            double usedFraction = target.usedFraction();
+            double freeSweep = (1.0 - usedFraction) * 360.0;
+            if (freeSweep > MIN_VISIBLE_SWEEP_DEG) {
+                double freeStart = 90.0 + usedFraction * 180.0;
+                double r1 = HUB_RADIUS;
+                double r2 = HUB_RADIUS + ringWidth;
+                Color freeColor = hoveringFreeSpace
+                        ? scheme.capacityTrack().brighter()
+                        : scheme.capacityTrack();
+                drawAnnularSector(g, cx, cy, r1, r2, freeStart, freeSweep, freeColor);
+                sectors.add(new SectorRect(null, 1, freeStart, freeSweep, r1, r2));
+            }
         }
     }
 
@@ -1069,24 +1217,28 @@ public final class SunburstView {
         g.fillOval(cx - HUB_RADIUS, cy - HUB_RADIUS, HUB_RADIUS * 2, HUB_RADIUS * 2);
 
         // Decide what the hub displays right now.
-        DirectoryNode focus;
-        if (hoveringHub) {
-            focus = scanRoot;
-        } else if (hoverNode != null) {
-            focus = hoverNode;
-        } else {
-            focus = viewRoot;
-        }
-        if (focus == null) return;
-
         String title;
         String subtitle;
-        if (scanning && focus == scanRoot && !hoveringHub && hoverNode == null) {
-            title = humanSize(progressBytes);
-            subtitle = progressFiles + " files";
+        if (hoveringFreeSpace) {
+            title = "Free";
+            subtitle = humanSize(target.usableBytes());
         } else {
-            title = (focus == scanRoot) ? target.displayName() : focus.name();
-            subtitle = humanSize(focus.totalBytes());
+            DirectoryNode focus;
+            if (hoveringHub) {
+                focus = scanRoot;
+            } else if (hoverNode != null) {
+                focus = hoverNode;
+            } else {
+                focus = viewRoot;
+            }
+            if (focus == null) return;
+            if (scanning && focus == scanRoot && !hoveringHub && hoverNode == null) {
+                title = humanSize(progressBytes);
+                subtitle = progressFiles + " files";
+            } else {
+                title = (focus == scanRoot) ? target.displayName() : focus.name();
+                subtitle = humanSize(focus.totalBytes());
+            }
         }
 
         g.setFill(scheme.textPrimary());
@@ -1154,25 +1306,32 @@ public final class SunburstView {
         double r = Math.hypot(dx, dy);
 
         boolean wasHub = hoveringHub;
+        boolean wasFree = hoveringFreeSpace;
         DirectoryNode wasNode = hoverNode;
 
         if (r < HUB_RADIUS) {
             hoveringHub = true;
             hoverNode = null;
+            hoveringFreeSpace = false;
         } else {
             hoveringHub = false;
             hoverNode = null;
+            hoveringFreeSpace = false;
             double theta = Math.toDegrees(Math.atan2(-dy, dx));
             if (theta < 0) theta += 360;
             for (SectorRect s : sectors) {
                 if (r >= s.r1 && r <= s.r2 && angleInSweep(theta, s.startDeg, s.sweepDeg)) {
-                    hoverNode = s.node;
+                    if (s.node() == null) {
+                        hoveringFreeSpace = true;
+                    } else {
+                        hoverNode = s.node();
+                    }
                     break;
                 }
             }
         }
 
-        if (wasHub != hoveringHub || wasNode != hoverNode) {
+        if (wasHub != hoveringHub || wasFree != hoveringFreeSpace || wasNode != hoverNode) {
             redraw();
         }
     }
@@ -1196,7 +1355,7 @@ public final class SunburstView {
         if (theta < 0) theta += 360;
         for (SectorRect s : sectors) {
             if (r >= s.r1 && r <= s.r2 && angleInSweep(theta, s.startDeg, s.sweepDeg)) {
-                select(s.node);
+                if (s.node() != null) select(s.node());
                 return;
             }
         }

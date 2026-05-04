@@ -28,7 +28,6 @@
  */
 package se.hirt.diskspace.ui;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 import javafx.scene.control.Label;
@@ -83,7 +82,7 @@ public final class MainWindow {
 
     private Tab openPickerTab() {
         Tab tab = new Tab("New disk");
-        PickerView picker = new PickerView(scheme, path -> swapToSunburst(tab, path));
+        PickerView picker = new PickerView(scheme, v -> swapToSunburst(tab, v));
         tab.setContent(picker.getRoot());
         // Insert before the "+" tab so "+" stays last.
         int insertAt = tabs.getTabs().indexOf(plusTab);
@@ -91,24 +90,13 @@ public final class MainWindow {
         return tab;
     }
 
-    private void swapToSunburst(Tab tab, Path target) {
-        Volume v = resolveVolume(target);
+    private void swapToSunburst(Tab tab, Volume v) {
         tab.setText(v.displayName());
+        if (!v.deviceName().equals(v.displayName())) {
+            tab.setTooltip(new javafx.scene.control.Tooltip(v.deviceName()));
+        }
         SunburstView sb = new SunburstView(v, scheme);
         tab.setContent(sb.getRoot());
-    }
-
-    private static Volume resolveVolume(Path target) {
-        // For arbitrary folder picks we still want a Volume-shaped header; fall back to the
-        // path itself when capacity info is unavailable.
-        try {
-            var store = Files.getFileStore(target);
-            String name = store.name();
-            if (name == null || name.isBlank()) name = target.toString();
-            return new Volume(name, target, store.getTotalSpace(), store.getUsableSpace(), store.type());
-        } catch (Exception e) {
-            return new Volume(target.toString(), target, 0L, 0L, "");
-        }
     }
 
     private Region buildHint() {

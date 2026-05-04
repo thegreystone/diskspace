@@ -30,7 +30,6 @@ package se.hirt.diskspace.ui;
 
 import java.io.File;
 import java.nio.file.Path;
-import java.util.List;
 import java.util.function.Consumer;
 
 import javafx.geometry.Insets;
@@ -60,9 +59,9 @@ public final class PickerView {
 
     private final BorderPane root;
     private final ColorScheme scheme;
-    private final Consumer<Path> onSelection;
+    private final Consumer<Volume> onSelection;
 
-    public PickerView(ColorScheme scheme, Consumer<Path> onSelection) {
+    public PickerView(ColorScheme scheme, Consumer<Volume> onSelection) {
         this.scheme = scheme;
         this.onSelection = onSelection;
 
@@ -90,7 +89,7 @@ public final class PickerView {
             Window w = choose.getScene() == null ? null : choose.getScene().getWindow();
             File picked = dc.showDialog(w);
             if (picked != null) {
-                onSelection.accept(picked.toPath());
+                onSelection.accept(Volume.from(picked.toPath()));
             }
         });
         HBox chooseRow = new HBox(choose);
@@ -153,7 +152,7 @@ public final class PickerView {
                 box.setStyle(
                         "-fx-background-color: " + toCss(scheme.surface()) + ";"
                                 + "-fx-background-radius: 10; -fx-cursor: hand;"));
-        box.setOnMouseClicked(e -> onSelection.accept(v.root()));
+        box.setOnMouseClicked(e -> onSelection.accept(v));
         return box;
     }
 
@@ -200,6 +199,4 @@ public final class PickerView {
                 c.getOpacity());
     }
 
-    @SuppressWarnings("unused")
-    private static List<Path> stub() { return List.of(); }
 }

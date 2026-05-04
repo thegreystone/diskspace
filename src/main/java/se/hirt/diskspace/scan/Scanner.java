@@ -51,6 +51,9 @@ public interface Scanner {
         /** Periodic progress, throttled by the scanner. {@code currentPath} may be null. */
         void onProgress(long files, long bytes, String currentPath);
 
+        /** Called before {@link #onComplete} if any entries were inaccessible (permission denied). */
+        default void onPermissionsDenied(long count) {}
+
         /** Final tree (children sorted by size desc, recursively). */
         void onComplete(DirectoryNode root);
 

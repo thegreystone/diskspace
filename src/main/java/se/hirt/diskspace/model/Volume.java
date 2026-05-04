@@ -28,6 +28,8 @@
  */
 package se.hirt.diskspace.model;
 
+import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
@@ -35,7 +37,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-public record Volume(String displayName, Path root, long totalBytes, long usableBytes, String fsType) {
+public record Volume(String displayName, String deviceName, Path root, long totalBytes, long usableBytes, String fsType) {
+
+    private static final java.util.logging.Logger LOG =
+            java.util.logging.Logger.getLogger(Volume.class.getName());
 
     public long usedBytes() {
         return Math.max(0L, totalBytes - usableBytes);
@@ -53,13 +58,21 @@ public record Volume(String displayName, Path root, long totalBytes, long usable
                 if (isPseudoFs(store.type())) {
                     continue;
                 }
-                String name = store.name();
-                if (name == null || name.isBlank()) {
-                    name = root.toString();
+                String deviceName = store.name();
+                if (deviceName == null || deviceName.isBlank()) {
+                    deviceName = root.toString();
                 }
+                // On macOS, "/" is a sealed APFS system snapshot. User data lives on
+                // "/System/Volumes/Data". Scanning from "/" crosses firmlinks into that
+                // volume and double-counts everything. Use Data as the scan root instead.
+                Path scanRoot = apfsDataVolumeFor(root);
+                String displayName = resolveDisplayName(root, deviceName);
+                LOG.info(String.format("Volume: root=%s scanRoot=%s device=%s display=%s type=%s",
+                        root, scanRoot, deviceName, displayName, store.type()));
                 volumes.add(new Volume(
-                        name,
-                        root,
+                        displayName,
+                        deviceName,
+                        scanRoot,
                         store.getTotalSpace(),
                         store.getUsableSpace(),
                         store.type()));
@@ -68,6 +81,50 @@ public record Volume(String displayName, Path root, long totalBytes, long usable
             }
         }
         return volumes;
+    }
+
+    /** Looks in /Volumes/ for a Finder-visible label whose inode matches {@code scanRoot}.
+     *  Falls back to {@code fallback} when not on macOS or nothing matches. */
+    public static Volume from(Path target) {
+        try {
+            var store = Files.getFileStore(target);
+            String deviceName = store.name();
+            if (deviceName == null || deviceName.isBlank()) deviceName = target.toString();
+            String displayName = resolveDisplayName(target, deviceName);
+            return new Volume(displayName, deviceName, target, store.getTotalSpace(), store.getUsableSpace(), store.type());
+        } catch (Exception e) {
+            return new Volume(target.toString(), target.toString(), target, 0L, 0L, "");
+        }
+    }
+
+    public static String resolveDisplayName(Path scanRoot, String fallback) {
+        Path volumes = Path.of("/Volumes");
+        if (!Files.isDirectory(volumes)) return fallback;
+        try (DirectoryStream<Path> ds = Files.newDirectoryStream(volumes)) {
+            for (Path entry : ds) {
+                try {
+                    LOG.info(String.format("  /Volumes entry: %s  isSameFile(%s)=%b",
+                            entry, scanRoot, Files.isSameFile(entry, scanRoot)));
+                    if (Files.isSameFile(entry, scanRoot)) {
+                        Path name = entry.getFileName();
+                        if (name != null) return name.toString();
+                    }
+                } catch (IOException e) {
+                    LOG.info("  /Volumes entry " + entry + " isSameFile failed: " + e);
+                }
+            }
+        } catch (IOException e) {
+            LOG.info("resolveDisplayName failed to list /Volumes: " + e);
+        }
+        return fallback;
+    }
+
+    private static Path apfsDataVolumeFor(Path root) {
+        if (!"/".equals(root.toString())) {
+            return root;
+        }
+        Path dataVol = Path.of("/System/Volumes/Data");
+        return Files.isDirectory(dataVol) ? dataVol : root;
     }
 
     private static boolean isPseudoFs(String type) {

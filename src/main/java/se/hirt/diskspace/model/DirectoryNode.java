@@ -45,6 +45,8 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class DirectoryNode {
 
+    public enum ScanState { QUEUED, SCANNING, DONE }
+
     private final DirectoryNode parent;
     private final String name;
     private final Path path;
@@ -56,8 +58,8 @@ public final class DirectoryNode {
     /** Volatile so post-scan replacement with a sorted list publishes safely to readers. */
     private volatile List<DirectoryNode> children = new CopyOnWriteArrayList<>();
 
-    /** True once the scanner has fully visited this subtree. UI uses this to dim in-progress sectors. */
-    private volatile boolean done;
+    /** Scan state: QUEUED until the scanner enters this dir, SCANNING while inside, DONE when exited. */
+    private volatile ScanState state = ScanState.QUEUED;
 
     public DirectoryNode(DirectoryNode parent, String name, Path path) {
         this.parent = parent;
@@ -72,8 +74,10 @@ public final class DirectoryNode {
     public long ownBytes()                { return ownBytes.get(); }
     public long totalBytes()              { return totalBytes.get(); }
     public int totalFileCount()           { return totalFileCount.get(); }
-    public boolean isDone()               { return done; }
-    public void markDone()                { done = true; }
+    public ScanState state()              { return state; }
+    public boolean isDone()               { return state == ScanState.DONE; }
+    public void setScanning()             { state = ScanState.SCANNING; }
+    public void markDone()                { state = ScanState.DONE; }
 
     public DirectoryNode addChild(String name, Path path) {
         DirectoryNode child = new DirectoryNode(this, name, path);
