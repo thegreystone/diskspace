@@ -37,24 +37,40 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-public record Volume(String displayName, String deviceName, Path root, long totalBytes, long usableBytes, String fsType) {
+public record Volume(String displayName, String deviceName, Path root,
+                     long totalBytes, long usableBytes, long usedBytes, String fsType) {
 
     private static final java.util.logging.Logger LOG =
             java.util.logging.Logger.getLogger(Volume.class.getName());
 
-    public long usedBytes() {
-        return Math.max(0L, totalBytes - usableBytes);
+    public double usedFraction() {
+        return totalBytes == 0 ? 0.0 : (double) usedBytes / (double) totalBytes;
     }
 
-    public double usedFraction() {
-        return totalBytes == 0 ? 0.0 : (double) usedBytes() / (double) totalBytes;
+    /** On macOS APFS, Java NIO's {@code totalSpace − usableSpace} is the *container* used
+     *  (system snapshot + Data + Preboot + VM + snapshots). We want the per-volume Used,
+     *  which only {@code df}'s {@code Used} column reports correctly. Falls back to the
+     *  Java NIO calculation when {@code df} is unavailable or this isn't macOS. */
+    private static long computeUsedBytes(Path scanRoot, long totalBytes, long usableBytes) {
+        long mac = MacVolumeInfo.spaceUsed(scanRoot);
+        if (mac >= 0) return mac;
+        return Math.max(0L, totalBytes - usableBytes);
     }
 
     public static List<Volume> enumerate() {
         List<Volume> volumes = new ArrayList<>();
         for (Path root : FileSystems.getDefault().getRootDirectories()) {
             try {
-                FileStore store = Files.getFileStore(root);
+                // On macOS, "/" is a sealed APFS system snapshot. User data lives on
+                // "/System/Volumes/Data". Scanning from "/" crosses firmlinks into that
+                // volume and double-counts everything. Use Data as the scan root instead.
+                Path scanRoot = apfsDataVolumeFor(root);
+                // Query the FileStore at scanRoot, not root — APFS volumes inside one
+                // container share a free-space pool, but each volume has its own block
+                // count. Querying at "/" returns container-wide used space (System + Data
+                // + Preboot + VM + snapshots), which makes the scanner's "Unaccounted"
+                // comparison apples-to-oranges since the scanner only walks Data.
+                FileStore store = Files.getFileStore(scanRoot);
                 if (isPseudoFs(store.type())) {
                     continue;
                 }
@@ -62,19 +78,19 @@ public record Volume(String displayName, String deviceName, Path root, long tota
                 if (deviceName == null || deviceName.isBlank()) {
                     deviceName = root.toString();
                 }
-                // On macOS, "/" is a sealed APFS system snapshot. User data lives on
-                // "/System/Volumes/Data". Scanning from "/" crosses firmlinks into that
-                // volume and double-counts everything. Use Data as the scan root instead.
-                Path scanRoot = apfsDataVolumeFor(root);
                 String displayName = resolveDisplayName(root, deviceName);
+                long total = store.getTotalSpace();
+                long usable = store.getUsableSpace();
+                long used = computeUsedBytes(scanRoot, total, usable);
                 LOG.info(String.format("Volume: root=%s scanRoot=%s device=%s display=%s type=%s",
                         root, scanRoot, deviceName, displayName, store.type()));
                 volumes.add(new Volume(
                         displayName,
                         deviceName,
                         scanRoot,
-                        store.getTotalSpace(),
-                        store.getUsableSpace(),
+                        total,
+                        usable,
+                        used,
                         store.type()));
             } catch (Exception ignore) {
                 // Volume not accessible (offline drive, permission denied) — skip silently.
@@ -91,9 +107,12 @@ public record Volume(String displayName, String deviceName, Path root, long tota
             String deviceName = store.name();
             if (deviceName == null || deviceName.isBlank()) deviceName = target.toString();
             String displayName = resolveDisplayName(target, deviceName);
-            return new Volume(displayName, deviceName, target, store.getTotalSpace(), store.getUsableSpace(), store.type());
+            long total = store.getTotalSpace();
+            long usable = store.getUsableSpace();
+            long used = computeUsedBytes(target, total, usable);
+            return new Volume(displayName, deviceName, target, total, usable, used, store.type());
         } catch (Exception e) {
-            return new Volume(target.toString(), target.toString(), target, 0L, 0L, "");
+            return new Volume(target.toString(), target.toString(), target, 0L, 0L, 0L, "");
         }
     }
 

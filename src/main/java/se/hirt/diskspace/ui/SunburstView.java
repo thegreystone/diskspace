@@ -71,6 +71,7 @@ import javafx.scene.layout.Pane;
 import javafx.scene.layout.Region;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseButton;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.ArcType;
 import javafx.scene.shape.StrokeLineCap;
@@ -78,6 +79,7 @@ import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.scene.text.TextAlignment;
 import se.hirt.diskspace.model.DirectoryNode;
+import se.hirt.diskspace.model.MacHiddenSpace;
 import se.hirt.diskspace.model.Volume;
 import se.hirt.diskspace.scan.Scanner;
 import se.hirt.diskspace.scan.WalkFileTreeScanner;
@@ -99,10 +101,6 @@ public final class SunburstView {
     private static final long LIVE_REFRESH_INTERVAL_NANOS = 100_000_000L; // 10 Hz
     private static final long ANIM_DURATION_NANOS = 350_000_000L;        // 350 ms
 
-    private static final long KIB = 1024L;
-    private static final long MIB = KIB * 1024L;
-    private static final long GIB = MIB * 1024L;
-    private static final long TIB = GIB * 1024L;
 
     private final SplitPane root;
     private final Canvas canvas;
@@ -138,6 +136,8 @@ public final class SunburstView {
     private long progressFiles;
     private long progressBytes;
     private String progressPath;
+    private long lastPermDeniedCount;
+    private volatile MacHiddenSpace.HiddenSpace cachedHidden;
 
     private final Scanner scanner = new WalkFileTreeScanner();
     private final AnimationTimer liveTicker;
@@ -268,6 +268,11 @@ public final class SunburstView {
                     if (!deleting) rescan();
                     e.consume();
                 }
+                case U -> {
+                    SizeFormat.toggle();
+                    refreshAfterUnitChange();
+                    e.consume();
+                }
                 default -> { /* let it bubble */ }
             }
         });
@@ -305,7 +310,17 @@ public final class SunburstView {
                     return;
                 }
                 Entry e = (getTableRow() == null) ? null : getTableRow().getItem();
-                if (e != null && e.isDirectory() && e.dirNode() != null) {
+                if (e != null && e.isDirectory() && e.dirNode() != null
+                        && e.dirNode().path() == null) {
+                    // Synthetic Hidden node — keep the color swatch so the row maps visually
+                    // to its sunburst sector, but render the text italic muted to signal it
+                    // isn't a real on-disk folder.
+                    swatch.setFill(SectorPalette.forName(e.dirNode().name(), 0));
+                    setGraphic(swatch);
+                    setText(item);
+                    setStyle("-fx-font-style: italic; -fx-text-fill: "
+                            + css(scheme.textMuted()) + ";");
+                } else if (e != null && e.isDirectory() && e.dirNode() != null) {
                     DirectoryNode node = e.dirNode();
                     swatch.setFill(SectorPalette.forName(node.name(), 0));
                     setGraphic(swatch);
@@ -353,16 +368,44 @@ public final class SunburstView {
         table.getColumns().setAll(List.of(nameCol, sizeCol));
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_SUBSEQUENT_COLUMNS);
 
-        // Subtle row tint for folders so they read as a section even before the file rows below.
-        table.setRowFactory(tv -> new javafx.scene.control.TableRow<>() {
+        // Row factory: alternates row tint (so populated rows match the empty alternation
+        // below them), highlights the selected row, gives directories a stronger tint so
+        // they read as a section, and drills into a directory when its row is clicked.
+        table.setRowFactory(tv -> new javafx.scene.control.TableRow<Entry>() {
+            {
+                selectedProperty().addListener((o, a, b) -> applyRowStyle());
+                setOnMouseClicked(e -> {
+                    if (e.getButton() == MouseButton.PRIMARY && !isEmpty()) {
+                        Entry it = getItem();
+                        if (it != null && it.isDirectory() && it.dirNode() != null) {
+                            select(it.dirNode());
+                        }
+                    }
+                });
+            }
             @Override
             protected void updateItem(Entry item, boolean empty) {
                 super.updateItem(item, empty);
-                if (empty || item == null || !item.isDirectory()) {
-                    setStyle("");
+                applyRowStyle();
+            }
+            @Override
+            public void updateIndex(int i) {
+                super.updateIndex(i);
+                applyRowStyle();
+            }
+            private void applyRowStyle() {
+                int idx = getIndex();
+                boolean odd = (idx & 1) == 1;
+                Entry item = getItem();
+                String bg;
+                if (isSelected()) {
+                    bg = css(scheme.accent().deriveColor(0, 1.0, 1.0, 0.30));
+                } else if (item != null && item.isDirectory()) {
+                    bg = odd ? "rgba(255,255,255,0.075)" : "rgba(255,255,255,0.045)";
                 } else {
-                    setStyle("-fx-background-color: rgba(255, 255, 255, 0.045);");
+                    bg = odd ? "rgba(255,255,255,0.025)" : "transparent";
                 }
+                setStyle("-fx-background-color: " + bg + ";");
             }
         });
     }
@@ -681,6 +724,8 @@ public final class SunburstView {
         progressPath = null;
         scanning = true;
         lastListedRoot = null;
+        lastPermDeniedCount = 0;
+        cachedHidden = null;
         currentFiles = List.of();
         tableItems.clear();
         sectors.clear();
@@ -778,8 +823,31 @@ public final class SunburstView {
         sb.append(String.format("  OS free      : %s%n", humanSize(target.usableBytes())));
         sb.append(String.format("  Scanned      : %s  (%d files)%n",
                 humanSize(root.totalBytes()), root.totalFileCount()));
-        sb.append(String.format("  Unaccounted  : %s%n",
-                humanSize(Math.abs(target.usedBytes() - root.totalBytes()))));
+        long delta = root.totalBytes() - target.usedBytes();
+        if (delta > 0) {
+            // Scanner sum exceeds OS-reported used space; APFS clones are the usual cause.
+            sb.append(String.format("  Overcounted  : %s%n", humanSize(delta)));
+        } else {
+            sb.append(String.format("  Unaccounted  : %s%n", humanSize(-delta)));
+        }
+
+        MacHiddenSpace.HiddenSpace hidden = cachedHidden;
+        long hiddenTotal = hidden == null ? 0L : hidden.totalBytes();
+        if (hidden != null && (hiddenTotal > 0 || hidden.localSnapshotCount() > 0 || lastPermDeniedCount > 0)) {
+            sb.append(String.format("  Hidden       : %s%n", humanSize(hiddenTotal)));
+            sb.append(String.format("    Other volumes  : %s  (%d volume%s)%n",
+                    humanSize(hidden.otherVolumesBytes()),
+                    hidden.otherVolumesCount(),
+                    hidden.otherVolumesCount() == 1 ? "" : "s"));
+            sb.append(String.format("    Snapshots      : %s%n",
+                    hidden.localSnapshotCount() == 0
+                            ? "no local snapshots"
+                            : hidden.localSnapshotCount() + " local snapshot"
+                                    + (hidden.localSnapshotCount() == 1 ? "" : "s")));
+            sb.append(String.format("    Other          : %s%n", humanSize(hidden.residualBytes())));
+            sb.append(String.format("    Not accessible : %d path%s%n",
+                    lastPermDeniedCount, lastPermDeniedCount == 1 ? "" : "s"));
+        }
         sb.append("  Root breakdown (by size):\n");
         for (DirectoryNode child : children) {
             double pct = root.totalBytes() > 0
@@ -881,12 +949,16 @@ public final class SunburstView {
 
             @Override
             public void onPermissionsDenied(long count) {
+                lastPermDeniedCount = count;
                 Platform.runLater(() -> showPermissionDeniedDialog(count));
             }
 
             @Override
             public void onComplete(DirectoryNode result) {
+                long containerUsed = Math.max(0L, target.totalBytes() - target.usableBytes());
+                cachedHidden = MacHiddenSpace.gather(target.root(), containerUsed, target.usedBytes());
                 logScanSummary(result);
+                injectHiddenInto(result);
                 Platform.runLater(() -> {
                     scanning = false;
                     liveTicker.stop();
@@ -909,14 +981,27 @@ public final class SunburstView {
 
     // ---- table refresh ---------------------------------------------------
 
+    private void refreshAfterUnitChange() {
+        refreshTable();
+        table.refresh();
+        stagingTable.refresh();
+        if (!stagedItems.isEmpty()) updateStagingFooter();
+        redraw();
+    }
+
     private void refreshTable() {
         if (viewRoot == null) {
             tableItems.clear();
             rightHeader.setText("");
             return;
         }
-        rightHeader.setText("  " + viewRoot.path() + "  —  " + humanSize(viewRoot.totalBytes())
-                + "   " + viewRoot.totalFileCount() + " files");
+        // Synthetic Hidden nodes have no on-disk path; show the name instead and skip the
+        // file count (it's always 0 for synthetic).
+        String headerLeft = viewRoot.path() != null ? viewRoot.path().toString() : viewRoot.name();
+        String headerRight = viewRoot.path() != null
+                ? "   " + viewRoot.totalFileCount() + " files"
+                : "";
+        rightHeader.setText("  " + headerLeft + "  —  " + humanSize(viewRoot.totalBytes()) + headerRight);
 
         // Re-list immediate files only when the viewRoot itself changes; files of a fixed
         // directory don't move during a scan.
@@ -969,6 +1054,47 @@ public final class SunburstView {
         return out;
     }
 
+    /**
+     * Builds the synthetic "Hidden" subtree from {@link #cachedHidden} and attaches it as a
+     * child of {@code scanRootNode}. The Hidden node itself and its children carry zero
+     * scanned bytes and no on-disk path, but their {@code totalBytes} is set so the sunburst
+     * renders them like any other sector. {@code scanRootNode}'s {@code totalBytes} is bumped
+     * by Hidden's bytes so children fractions sum to 1.
+     */
+    private void injectHiddenInto(DirectoryNode scanRootNode) {
+        MacHiddenSpace.HiddenSpace h = cachedHidden;
+        if (h == null) return;
+        if (h.totalBytes() <= 0 && h.localSnapshotCount() == 0 && lastPermDeniedCount == 0) return;
+
+        DirectoryNode hidden = new DirectoryNode(scanRootNode, "Hidden", null);
+        hidden.markDone();
+
+        DirectoryNode otherVols = new DirectoryNode(hidden, "Other volumes", null);
+        otherVols.addSyntheticBytes(h.otherVolumesBytes());
+        otherVols.markDone();
+        hidden.children().add(otherVols);
+
+        DirectoryNode snapshots = new DirectoryNode(hidden, "Snapshots", null);
+        snapshots.markDone();
+        hidden.children().add(snapshots);
+
+        DirectoryNode other = new DirectoryNode(hidden, "Other", null);
+        other.addSyntheticBytes(h.residualBytes());
+        other.markDone();
+        hidden.children().add(other);
+
+        if (lastPermDeniedCount > 0) {
+            DirectoryNode notAccess = new DirectoryNode(hidden, "Not accessible", null);
+            notAccess.markDone();
+            hidden.children().add(notAccess);
+        }
+
+        long hiddenTotal = h.totalBytes();
+        hidden.addSyntheticBytes(hiddenTotal);
+        scanRootNode.children().add(hidden);
+        scanRootNode.addSyntheticBytes(hiddenTotal);
+    }
+
     private static boolean sameOrder(List<Entry> a, List<Entry> b) {
         if (a.size() != b.size()) return false;
         for (int i = 0; i < a.size(); i++) {
@@ -991,6 +1117,9 @@ public final class SunburstView {
 
     private void select(DirectoryNode newViewRoot, boolean clearForward) {
         if (newViewRoot == null || newViewRoot == viewRoot) return;
+        // Don't drill into synthetic terminals (Hidden's leaf rows like Snapshots / Other /
+        // Not accessible). Drilling into the Hidden parent is fine — it has children.
+        if (newViewRoot.path() == null && newViewRoot.children().isEmpty()) return;
         if (clearForward) forwardStack.clear();
 
         Map<DirectoryNode, Layout> oldL = computeLayout(viewRoot);
@@ -1530,11 +1659,7 @@ public final class SunburstView {
     }
 
     static String humanSize(long bytes) {
-        if (bytes >= TIB) return String.format("%.1f TB", bytes / (double) TIB);
-        if (bytes >= GIB) return String.format("%.1f GB", bytes / (double) GIB);
-        if (bytes >= MIB) return String.format("%.0f MB", bytes / (double) MIB);
-        if (bytes >= KIB) return String.format("%.0f KB", bytes / (double) KIB);
-        return bytes + " B";
+        return SizeFormat.format(bytes);
     }
 
     private static String bg(Color c) {

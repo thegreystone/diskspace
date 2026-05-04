@@ -30,6 +30,8 @@ package se.hirt.diskspace.ui;
 
 import java.io.File;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.function.Consumer;
 
 import javafx.geometry.Insets;
@@ -37,6 +39,8 @@ import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -52,14 +56,10 @@ import se.hirt.diskspace.ui.theme.ColorScheme;
 
 public final class PickerView {
 
-    private static final long KIB = 1024L;
-    private static final long MIB = KIB * 1024L;
-    private static final long GIB = MIB * 1024L;
-    private static final long TIB = GIB * 1024L;
-
     private final BorderPane root;
     private final ColorScheme scheme;
     private final Consumer<Volume> onSelection;
+    private final List<Runnable> sizeRefreshers = new ArrayList<>();
 
     public PickerView(ColorScheme scheme, Consumer<Volume> onSelection) {
         this.scheme = scheme;
@@ -113,6 +113,21 @@ public final class PickerView {
 
         root = new BorderPane(scroll);
         root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+
+        // U toggles size units app-wide. Filter at root so it fires regardless of which
+        // descendant currently has focus (button, scroll viewport, etc).
+        root.setFocusTraversable(true);
+        root.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
+            if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown()) return;
+            if (e.getCode() == KeyCode.U) {
+                SizeFormat.toggle();
+                for (Runnable r : sizeRefreshers) r.run();
+                e.consume();
+            }
+        });
+        root.sceneProperty().addListener((obs, oldScene, newScene) -> {
+            if (newScene != null) root.requestFocus();
+        });
     }
 
     public Region getRoot() {
@@ -134,6 +149,10 @@ public final class PickerView {
         total.setStyle(
                 "-fx-text-fill: " + toCss(scheme.textMuted()) + ";"
                         + "-fx-font-size: 12px;");
+        // Without this, the label keeps the width it was first laid out with and clips when
+        // the unit toggle widens the text (e.g. "228 GB" → "213 GiB").
+        total.setMinWidth(Region.USE_PREF_SIZE);
+        sizeRefreshers.add(() -> total.setText(humanSize(v.totalBytes())));
 
         Region bar = buildCapacityBar(v.usedFraction());
         HBox.setHgrow(bar, Priority.ALWAYS);
@@ -184,11 +203,7 @@ public final class PickerView {
     }
 
     private static String humanSize(long bytes) {
-        if (bytes >= TIB) return String.format("%.1f TB", bytes / (double) TIB);
-        if (bytes >= GIB) return String.format("%.0f GB", bytes / (double) GIB);
-        if (bytes >= MIB) return String.format("%.0f MB", bytes / (double) MIB);
-        if (bytes >= KIB) return String.format("%.0f KB", bytes / (double) KIB);
-        return bytes + " B";
+        return SizeFormat.format(bytes);
     }
 
     private static String toCss(Color c) {

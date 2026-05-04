@@ -85,6 +85,14 @@ public final class DirectoryNode {
         return child;
     }
 
+    /** For synthetic post-scan nodes (e.g. the "Hidden" subtree on macOS): bumps this node's
+     *  {@code totalBytes} without propagating to ancestors and without affecting file count.
+     *  The caller is responsible for bumping ancestors separately when wiring these nodes
+     *  into the live tree. */
+    public void addSyntheticBytes(long bytes) {
+        totalBytes.addAndGet(bytes);
+    }
+
     /** Records a file of {@code size} bytes; propagates totals up the ancestor chain. */
     public void addFile(long size) {
         ownBytes.addAndGet(size);
