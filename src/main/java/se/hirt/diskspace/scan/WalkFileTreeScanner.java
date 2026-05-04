@@ -167,7 +167,7 @@ public final class WalkFileTreeScanner implements Scanner {
                         // Hard-linked file already counted via another directory entry.
                         return FileVisitResult.CONTINUE;
                     }
-                    long size = attrs.size();
+                    long size = physicalSize(file, attrs);
                     stack.peek().addFile(size);
                     fileCount[0]++;
                     byteCount[0] += size;
@@ -185,6 +185,16 @@ public final class WalkFileTreeScanner implements Scanner {
 
         // Final progress emission so UI sees the final numbers before sort.
         listener.onProgress(fileCount[0], byteCount[0], currentPath[0]);
+    }
+
+    /** Returns the physical disk allocation for a file using unix:blocks when available,
+     *  falling back to the logical size. unix:blocks is in 512-byte units (POSIX). */
+    private static long physicalSize(Path file, BasicFileAttributes attrs) {
+        try {
+            Object blocks = Files.getAttribute(file, "unix:blocks", LinkOption.NOFOLLOW_LINKS);
+            if (blocks instanceof Long b) return b * 512L;
+        } catch (Exception ignore) {}
+        return attrs.size();
     }
 
     private static void maybeEmitProgress(ScanListener listener, long files, long bytes,

@@ -132,6 +132,7 @@ public final class SunburstView {
     private DirectoryNode hoverNode;
     private boolean hoveringHub;
     private boolean hoveringFreeSpace;
+    private boolean hoveringUnaccounted;
     private volatile boolean scanning = true;
 
     private long progressFiles;
@@ -164,7 +165,7 @@ public final class SunburstView {
         canvas.widthProperty().addListener((o, a, b) -> redraw());
         canvas.heightProperty().addListener((o, a, b) -> redraw());
         canvas.setOnMouseMoved(e -> handleMouseMove(e.getX(), e.getY()));
-        canvas.setOnMouseExited(e -> { hoverNode = null; hoveringHub = false; hoveringFreeSpace = false; redraw(); });
+        canvas.setOnMouseExited(e -> { hoverNode = null; hoveringHub = false; hoveringFreeSpace = false; hoveringUnaccounted = false; redraw(); });
         canvas.setOnMouseClicked(e -> handleClick(e.getX(), e.getY()));
 
         breadcrumb = new HBox(4);
@@ -673,6 +674,7 @@ public final class SunburstView {
         hoverNode = null;
         hoveringHub = false;
         hoveringFreeSpace = false;
+        hoveringUnaccounted = false;
         forwardStack.clear();
         progressFiles = 0;
         progressBytes = 0;
@@ -1026,7 +1028,10 @@ public final class SunburstView {
         } else {
             double usedSweep = target.totalBytes() > 0 ? target.usedFraction() * 360.0 : 360.0;
             double startAngle = 90.0 - usedSweep / 2.0;
-            layoutChildrenInto(rootForView, 1, startAngle, usedSweep, out);
+            double scannedSweep = target.usedBytes() > 0
+                    ? Math.min(usedSweep, usedSweep * rootForView.totalBytes() / (double) target.usedBytes())
+                    : usedSweep;
+            layoutChildrenInto(rootForView, 1, startAngle, scannedSweep, out);
         }
         return out;
     }
@@ -1110,21 +1115,39 @@ public final class SunburstView {
             }
             Color fill = base.deriveColor(0, 1, 1, alpha);
             drawAnnularSector(g, cx, cy, r1, r2, l.startDeg(), l.sweepDeg(), fill);
-            sectors.add(new SectorRect(node, (int) l.depth(), l.startDeg(), l.sweepDeg(), r1, r2));
+            sectors.add(new SectorRect(node, (int) l.depth(), l.startDeg(), l.sweepDeg(), r1, r2, false));
         }
 
         if (viewRoot == scanRoot && target.totalBytes() > 0) {
             double usedFraction = target.usedFraction();
+            double usedSweep = usedFraction * 360.0;
+            double startAngle = 90.0 - usedSweep / 2.0;
+            double r1 = HUB_RADIUS;
+            double r2 = HUB_RADIUS + ringWidth;
+
+            long unaccountedBytes = target.usedBytes() - viewRoot.totalBytes();
+            if (unaccountedBytes > 0 && target.usedBytes() > 0) {
+                double scannedSweep = Math.min(usedSweep,
+                        usedSweep * viewRoot.totalBytes() / (double) target.usedBytes());
+                double unaccountedSweep = usedSweep - scannedSweep;
+                if (unaccountedSweep > MIN_VISIBLE_SWEEP_DEG) {
+                    double unaccountedStart = startAngle + scannedSweep;
+                    Color unaccountedColor = hoveringUnaccounted
+                            ? scheme.surface().brighter().brighter()
+                            : scheme.surface().brighter();
+                    drawAnnularSector(g, cx, cy, r1, r2, unaccountedStart, unaccountedSweep, unaccountedColor);
+                    sectors.add(new SectorRect(null, 1, unaccountedStart, unaccountedSweep, r1, r2, true));
+                }
+            }
+
             double freeSweep = (1.0 - usedFraction) * 360.0;
             if (freeSweep > MIN_VISIBLE_SWEEP_DEG) {
-                double freeStart = 90.0 + usedFraction * 180.0;
-                double r1 = HUB_RADIUS;
-                double r2 = HUB_RADIUS + ringWidth;
+                double freeStart = 90.0 + usedSweep / 2.0;
                 Color freeColor = hoveringFreeSpace
                         ? scheme.capacityTrack().brighter()
                         : scheme.capacityTrack();
                 drawAnnularSector(g, cx, cy, r1, r2, freeStart, freeSweep, freeColor);
-                sectors.add(new SectorRect(null, 1, freeStart, freeSweep, r1, r2));
+                sectors.add(new SectorRect(null, 1, freeStart, freeSweep, r1, r2, false));
             }
         }
     }
@@ -1222,6 +1245,9 @@ public final class SunburstView {
         if (hoveringFreeSpace) {
             title = "Free";
             subtitle = humanSize(target.usableBytes());
+        } else if (hoveringUnaccounted) {
+            title = "Other";
+            subtitle = humanSize(Math.max(0, target.usedBytes() - (scanRoot != null ? scanRoot.totalBytes() : 0)));
         } else {
             DirectoryNode focus;
             if (hoveringHub) {
@@ -1307,22 +1333,26 @@ public final class SunburstView {
 
         boolean wasHub = hoveringHub;
         boolean wasFree = hoveringFreeSpace;
+        boolean wasUnaccounted = hoveringUnaccounted;
         DirectoryNode wasNode = hoverNode;
 
         if (r < HUB_RADIUS) {
             hoveringHub = true;
             hoverNode = null;
             hoveringFreeSpace = false;
+            hoveringUnaccounted = false;
         } else {
             hoveringHub = false;
             hoverNode = null;
             hoveringFreeSpace = false;
+            hoveringUnaccounted = false;
             double theta = Math.toDegrees(Math.atan2(-dy, dx));
             if (theta < 0) theta += 360;
             for (SectorRect s : sectors) {
                 if (r >= s.r1 && r <= s.r2 && angleInSweep(theta, s.startDeg, s.sweepDeg)) {
                     if (s.node() == null) {
-                        hoveringFreeSpace = true;
+                        if (s.unaccounted()) hoveringUnaccounted = true;
+                        else hoveringFreeSpace = true;
                     } else {
                         hoverNode = s.node();
                     }
@@ -1331,7 +1361,7 @@ public final class SunburstView {
             }
         }
 
-        if (wasHub != hoveringHub || wasFree != hoveringFreeSpace || wasNode != hoverNode) {
+        if (wasHub != hoveringHub || wasFree != hoveringFreeSpace || wasUnaccounted != hoveringUnaccounted || wasNode != hoverNode) {
             redraw();
         }
     }
@@ -1530,7 +1560,7 @@ public final class SunburstView {
 
     private record SectorRect(DirectoryNode node, int depth,
                               double startDeg, double sweepDeg,
-                              double r1, double r2) {}
+                              double r1, double r2, boolean unaccounted) {}
 
     private record Layout(double depth, double startDeg, double sweepDeg) {}
 
