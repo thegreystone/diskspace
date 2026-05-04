@@ -33,11 +33,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     <groupId>se.hirt</groupId>
     <artifactId>diskspace</artifactId>
-    <version>0.2.1-SNAPSHOT</version>
+    <version>0.2.2-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>diskspace</name>
-    <description>A DaisyDisk-style disk space visualizer in Java + JavaFX.</description>
+    <name>DiskSpace</name>
+    <description>A cross-platform disk space visualizer in Java + JavaFX.</description>
 
     <properties>
         <maven.compiler.release>21</maven.compiler.release>

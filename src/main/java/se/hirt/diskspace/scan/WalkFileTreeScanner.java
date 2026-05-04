@@ -69,7 +69,7 @@ public final class WalkFileTreeScanner implements Scanner {
                     listener.onError(t);
                 }
             }
-        }, "diskspace-scan-" + rootPath);
+        }, "DiskSpace-scan-" + rootPath);
         thread.setDaemon(true);
         thread.start();
     }

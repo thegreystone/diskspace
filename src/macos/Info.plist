@@ -9,11 +9,11 @@
 	<key>CFBundleShortVersionString</key>
 	<string>__VERSION__</string>
 	<key>CFBundleExecutable</key>
-	<string>diskspace</string>
+	<string>DiskSpace</string>
 	<key>CFBundleIconFile</key>
 	<string>icon</string>
 	<key>CFBundleName</key>
-	<string>diskspace</string>
+	<string>DiskSpace</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleSignature</key>

@@ -51,7 +51,7 @@ public final class App extends Application {
             }
         }
 
-        stage.setTitle("diskspace");
+        stage.setTitle("DiskSpace");
         stage.getIcons().addAll(loadAppIcons());
         stage.setScene(scene);
         stage.show();

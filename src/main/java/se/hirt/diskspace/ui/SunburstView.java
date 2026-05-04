@@ -479,7 +479,7 @@ public final class SunburstView {
         Thread t = new Thread(() -> {
             DeleteResult r = doDeleteWork(items);
             Platform.runLater(() -> onDeleteComplete(r));
-        }, "diskspace-delete");
+        }, "DiskSpace-delete");
         t.setDaemon(true);
         t.start();
     }

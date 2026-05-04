@@ -103,10 +103,10 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           BINARY=$(find target/gluonfx -maxdepth 3 -type f -name 'diskspace' | head -n 1)
           if [ -z "$BINARY" ]; then echo "binary not found" >&2; exit 1; fi
-          APP="target/diskspace.app"
+          APP="target/DiskSpace.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp "$BINARY" "$APP/Contents/MacOS/diskspace"
-          chmod +x "$APP/Contents/MacOS/diskspace"
+          cp "$BINARY" "$APP/Contents/MacOS/DiskSpace"
+          chmod +x "$APP/Contents/MacOS/DiskSpace"
           cp src/macos/assets/icon.icns "$APP/Contents/Resources/icon.icns"
           sed "s/__VERSION__/${VERSION}/g" src/macos/Info.plist > "$APP/Contents/Info.plist"
           codesign --force --deep --options runtime \
@@ -114,10 +114,10 @@ jobs:
           DMG="target/diskspace-${VERSION}-${{ matrix.suffix }}.dmg"
           SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 50 ))
           TMPIMG="$RUNNER_TEMP/tmp.dmg"
-          hdiutil create -megabytes $SIZE_MB -volname "diskspace" -fs "HFS+" -ov -o "$TMPIMG"
+          hdiutil create -megabytes $SIZE_MB -volname "DiskSpace" -fs "HFS+" -ov -o "$TMPIMG"
           hdiutil attach -nobrowse -noverify "$TMPIMG"
-          cp -R "$APP" "/Volumes/diskspace/"
-          hdiutil detach "/Volumes/diskspace" -force
+          cp -R "$APP" "/Volumes/DiskSpace/"
+          hdiutil detach "/Volumes/DiskSpace" -force
           hdiutil convert "$TMPIMG" -format UDZO -ov -o "$DMG"
           codesign --force --sign "$MACOS_SIGNING_IDENTITY" "$DMG"
           xcrun notarytool submit "$DMG" \

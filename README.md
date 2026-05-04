@@ -1,4 +1,4 @@
-# diskspace
+# DiskSpace
 
 [![Java 21 LTS](https://img.shields.io/badge/Java-21%20LTS-blue)](https://adoptium.net/)
 [![JavaFX](https://img.shields.io/badge/JavaFX-21-blueviolet)](https://openjfx.io/)
@@ -7,7 +7,7 @@
 
 A cross-platform disk space visualizer using a sunburst view of where your space went, deliberately minimal feature surface, distributed as native binaries as well as runnable with Java.
 
-![diskspace sunburst view, drilled into Program Files](docs/screenshots/diskspace.png)
+![DiskSpace sunburst view, drilled into Program Files](docs/screenshots/diskspace.png)
 
 ## Status
 
