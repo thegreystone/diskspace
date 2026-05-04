@@ -49,10 +49,16 @@ jobs:
         shell: bash
         run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
 
-      - name: Native build
+      - name: Native build (Linux / Windows)
+        if: runner.os != 'macOS'
         run: mvn -B -Pnative gluonfx:build
 
-      - name: Rename binary
+      - name: Native build (macOS)
+        if: runner.os == 'macOS'
+        run: mvn -B -Pnative gluonfx:build
+
+      - name: Rename binary (Linux / Windows)
+        if: runner.os != 'macOS'
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -65,14 +71,22 @@ jobs:
           fi
           cp "$SRC" "$DST"
 
-      - name: Sign binary (macOS ad-hoc)
+      - name: Assemble, sign and package DMG (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          BIN="target/diskspace-${VERSION}-${{ matrix.suffix }}"
-          chmod +x "$BIN"
-          codesign --force --deep --sign - "$BIN"
+          BINARY=$(find target/gluonfx -maxdepth 3 -type f -name 'diskspace' | head -n 1)
+          if [ -z "$BINARY" ]; then echo "binary not found" >&2; exit 1; fi
+          APP="target/diskspace.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BINARY" "$APP/Contents/MacOS/diskspace"
+          chmod +x "$APP/Contents/MacOS/diskspace"
+          cp src/macos/assets/icon.icns "$APP/Contents/Resources/icon.icns"
+          sed "s/__VERSION__/${VERSION}/g" src/macos/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - "$APP"
+          DMG="target/diskspace-${VERSION}-${{ matrix.suffix }}.dmg"
+          hdiutil create -volname "diskspace" -srcfolder "$APP" -ov -format UDZO "$DMG"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v5
@@ -81,6 +95,7 @@ jobs:
           path: |
             target/diskspace-*-${{ matrix.suffix }}
             target/diskspace-*-${{ matrix.suffix }}.exe
+            target/diskspace-*-${{ matrix.suffix }}.dmg
 
   # ── Create GitHub release with all artifacts ─────────────────────────
   release:
