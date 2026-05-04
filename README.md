@@ -11,7 +11,7 @@ A cross-platform disk space visualizer using a sunburst view of where your space
 
 ## Status
 
-Working preview. Sunburst with live scan-as-you-watch, animated drill-down, breadcrumb navigation, and a folders-and-files table are all in. The native build pipeline is verified on Windows (Oracle GraalVM 21 LTS); macOS and Linux build in CI but haven't been smoke-tested locally yet. Visualize-only by design — no deletion features in v1.
+Working preview. Sunburst with live scan-as-you-watch, animated drill-down, breadcrumb navigation, and a folders-and-files table are all in. Optional staged deletion (move to Trash where supported, otherwise permanent delete) is gated behind an explicit confirmation dialog; on macOS, a one-time prompt offers to grant Full Disk Access so protected locations like Mail and Messages get scanned. The native build pipeline is verified on Windows and macOS (Oracle GraalVM 21 LTS); Linux builds in CI but hasn't been smoke-tested locally yet.
 
 ## Quick Start
 
