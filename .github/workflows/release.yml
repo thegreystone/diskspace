@@ -15,11 +15,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    suffix: linux-x86_64,   exe: diskspace      }
+          - { os: ubuntu-latest,    suffix: linux-x86_64,   exe: DiskSpace      }
           # linux-aarch64 dropped for 0.1.0: OpenJFX 21.x doesn't publish that classifier
           # on Maven Central. Re-enable when we bump JavaFX past 21.x.
-          - { os: macos-latest,     suffix: macos-aarch64,  exe: diskspace      }
-          - { os: windows-latest,   suffix: windows-x86_64, exe: diskspace.exe  }
+          - { os: macos-latest,     suffix: macos-aarch64,  exe: DiskSpace      }
+          - { os: windows-latest,   suffix: windows-x86_64, exe: DiskSpace.exe  }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -59,7 +59,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           SRC=$(find target/gluonfx -maxdepth 3 -type f -name '${{ matrix.exe }}' | head -n 1)
           if [ -z "$SRC" ]; then echo "binary not found" >&2; exit 1; fi
-          if [ "${{ matrix.exe }}" = "diskspace.exe" ]; then
+          if [ "${{ matrix.exe }}" = "DiskSpace.exe" ]; then
             DST="target/diskspace-${VERSION}-${{ matrix.suffix }}.exe"
           else
             DST="target/diskspace-${VERSION}-${{ matrix.suffix }}"
@@ -101,7 +101,7 @@ jobs:
           NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          BINARY=$(find target/gluonfx -maxdepth 3 -type f -name 'diskspace' | head -n 1)
+          BINARY=$(find target/gluonfx -maxdepth 3 -type f -name 'DiskSpace' | head -n 1)
           if [ -z "$BINARY" ]; then echo "binary not found" >&2; exit 1; fi
           APP="target/DiskSpace.app"
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -117,6 +117,7 @@ jobs:
           hdiutil create -megabytes $SIZE_MB -volname "DiskSpace" -fs "HFS+" -ov -o "$TMPIMG"
           hdiutil attach -nobrowse -noverify "$TMPIMG"
           cp -R "$APP" "/Volumes/DiskSpace/"
+          ln -s /Applications "/Volumes/DiskSpace/Applications"
           hdiutil detach "/Volumes/DiskSpace" -force
           hdiutil convert "$TMPIMG" -format UDZO -ov -o "$DMG"
           codesign --force --sign "$MACOS_SIGNING_IDENTITY" "$DMG"
