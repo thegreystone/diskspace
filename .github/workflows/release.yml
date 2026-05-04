@@ -65,6 +65,15 @@ jobs:
           fi
           cp "$SRC" "$DST"
 
+      - name: Sign binary (macOS ad-hoc)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BIN="target/diskspace-${VERSION}-${{ matrix.suffix }}"
+          chmod +x "$BIN"
+          codesign --force --deep --sign - "$BIN"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v5
         with:
