@@ -8,6 +8,10 @@ out/
 *.class
 dependency-reduced-pom.xml
 
+# Inno Setup output (installer build artifacts + staged binary)
+installer/Output/
+installer/diskspace.exe
+
 # GraalVM / Gluon native-image
 target/**/*.exe
 target/**/*.so
