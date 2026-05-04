@@ -310,18 +310,26 @@ public final class SunburstView {
                     return;
                 }
                 Entry e = (getTableRow() == null) ? null : getTableRow().getItem();
-                if (e != null && e.isDirectory() && e.dirNode() != null
-                        && e.dirNode().path() == null) {
-                    // Synthetic Hidden node — keep the color swatch so the row maps visually
-                    // to its sunburst sector, but render the text italic muted to signal it
-                    // isn't a real on-disk folder.
-                    swatch.setFill(SectorPalette.forName(e.dirNode().name(), 0));
+                DirectoryNode node = (e != null && e.isDirectory()) ? e.dirNode() : null;
+                if (node != null && node.isFileSector()) {
+                    // Large file or "Smaller files" aggregate — grey swatch (matches the
+                    // sunburst sector) and italic muted text so users know it isn't a
+                    // drillable folder.
+                    swatch.setFill(SectorPalette.forFileSector(node.name(), 0));
                     setGraphic(swatch);
                     setText(item);
                     setStyle("-fx-font-style: italic; -fx-text-fill: "
                             + css(scheme.textMuted()) + ";");
-                } else if (e != null && e.isDirectory() && e.dirNode() != null) {
-                    DirectoryNode node = e.dirNode();
+                } else if (node != null && node.path() == null) {
+                    // Synthetic Hidden node — keep the color swatch so the row maps visually
+                    // to its sunburst sector, but render the text italic muted to signal it
+                    // isn't a real on-disk folder.
+                    swatch.setFill(SectorPalette.forName(node.name(), 0));
+                    setGraphic(swatch);
+                    setText(item);
+                    setStyle("-fx-font-style: italic; -fx-text-fill: "
+                            + css(scheme.textMuted()) + ";");
+                } else if (node != null) {
                     swatch.setFill(SectorPalette.forName(node.name(), 0));
                     setGraphic(swatch);
                     switch (node.state()) {
@@ -958,6 +966,7 @@ public final class SunburstView {
                 long containerUsed = Math.max(0L, target.totalBytes() - target.usableBytes());
                 cachedHidden = MacHiddenSpace.gather(target.root(), containerUsed, target.usedBytes());
                 logScanSummary(result);
+                injectFileChildrenInto(result);
                 injectHiddenInto(result);
                 Platform.runLater(() -> {
                     scanning = false;
@@ -1054,6 +1063,44 @@ public final class SunburstView {
         return out;
     }
 
+    /** Files at or above this size become their own sunburst sector. Smaller files are
+     *  summed per directory and surface as a single "Smaller files" sector when the sum
+     *  itself crosses the same threshold. 1 GB decimal — must match
+     *  {@code WalkFileTreeScanner.LARGE_FILE_THRESHOLD_BYTES}. */
+    private static final long FILE_SECTOR_THRESHOLD = 1_000_000_000L;
+
+    /**
+     * Walks {@code dir} and appends synthetic children for any large files (≥ threshold)
+     * the scanner recorded, plus a single "Smaller files" aggregate when the smaller-files
+     * sum on this directory also crosses the threshold. The synthetic children's bytes are
+     * already counted in {@code dir.totalBytes()} via the scanner's normal propagation, so
+     * no totals are bumped here.
+     */
+    private static void injectFileChildrenInto(DirectoryNode dir) {
+        // Snapshot real children before we add synthetic ones so the recursion doesn't
+        // re-visit our own injections.
+        List<DirectoryNode> realChildren = new ArrayList<>(dir.children());
+        for (DirectoryNode c : realChildren) {
+            injectFileChildrenInto(c);
+        }
+        for (DirectoryNode.FileRecord f : dir.largeFiles()) {
+            DirectoryNode fileNode = new DirectoryNode(
+                    dir, f.name(), dir.path() != null ? dir.path().resolve(f.name()) : null);
+            fileNode.addSyntheticBytes(f.size());
+            fileNode.markDone();
+            fileNode.markFileSector();
+            dir.children().add(fileNode);
+        }
+        long smaller = dir.smallerFilesBytes();
+        if (smaller >= FILE_SECTOR_THRESHOLD) {
+            DirectoryNode smallNode = new DirectoryNode(dir, "Smaller files", null);
+            smallNode.addSyntheticBytes(smaller);
+            smallNode.markDone();
+            smallNode.markFileSector();
+            dir.children().add(smallNode);
+        }
+    }
+
     /**
      * Builds the synthetic "Hidden" subtree from {@link #cachedHidden} and attaches it as a
      * child of {@code scanRootNode}. The Hidden node itself and its children carry zero
@@ -1116,7 +1163,14 @@ public final class SunburstView {
     }
 
     private void select(DirectoryNode newViewRoot, boolean clearForward) {
-        if (newViewRoot == null || newViewRoot == viewRoot) return;
+        if (newViewRoot == null) return;
+        // File sectors (large-file leaves and "Smaller files" aggregates) aren't drillable
+        // themselves — clicking them navigates to their containing directory so the table
+        // lists everything inside it.
+        if (newViewRoot.isFileSector() && newViewRoot.parent() != null) {
+            newViewRoot = newViewRoot.parent();
+        }
+        if (newViewRoot == viewRoot) return;
         // Don't drill into synthetic terminals (Hidden's leaf rows like Snapshots / Other /
         // Not accessible). Drilling into the Hidden parent is fine — it has children.
         if (newViewRoot.path() == null && newViewRoot.children().isEmpty()) return;
@@ -1236,7 +1290,10 @@ public final class SunburstView {
             double r1 = HUB_RADIUS + (l.depth() - 1) * ringWidth;
             double r2 = HUB_RADIUS + l.depth() * ringWidth;
 
-            Color base = SectorPalette.forName(node.name(), Math.max(0, (int) l.depth() - 1));
+            int colorDepth = Math.max(0, (int) l.depth() - 1);
+            Color base = node.isFileSector()
+                    ? SectorPalette.forFileSector(node.name(), colorDepth)
+                    : SectorPalette.forName(node.name(), colorDepth);
             double alpha = node.isDone() ? 1.0 : 0.45;
             if (hoverNode == node) {
                 base = base.brighter();
@@ -1336,7 +1393,9 @@ public final class SunburstView {
             double r1 = Math.max(1, HUB_RADIUS + (fe.depth - 1) * ringWidth);
             double r2 = Math.max(r1 + 1, HUB_RADIUS + fe.depth * ringWidth);
             int colorDepth = Math.max(0, (int) Math.round(fe.depth) - 1);
-            Color base = SectorPalette.forName(fe.node.name(), colorDepth);
+            Color base = fe.node.isFileSector()
+                    ? SectorPalette.forFileSector(fe.node.name(), colorDepth)
+                    : SectorPalette.forName(fe.node.name(), colorDepth);
             double alpha = (fe.node.isDone() ? 1.0 : 0.45) * fe.alphaScale;
             if (alpha <= 0.001) continue;
             Color fill = base.deriveColor(0, 1, 1, alpha);

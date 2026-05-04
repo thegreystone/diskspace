@@ -47,6 +47,10 @@ public final class DirectoryNode {
 
     public enum ScanState { QUEUED, SCANNING, DONE }
 
+    /** A file recorded for sunburst display (≥ 1 GB on the volume). Capturing only large
+     *  files keeps memory bounded — typical scans hit ≤ a few dozen of these. */
+    public record FileRecord(String name, long size) {}
+
     private final DirectoryNode parent;
     private final String name;
     private final Path path;
@@ -54,6 +58,18 @@ public final class DirectoryNode {
     private final AtomicLong ownBytes = new AtomicLong();
     private final AtomicLong totalBytes = new AtomicLong();
     private final AtomicInteger totalFileCount = new AtomicInteger();
+
+    /** Per-directory list of large files (immediate children, not recursive). Mutated by
+     *  the scanner thread; published to readers via the COW list. */
+    private final List<FileRecord> largeFiles = new CopyOnWriteArrayList<>();
+
+    /** Sum of immediate-file bytes that fell below the large-file threshold. */
+    private final AtomicLong smallerFilesBytes = new AtomicLong();
+
+    /** True for synthetic "file" sectors (large-file leaves and "Smaller files" aggregates)
+     *  injected post-scan. They render in the sunburst but clicking them drills to the
+     *  containing directory rather than into the leaf itself. */
+    private volatile boolean fileSector;
 
     /** Volatile so post-scan replacement with a sorted list publishes safely to readers. */
     private volatile List<DirectoryNode> children = new CopyOnWriteArrayList<>();
@@ -67,17 +83,29 @@ public final class DirectoryNode {
         this.path = path;
     }
 
-    public DirectoryNode parent()         { return parent; }
-    public String name()                  { return name; }
-    public Path path()                    { return path; }
-    public List<DirectoryNode> children() { return children; }
-    public long ownBytes()                { return ownBytes.get(); }
-    public long totalBytes()              { return totalBytes.get(); }
-    public int totalFileCount()           { return totalFileCount.get(); }
-    public ScanState state()              { return state; }
-    public boolean isDone()               { return state == ScanState.DONE; }
-    public void setScanning()             { state = ScanState.SCANNING; }
-    public void markDone()                { state = ScanState.DONE; }
+    public DirectoryNode parent()              { return parent; }
+    public String name()                       { return name; }
+    public Path path()                         { return path; }
+    public List<DirectoryNode> children()      { return children; }
+    public long ownBytes()                     { return ownBytes.get(); }
+    public long totalBytes()                   { return totalBytes.get(); }
+    public int totalFileCount()                { return totalFileCount.get(); }
+    public ScanState state()                   { return state; }
+    public boolean isDone()                    { return state == ScanState.DONE; }
+    public void setScanning()                  { state = ScanState.SCANNING; }
+    public void markDone()                     { state = ScanState.DONE; }
+    public List<FileRecord> largeFiles()       { return largeFiles; }
+    public long smallerFilesBytes()            { return smallerFilesBytes.get(); }
+    public boolean isFileSector()              { return fileSector; }
+    public void markFileSector()               { fileSector = true; }
+
+    public void addLargeFile(String fileName, long size) {
+        largeFiles.add(new FileRecord(fileName, size));
+    }
+
+    public void addSmallerFileBytes(long size) {
+        smallerFilesBytes.addAndGet(size);
+    }
 
     public DirectoryNode addChild(String name, Path path) {
         DirectoryNode child = new DirectoryNode(this, name, path);

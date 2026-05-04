@@ -54,6 +54,10 @@ public final class WalkFileTreeScanner implements Scanner {
 
     private static final long PROGRESS_INTERVAL_NANOS = 100_000_000L; // 10 Hz
 
+    /** Files at or above this size get their own sunburst sector; smaller files are summed
+     *  per-directory into a "Smaller files" aggregate sector. 1 GB decimal. */
+    private static final long LARGE_FILE_THRESHOLD_BYTES = 1_000_000_000L;
+
     private volatile boolean cancelled;
     private volatile Thread thread;
     private long permDeniedCount;
@@ -168,7 +172,14 @@ public final class WalkFileTreeScanner implements Scanner {
                         return FileVisitResult.CONTINUE;
                     }
                     long size = physicalSize(file, attrs);
-                    stack.peek().addFile(size);
+                    DirectoryNode dir = stack.peek();
+                    dir.addFile(size);
+                    if (size >= LARGE_FILE_THRESHOLD_BYTES) {
+                        Path fname = file.getFileName();
+                        dir.addLargeFile(fname == null ? file.toString() : fname.toString(), size);
+                    } else {
+                        dir.addSmallerFileBytes(size);
+                    }
                     fileCount[0]++;
                     byteCount[0] += size;
                     maybeEmitProgress(listener, fileCount[0], byteCount[0], currentPath[0], lastProgressNanos);

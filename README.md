@@ -95,6 +95,8 @@ DiskSpace handles several APFS- and macOS-specific quirks. None of them require 
 
 **Trash vs permanent delete.** macOS exposes `java.awt.Desktop.MOVE_TO_TRASH`, so the deletion confirmation dialog reads "Move to Trash" and items can be restored from Finder. The fallback "Delete permanently" path is only used on platforms that don't expose a trash API.
 
+**The `Hidden → Other` bucket includes purgeable space.** macOS doesn't expose its purgeable-space figure (Time Machine local snapshots, swap, sleepimage, system caches) through any shell command we can portably call from Java, so we don't break it out as its own row. It's lumped into `Other` along with filesystem overhead, the Spotlight index, and other users' home folders. To investigate the contents directly: `tmutil listlocalsnapshots /` lists Time Machine snapshots, `diskutil apfs listSnapshots /System/Volumes/Data` lists *all* snapshots (including third-party), and Disk Utility's "First Aid" can flag filesystem errors that inflate this bucket.
+
 ## Troubleshooting
 
 - **`mvn javafx:run` complains about missing JavaFX modules**: ensure `JAVA_HOME` points to a JDK 25+, and that Maven is using it (`mvn -v`). The plugin downloads JavaFX automatically.

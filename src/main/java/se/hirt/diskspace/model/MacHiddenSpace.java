@@ -82,13 +82,15 @@ public final class MacHiddenSpace {
             + "user-deletable from a file browser.";
 
     public static final String DESC_SNAPSHOTS =
-            "Local Time Machine snapshots — short-lived copies of the disk that let you roll back recent "
-            + "changes when a backup drive isn't connected. macOS deletes them automatically when space "
-            + "runs low.";
+            "On-disk snapshots — short-lived copies of the volume that let you roll back recent changes. "
+            + "Includes Time Machine local snapshots (which macOS deletes automatically when space runs "
+            + "low) and any third-party snapshots, e.g. from Carbon Copy Cloner.";
 
     public static final String DESC_OTHER =
-            "APFS bookkeeping and small caches that aren't attributable to any single file. macOS reclaims "
-            + "most of this automatically when the disk fills up.";
+            "A catch-all for bytes the OS uses but doesn't attribute to any single scannable file. "
+            + "Typically includes purgeable space (Time Machine local snapshots, swap files, sleepimage, "
+            + "and system caches macOS reclaims automatically), filesystem overhead (a few GB is normal), "
+            + "the Spotlight index, and other users' home folders if you have any.";
 
     public static final String DESC_NOT_ACCESSIBLE =
             "Folders the scanner couldn't read. Granting DiskSpace Full Disk Access in System Settings "
@@ -205,11 +207,19 @@ public final class MacHiddenSpace {
 
     // ---- snapshots ---------------------------------------------------------
 
-    private static final Pattern TMUTIL_DATE = Pattern.compile("^\\s*com\\.apple\\.TimeMachine\\.");
+    /** Matches the {@code (N found)} count emitted by {@code diskutil apfs listSnapshots}. */
+    private static final Pattern SNAPSHOT_COUNT = Pattern.compile("\\((\\d+) found\\)");
 
+    /**
+     * Counts user-visible local APFS snapshots on the Data volume. Uses {@code diskutil apfs
+     * listSnapshots} rather than {@code tmutil listlocalsnapshots} because the latter only
+     * surfaces Time Machine snapshots — third-party tools (Carbon Copy Cloner, etc.) create
+     * their own snapshots that {@code tmutil} ignores but {@code diskutil} reports.
+     */
     private static int countLocalSnapshots() {
         try {
-            ProcessBuilder pb = new ProcessBuilder("tmutil", "listlocalsnapshots", "/");
+            ProcessBuilder pb = new ProcessBuilder("diskutil", "apfs", "listSnapshots",
+                    "/System/Volumes/Data");
             pb.redirectErrorStream(true);
             Process p = pb.start();
             int count = 0;
@@ -217,7 +227,12 @@ public final class MacHiddenSpace {
                     new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = r.readLine()) != null) {
-                    if (TMUTIL_DATE.matcher(line).find()) count++;
+                    Matcher m = SNAPSHOT_COUNT.matcher(line);
+                    // Multiple "(N found)" sections can appear if diskutil prints per-volume
+                    // groupings; sum across all of them.
+                    while (m.find()) {
+                        try { count += Integer.parseInt(m.group(1)); } catch (NumberFormatException ignore) {}
+                    }
                 }
             }
             if (!p.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) {

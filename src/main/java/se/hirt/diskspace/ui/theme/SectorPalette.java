@@ -52,6 +52,15 @@ public final class SectorPalette {
      *  with the regular palette so users can spot it at a glance. */
     private static final Color HIDDEN_BASE = Color.web("#6E7280");
 
+    /** Dark grey for the "Smaller files" aggregate sector — distinct from {@link #HIDDEN_BASE}
+     *  and from the regular palette, so it reads as "uninteresting bulk" at a glance. */
+    private static final Color SMALLER_FILES_BASE = Color.web("#3D4148");
+
+    /** Medium grey for large-file sectors (single files ≥ 1 GB). Lighter than
+     *  {@link #SMALLER_FILES_BASE} and {@link #HIDDEN_BASE} so it's clearly distinguishable,
+     *  but still neutral so it doesn't compete with real folder colors. */
+    private static final Color LARGE_FILE_BASE = Color.web("#8E8E93");
+
     private SectorPalette() {}
 
     public static Color forName(String name, int depth) {
@@ -59,10 +68,26 @@ public final class SectorPalette {
             double factor = Math.max(0.55, 1.0 - depth * 0.08);
             return HIDDEN_BASE.deriveColor(0, 1.0, factor, 1.0);
         }
+        if ("Smaller files".equals(name)) {
+            double factor = Math.max(0.55, 1.0 - depth * 0.08);
+            return SMALLER_FILES_BASE.deriveColor(0, 1.0, factor, 1.0);
+        }
         int hash = name == null ? 0 : name.hashCode();
         Color base = BASE[Math.floorMod(hash, BASE.length)];
         // Slightly darken with depth so deeper rings recede visually.
         double factor = Math.max(0.55, 1.0 - depth * 0.08);
         return base.deriveColor(0, 1.0, factor, 1.0);
+    }
+
+    /** Color for a file-sector node: {@code "Smaller files"} aggregates pick up their dark
+     *  grey via {@link #forName}; everything else (i.e. an individual large file) gets a
+     *  neutral medium grey rather than a hashed-by-name palette color, so files don't
+     *  compete visually with folders. */
+    public static Color forFileSector(String name, int depth) {
+        if ("Smaller files".equals(name)) {
+            return forName(name, depth);
+        }
+        double factor = Math.max(0.55, 1.0 - depth * 0.08);
+        return LARGE_FILE_BASE.deriveColor(0, 1.0, factor, 1.0);
     }
 }
