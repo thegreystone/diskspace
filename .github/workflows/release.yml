@@ -66,6 +66,15 @@ jobs:
           fi
           cp "$SRC" "$DST"
 
+      - name: Build Windows installer (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp "target/diskspace-${VERSION}-${{ matrix.suffix }}.exe" installer/diskspace.exe
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "//DMyVersion=${VERSION}" installer/diskspace.iss
+          cp "installer/Output/diskspace-${VERSION}-${{ matrix.suffix }}-setup.exe" target/
+
       - name: Import signing certificate (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -128,6 +137,7 @@ jobs:
           path: |
             target/diskspace-*-${{ matrix.suffix }}
             target/diskspace-*-${{ matrix.suffix }}.exe
+            target/diskspace-*-${{ matrix.suffix }}-setup.exe
             target/diskspace-*-${{ matrix.suffix }}.dmg
 
   # ── Create GitHub release with all artifacts ─────────────────────────
