@@ -19,16 +19,19 @@ Working preview. Sunburst with live scan-as-you-watch, animated drill-down, brea
 
 ### Option A: Native Binary (recommended)
 
-No Java installation required. Download the binary for your platform from the Releases page (TBD):
+No Java installation required. Download the binary for your platform from the [Releases page](https://github.com/thegreystone/diskspace/releases/latest):
 
 | Platform | File |
 |----------|------|
 | Linux x86_64 | `diskspace-<version>-linux-x86_64` |
-| Linux aarch64 | `diskspace-<version>-linux-aarch64` |
-| macOS Apple Silicon | `diskspace-<version>-macos-aarch64` |
-| Windows x86_64 | `diskspace-<version>-windows-x86_64.exe` |
+| macOS Apple Silicon | `diskspace-<version>-macos-aarch64.dmg` |
+| Windows x86_64 (installer, recommended) | `diskspace-<version>-windows-x86_64-setup.exe` |
+| Windows x86_64 (standalone) | `diskspace-<version>-windows-x86_64.exe` |
+
+The Windows installer (Inno Setup) registers DiskSpace under Programs & Features, creates a Start Menu entry, and offers an optional desktop shortcut. The standalone `.exe` is a single-file binary you can drop anywhere and run — no install, no registry, nothing to uninstall. Both are produced from the same GraalVM-native binary; the installer is just smaller on disk thanks to LZMA2 compression.
 
 On Linux, make the binary executable: `chmod +x diskspace-*-linux-*`.
+On macOS, open the `.dmg` and drag DiskSpace into Applications.
 
 ### Option B: Run from source (dev)
 
