@@ -7,13 +7,9 @@
 [![GraalVM Native](https://img.shields.io/badge/GraalVM-native--image-orange)](https://www.graalvm.org/)
 [![License: BSD-3](https://img.shields.io/badge/License-BSD--3-green)](https://opensource.org/licenses/BSD-3-Clause)
 
-A cross-platform disk space visualizer using a sunburst view of where your space went, deliberately minimal feature surface, distributed as native binaries as well as runnable with Java.
+A cross-platform disk space visualizer providing a sunburst view of where your space went. Distributed as native binaries as well as runnable with Java.
 
 ![DiskSpace sunburst view, drilled into Program Files](docs/screenshots/diskspace.png)
-
-## Status
-
-Working preview. Sunburst with live scan-as-you-watch, animated drill-down, breadcrumb navigation, and a folders-and-files table are all in. Optional staged deletion (move to Trash where supported, otherwise permanent delete) is gated behind an explicit confirmation dialog; on macOS, a one-time prompt offers to grant Full Disk Access so protected locations like Mail and Messages get scanned. The native build pipeline is verified on Windows and macOS (Oracle GraalVM 21 LTS); Linux builds in CI but hasn't been smoke-tested locally yet.
 
 ## Quick Start
 
@@ -28,7 +24,7 @@ No Java installation required. Download the binary for your platform from the [R
 | Windows x86_64 (installer, recommended) | `diskspace-<version>-windows-x86_64-setup.exe` |
 | Windows x86_64 (standalone) | `diskspace-<version>-windows-x86_64.exe` |
 
-The Windows installer (Inno Setup) registers DiskSpace under Programs & Features, creates a Start Menu entry, and offers an optional desktop shortcut. The standalone `.exe` is a single-file binary you can drop anywhere and run — no install, no registry, nothing to uninstall. Both are produced from the same GraalVM-native binary; the installer is just smaller on disk thanks to LZMA2 compression.
+The Windows installer registers DiskSpace under Programs & Features, creates a Start Menu entry, and offers an optional desktop shortcut. The standalone `.exe` is a single-file binary you can drop anywhere and run — no install, no registry, nothing to uninstall. Both are produced from the same GraalVM-native binary; the installer is just smaller on disk thanks to LZMA2 compression.
 
 On Linux, make the binary executable: `chmod +x diskspace-*-linux-*`.
 On macOS, open the `.dmg` and drag DiskSpace into Applications.
