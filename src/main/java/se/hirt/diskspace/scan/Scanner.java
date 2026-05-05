@@ -29,6 +29,7 @@
 package se.hirt.diskspace.scan;
 
 import se.hirt.diskspace.model.DirectoryNode;
+import se.hirt.diskspace.model.Volume;
 
 import java.nio.file.Path;
 
@@ -42,6 +43,15 @@ public interface Scanner {
 	void scan(Path root, ScanListener listener);
 
 	void cancel();
+
+	/**
+	 * Returns the scanner used for a volume. Currently a single implementation ({@link ParallelDirectoryScanner}) regardless of profile —
+	 * the parallel scanner is fast on SSD/NVMe/network and acceptable on HDD given OS-level I/O reordering, so the previous sequential
+	 * fallback was retired. Kept as a factory so a future override (system property, settings toggle) has one place to land.
+	 */
+	static Scanner forVolume(Volume volume) {
+		return new ParallelDirectoryScanner();
+	}
 
 	interface ScanListener {
 		/** Called once, before scanning begins, with the live tree root. */

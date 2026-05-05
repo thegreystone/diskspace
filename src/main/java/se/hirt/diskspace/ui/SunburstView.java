@@ -54,7 +54,6 @@ import se.hirt.diskspace.model.DirectoryNode;
 import se.hirt.diskspace.model.MacHiddenSpace;
 import se.hirt.diskspace.model.Volume;
 import se.hirt.diskspace.scan.Scanner;
-import se.hirt.diskspace.scan.WalkFileTreeScanner;
 import se.hirt.diskspace.ui.theme.ColorScheme;
 import se.hirt.diskspace.ui.theme.SectorPalette;
 
@@ -146,7 +145,7 @@ public final class SunburstView {
 	 */
 	private final java.util.Set<DirectoryNode> finalizedTopLevels = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
-	private final Scanner scanner = new WalkFileTreeScanner();
+	private final Scanner scanner;
 	private final AnimationTimer liveTicker;
 	private long lastTickNanos;
 
@@ -163,6 +162,7 @@ public final class SunburstView {
 	public SunburstView(Volume target, ColorScheme scheme) {
 		this.target = target;
 		this.scheme = scheme;
+		this.scanner = Scanner.forVolume(target);
 
 		canvas = new Canvas();
 		Pane canvasHolder = new Pane(canvas);
@@ -1050,7 +1050,12 @@ public final class SunburstView {
 		}
 		entries.addAll(currentFiles);
 		// Folders first (sorted by size desc with Hidden pinned last), then files
-		// (sorted by size desc).
+		// (sorted by size desc). Snapshot sizes so the comparator stays consistent
+		// under the parallel scanner's concurrent writers — currentSize() reads
+		// totalBytes() on directory entries, which can drift mid-sort.
+		java.util.IdentityHashMap<Entry, Long> entrySizes = new java.util.IdentityHashMap<>(entries.size());
+		for (Entry e : entries)
+			entrySizes.put(e, e.currentSize());
 		entries.sort((a, b) -> {
 			int byKind = Boolean.compare(b.isDirectory(), a.isDirectory());
 			if (byKind != 0)
@@ -1059,13 +1064,17 @@ public final class SunburstView {
 			boolean bHidden = (b.dirNode() == hiddenNode);
 			if (aHidden != bHidden)
 				return aHidden ? 1 : -1;
-			return Long.compare(b.currentSize(), a.currentSize());
+			return Long.compare(entrySizes.get(b), entrySizes.get(a));
 		});
 
 		if (!sameOrder(tableItems, entries)) {
 			tableItems.setAll(entries);
-		} else if (scanning) {
-			// Same items in same positions; live size values still need to repaint.
+		} else {
+			// Same items in same positions; force a cell repaint so live size and state
+			// changes (e.g. SCANNING → DONE between live ticks) become visible. The
+			// `scanning` guard that used to be here missed the last-frame race in the
+			// parallel scanner: a node finishing between the liveTicker stopping and
+			// onComplete running would otherwise stay rendered as "<scanning>" forever.
 			table.refresh();
 		}
 	}
@@ -1096,7 +1105,7 @@ public final class SunburstView {
 	/**
 	 * Files at or above this size become their own sunburst sector. Smaller files are summed per directory and surface as a single "Smaller
 	 * files" sector when the sum itself crosses the same threshold. 1 GB decimal — must match
-	 * {@code WalkFileTreeScanner.LARGE_FILE_THRESHOLD_BYTES}.
+	 * {@code ParallelDirectoryScanner.LARGE_FILE_THRESHOLD_BYTES}.
 	 */
 	private static final long FILE_SECTOR_THRESHOLD = 1_000_000_000L;
 
@@ -1377,15 +1386,27 @@ public final class SunburstView {
 	/**
 	 * Sort comparator that puts {@link #hiddenNode} last and otherwise sorts by size desc. Used wherever scanRoot's children are ordered so
 	 * Hidden never moves position as the scan progresses or as users navigate.
+	 * <p>{@code sizes} must contain a frozen snapshot of {@code totalBytes()} for every node passed to the comparator. Reading the live
+	 * {@link DirectoryNode#totalBytes()} inside the comparator would cause TimSort to throw
+	 * {@code "Comparison method violates its general contract"} during a parallel scan: the merge passes invoke the comparator multiple
+	 * times for the same pair, and concurrent writers can shift the values between calls so transitivity breaks.
 	 */
-	private Comparator<DirectoryNode> hiddenLastSizeDesc() {
+	private Comparator<DirectoryNode> hiddenLastSizeDesc(java.util.Map<DirectoryNode, Long> sizes) {
 		return (a, b) -> {
 			boolean aHidden = (a == hiddenNode);
 			boolean bHidden = (b == hiddenNode);
 			if (aHidden != bHidden)
 				return aHidden ? 1 : -1;
-			return Long.compare(b.totalBytes(), a.totalBytes());
+			return Long.compare(sizes.get(b), sizes.get(a));
 		};
+	}
+
+	/** Frozen-size snapshot of {@code nodes}. See {@link #hiddenLastSizeDesc} for the why. */
+	private static java.util.IdentityHashMap<DirectoryNode, Long> snapshotSizes(java.util.Collection<DirectoryNode> nodes) {
+		java.util.IdentityHashMap<DirectoryNode, Long> m = new java.util.IdentityHashMap<>(nodes.size());
+		for (DirectoryNode n : nodes)
+			m.put(n, n.totalBytes());
+		return m;
 	}
 
 	private int depthFromScanRoot(DirectoryNode node) {
@@ -1400,7 +1421,9 @@ public final class SunburstView {
 		if (parent == null)
 			return 0;
 		List<DirectoryNode> sorted = new ArrayList<>(parent.children());
-		sorted.sort(Comparator.comparingLong(DirectoryNode::totalBytes).reversed());
+		// Snapshot sizes so the comparator is consistent under concurrent writers.
+		java.util.IdentityHashMap<DirectoryNode, Long> sizes = snapshotSizes(sorted);
+		sorted.sort((a, b) -> Long.compare(sizes.get(b), sizes.get(a)));
 		return Math.max(0, sorted.indexOf(node));
 	}
 
@@ -1447,14 +1470,19 @@ public final class SunburstView {
 			return;
 
 		List<DirectoryNode> ordered = new ArrayList<>(parent.children());
+		// Snapshot child sizes before sorting so the comparator stays consistent under
+		// the parallel scanner's concurrent writers, and so the layout loop's frac
+		// values match the order we just sorted by (no late drift between sort and
+		// render that could cause sectors to render out of size order).
+		java.util.IdentityHashMap<DirectoryNode, Long> sizes = snapshotSizes(ordered);
 		// Hidden always lands at the end of scanRoot's children regardless of size — it's
 		// less actionable than real folders and a stable position is more useful than a
 		// size-correct one.
-		ordered.sort(hiddenLastSizeDesc());
+		ordered.sort(hiddenLastSizeDesc(sizes));
 
 		double a = startDeg;
 		for (DirectoryNode child : ordered) {
-			double frac = child.totalBytes() / (double) total;
+			double frac = sizes.get(child) / (double) total;
 			double childSweep = sweepDeg * frac;
 			if (childSweep < MIN_VISIBLE_SWEEP_DEG) {
 				a += childSweep;

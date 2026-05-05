@@ -15,11 +15,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    suffix: linux-x86_64,   exe: DiskSpace      }
+          - { os: ubuntu-latest,    suffix: linux-x86_64,   exe: DiskSpace }
           # linux-aarch64 dropped for 0.1.0: OpenJFX 21.x doesn't publish that classifier
           # on Maven Central. Re-enable when we bump JavaFX past 21.x.
-          - { os: macos-latest,     suffix: macos-aarch64,  exe: DiskSpace      }
-          - { os: windows-latest,   suffix: windows-x86_64, exe: DiskSpace.exe  }
+          - { os: macos-latest,     suffix: macos-aarch64,  exe: DiskSpace }
+          - { os: windows-latest,   suffix: windows-x86_64, exe: DiskSpace.exe }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -154,7 +154,7 @@ jobs:
 
   # ── Create GitHub release with all artifacts ─────────────────────────
   release:
-    needs: [native]
+    needs: [ native ]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

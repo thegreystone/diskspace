@@ -29,33 +29,19 @@
 package se.hirt.diskspace.model;
 
 /**
- * Physical-storage classification used by the scanner to choose between sequential and parallel walk strategies. {@link #HDD} is the only
- * profile that should force sequential scanning — everything else (including {@link #UNKNOWN}) benefits from, or is neutral to, parallel
- * I/O.
+ * Physical-storage classification surfaced in the picker so users can see at a glance what kind of media each volume sits on.
  */
 public enum StorageProfile {
-	/** Solid-state local storage (SATA SSD, NVMe, eMMC). Parallel-friendly. */
+	/** Solid-state local storage (SATA SSD, NVMe, eMMC). */
 	SSD,
-	/** Spinning magnetic disk. Parallel reads cause seek thrashing — scan sequentially. */
+	/** Spinning magnetic disk. */
 	HDD,
-	/** Remote filesystem (SMB, NFS, sshfs). Latency-bound; parallelism helps a lot. */
+	/** Remote filesystem (SMB, NFS, sshfs). */
 	NETWORK,
-	/**
-	 * Composite volume spanning physical disks of different types (RAID, Storage Spaces, ZFS/btrfs pools). Treated as parallel-friendly:
-	 * the underlying media may include an HDD, but the logical-volume layer typically reorders requests well enough that parallel readdir
-	 * wins on net.
-	 */
+	/** Composite volume spanning physical disks of different types (RAID, Storage Spaces, ZFS/btrfs pools). */
 	MIXED,
-	/**
-	 * Probe failed, was unsupported on this platform, or returned an ambiguous result. Treated as parallel-friendly because most ambiguous
-	 * cases (network mounts, virtual disks) benefit from parallelism.
-	 */
+	/** Probe failed, was unsupported on this platform, or returned an ambiguous result. */
 	UNKNOWN;
-
-	/** Whether the scanner should prefer parallel walking on this profile. */
-	public boolean parallelFriendly() {
-		return this != HDD;
-	}
 
 	/**
 	 * Short label for inline UI display. {@link #UNKNOWN} renders as empty string so the picker doesn't show a meaningless tag for fuzzy
@@ -74,11 +60,11 @@ public enum StorageProfile {
 	/** Longer explanation for tooltip display. */
 	public String tooltipDescription() {
 		return switch (this) {
-			case SSD -> "Solid-state storage. DiskSpace will scan in parallel for speed.";
-			case HDD -> "Spinning hard disk. DiskSpace will scan sequentially to avoid head thrashing.";
-			case NETWORK -> "Network filesystem. DiskSpace will scan in parallel — round-trip latency dominates.";
-			case MIXED -> "Composite volume (RAID / pool). DiskSpace will scan in parallel.";
-			case UNKNOWN -> "Storage type couldn't be determined. DiskSpace will scan in parallel.";
+			case SSD -> "Solid-state storage.";
+			case HDD -> "Spinning hard disk.";
+			case NETWORK -> "Network filesystem.";
+			case MIXED -> "Composite volume (RAID / pool).";
+			case UNKNOWN -> "Storage type couldn't be determined.";
 		};
 	}
 }

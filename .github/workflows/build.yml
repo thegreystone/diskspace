@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    suffix: linux-x86_64  }
+          - { os: ubuntu-latest,    suffix: linux-x86_64 }
           # linux-aarch64 dropped for 0.1.0: OpenJFX 21.x doesn't publish that classifier
           # on Maven Central. Re-enable when we bump JavaFX past 21.x.
           - { os: macos-latest,     suffix: macos-aarch64 }
