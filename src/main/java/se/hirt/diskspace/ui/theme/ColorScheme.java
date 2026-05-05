@@ -30,45 +30,22 @@ package se.hirt.diskspace.ui.theme;
 
 import javafx.scene.paint.Color;
 
-public record ColorScheme(
-        Color background,
-        Color surface,
-        Color textPrimary,
-        Color textMuted,
-        Color accent,
-        Color capacityTrack,
-        Color capacityFillLow,
-        Color capacityFillMid,
-        Color capacityFillHigh,
-        String stylesheet) {
+public record ColorScheme(Color background, Color surface, Color textPrimary, Color textMuted, Color accent, Color capacityTrack,
+						  Color capacityFillLow, Color capacityFillMid, Color capacityFillHigh, String stylesheet) {
 
-    public static final ColorScheme DARK = new ColorScheme(
-            Color.web("#000000"),
-            Color.web("#121214"),
-            Color.web("#EDEDED"),
-            Color.web("#7A7A82"),
-            Color.web("#7AD3D9"),
-            Color.web("#1F1F23"),
-            Color.web("#5BC9A7"),
-            Color.web("#E0B650"),
-            Color.web("#D9594E"),
-            "/se/hirt/diskspace/ui/theme/dark.css");
+	public static final ColorScheme DARK = new ColorScheme(Color.web("#000000"), Color.web("#121214"), Color.web("#EDEDED"),
+			Color.web("#7A7A82"), Color.web("#7AD3D9"), Color.web("#1F1F23"), Color.web("#5BC9A7"), Color.web("#E0B650"),
+			Color.web("#D9594E"), "/se/hirt/diskspace/ui/theme/dark.css");
 
-    public static final ColorScheme LIGHT = new ColorScheme(
-            Color.web("#FFFFFF"),
-            Color.web("#F4F4F5"),
-            Color.web("#1A1A1A"),
-            Color.web("#7A7A82"),
-            Color.web("#1F8E96"),
-            Color.web("#E5E5E8"),
-            Color.web("#3FA585"),
-            Color.web("#C99030"),
-            Color.web("#C0382E"),
-            null);
+	public static final ColorScheme LIGHT = new ColorScheme(Color.web("#FFFFFF"), Color.web("#F4F4F5"), Color.web("#1A1A1A"),
+			Color.web("#7A7A82"), Color.web("#1F8E96"), Color.web("#E5E5E8"), Color.web("#3FA585"), Color.web("#C99030"),
+			Color.web("#C0382E"), null);
 
-    public Color capacityFillFor(double fraction) {
-        if (fraction < 0.70) return capacityFillLow();
-        if (fraction < 0.90) return capacityFillMid();
-        return capacityFillHigh();
-    }
+	public Color capacityFillFor(double fraction) {
+		if (fraction < 0.70)
+			return capacityFillLow();
+		if (fraction < 0.90)
+			return capacityFillMid();
+		return capacityFillHigh();
+	}
 }

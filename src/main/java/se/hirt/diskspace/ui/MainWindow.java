@@ -28,8 +28,6 @@
  */
 package se.hirt.diskspace.ui;
 
-import java.nio.file.Path;
-
 import javafx.scene.control.Label;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
@@ -41,79 +39,72 @@ import se.hirt.diskspace.ui.theme.ColorScheme;
 
 public final class MainWindow {
 
-    private final BorderPane root;
-    private final TabPane tabs;
-    private final ColorScheme scheme;
-    private final Tab plusTab;
+	private final BorderPane root;
+	private final TabPane tabs;
+	private final ColorScheme scheme;
+	private final Tab plusTab;
 
-    public MainWindow(ColorScheme scheme) {
-        this.scheme = scheme;
+	public MainWindow(ColorScheme scheme) {
+		this.scheme = scheme;
 
-        tabs = new TabPane();
-        tabs.setStyle(
-                "-fx-background-color: " + toCss(scheme.background()) + ";"
-                        + "-fx-tab-min-height: 28; -fx-tab-max-height: 28;");
-        tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.ALL_TABS);
+		tabs = new TabPane();
+		tabs.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";" + "-fx-tab-min-height: 28; -fx-tab-max-height: 28;");
+		tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.ALL_TABS);
 
-        plusTab = new Tab("+");
-        plusTab.setClosable(false);
-        plusTab.setContent(buildHint());
-        tabs.getTabs().add(plusTab);
+		plusTab = new Tab("+");
+		plusTab.setClosable(false);
+		plusTab.setContent(buildHint());
+		tabs.getTabs().add(plusTab);
 
-        // Selecting "+" opens a fresh picker tab and selects it.
-        tabs.getSelectionModel().selectedItemProperty().addListener((obs, oldT, newT) -> {
-            if (newT == plusTab) {
-                Tab created = openPickerTab();
-                tabs.getSelectionModel().select(created);
-            }
-        });
+		// Selecting "+" opens a fresh picker tab and selects it.
+		tabs.getSelectionModel().selectedItemProperty().addListener((obs, oldT, newT) -> {
+			if (newT == plusTab) {
+				Tab created = openPickerTab();
+				tabs.getSelectionModel().select(created);
+			}
+		});
 
-        // Start with one picker tab already open.
-        Tab first = openPickerTab();
-        tabs.getSelectionModel().select(first);
+		// Start with one picker tab already open.
+		Tab first = openPickerTab();
+		tabs.getSelectionModel().select(first);
 
-        root = new BorderPane(tabs);
-        root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
-    }
+		root = new BorderPane(tabs);
+		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+	}
 
-    public Region getRoot() {
-        return root;
-    }
+	public Region getRoot() {
+		return root;
+	}
 
-    private Tab openPickerTab() {
-        Tab tab = new Tab("New disk");
-        PickerView picker = new PickerView(scheme, v -> swapToSunburst(tab, v));
-        tab.setContent(picker.getRoot());
-        // Insert before the "+" tab so "+" stays last.
-        int insertAt = tabs.getTabs().indexOf(plusTab);
-        tabs.getTabs().add(insertAt, tab);
-        return tab;
-    }
+	private Tab openPickerTab() {
+		Tab tab = new Tab("New disk");
+		PickerView picker = new PickerView(scheme, v -> swapToSunburst(tab, v));
+		tab.setContent(picker.getRoot());
+		// Insert before the "+" tab so "+" stays last.
+		int insertAt = tabs.getTabs().indexOf(plusTab);
+		tabs.getTabs().add(insertAt, tab);
+		return tab;
+	}
 
-    private void swapToSunburst(Tab tab, Volume v) {
-        tab.setText(v.displayName());
-        if (!v.deviceName().equals(v.displayName())) {
-            tab.setTooltip(new javafx.scene.control.Tooltip(v.deviceName()));
-        }
-        SunburstView sb = new SunburstView(v, scheme);
-        tab.setContent(sb.getRoot());
-    }
+	private void swapToSunburst(Tab tab, Volume v) {
+		tab.setText(v.displayName());
+		if (!v.deviceName().equals(v.displayName())) {
+			tab.setTooltip(new javafx.scene.control.Tooltip(v.deviceName()));
+		}
+		SunburstView sb = new SunburstView(v, scheme);
+		tab.setContent(sb.getRoot());
+	}
 
-    private Region buildHint() {
-        Label hint = new Label("Click + to open a disk picker.");
-        hint.setStyle(
-                "-fx-text-fill: " + toCss(scheme.textMuted()) + ";"
-                        + "-fx-padding: 36;");
-        BorderPane p = new BorderPane(hint);
-        p.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
-        return p;
-    }
+	private Region buildHint() {
+		Label hint = new Label("Click + to open a disk picker.");
+		hint.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-padding: 36;");
+		BorderPane p = new BorderPane(hint);
+		p.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+		return p;
+	}
 
-    private static String toCss(Color c) {
-        return String.format("rgba(%d,%d,%d,%.3f)",
-                (int) Math.round(c.getRed() * 255),
-                (int) Math.round(c.getGreen() * 255),
-                (int) Math.round(c.getBlue() * 255),
-                c.getOpacity());
-    }
+	private static String toCss(Color c) {
+		return String.format("rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255), (int) Math.round(c.getGreen() * 255),
+				(int) Math.round(c.getBlue() * 255), c.getOpacity());
+	}
 }
