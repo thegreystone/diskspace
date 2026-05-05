@@ -1893,11 +1893,14 @@ public final class SunburstView {
     }
 
     private Label separatorLabel() {
-        // Use ❯ (U+276F) — a slightly heavier chevron than › so it reads at small sizes
-        // even at reduced opacity against the black background.
-        Label l = new Label("❯");
+        // Use › (U+203A) — Latin punctuation, present in default fonts on all platforms.
+        // Avoid ❯ (U+276F, Dingbats) — JavaFX falls back to a font on macOS that
+        // renders it as horizontal bars rather than a chevron. Bump size + weight to
+        // recover visual heft against the muted color.
+        Label l = new Label("›");
         l.setStyle("-fx-text-fill: " + css(scheme.textMuted()) + ";"
-                + "-fx-font-size: 10px; -fx-padding: 0 2 0 2;");
+                + "-fx-font-size: 14px; -fx-font-weight: bold;"
+                + "-fx-padding: 0 2 0 2;");
         return l;
     }
 
