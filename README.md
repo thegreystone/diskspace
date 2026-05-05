@@ -1,5 +1,7 @@
 # DiskSpace
 
+[![Build](https://github.com/thegreystone/diskspace/actions/workflows/build.yml/badge.svg)](https://github.com/thegreystone/diskspace/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/thegreystone/diskspace)](https://github.com/thegreystone/diskspace/releases/latest)
 [![Java 21 LTS](https://img.shields.io/badge/Java-21%20LTS-blue)](https://adoptium.net/)
 [![JavaFX](https://img.shields.io/badge/JavaFX-21-blueviolet)](https://openjfx.io/)
 [![GraalVM Native](https://img.shields.io/badge/GraalVM-native--image-orange)](https://www.graalvm.org/)
