@@ -43,7 +43,7 @@ mvn javafx:run
 |-----------|------------------------------------------------------------------------------|
 | `←` / `↑` | Go up one level. Stops at the scan root.                                     |
 | `→` / `↓` | Go forward. Replay a step you went up from. Stops when there's nothing left. |
-| `E`       | Open the hovered sector (or the current view) in your system file explorer.  |
+| `E` / `F` | Open the hovered sector (or the current view) in your system file explorer.  |
 | `Del`     | Stage selected rows (or the current section) for deletion. Press again on a staged row to unstage. |
 | `R`       | Re-scan the current disk from scratch.                                       |
 | `U`       | Toggle size units between decimal (GB, default) and binary (GiB).            |

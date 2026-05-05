@@ -261,7 +261,7 @@ public final class SunburstView {
         root.addEventHandler(KeyEvent.KEY_PRESSED, e -> {
             if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown()) return;
             switch (e.getCode()) {
-                case E -> {
+                case E, F -> {
                     openInExplorer();
                     e.consume();
                 }
@@ -1248,7 +1248,7 @@ public final class SunburstView {
         animStartNanos = System.nanoTime();
         animating = true;
         animTimer.start();
-        // Make sure the root has focus so the 'E' shortcut works after a drill.
+        // Make sure the root has focus so keyboard shortcuts work after a drill.
         root.requestFocus();
     }
 
@@ -1919,9 +1919,15 @@ public final class SunburstView {
         DirectoryNode target = (hoverNode != null) ? hoverNode : viewRoot;
         if (target == null || target.path() == null) return;
         try {
-            java.awt.Desktop.getDesktop().open(target.path().toFile());
+            if (isMac()) {
+                // Desktop.open() from JavaFX on macOS silently fails — AWT and JavaFX
+                // contend for the AppKit main thread. Shell out to `open` instead.
+                new ProcessBuilder("open", target.path().toString()).start();
+            } else {
+                java.awt.Desktop.getDesktop().open(target.path().toFile());
+            }
         } catch (Exception ignored) {
-            // No fatal handling; if Desktop isn't supported on this platform, do nothing.
+            // No fatal handling; if the platform doesn't support it, do nothing.
         }
     }
 
