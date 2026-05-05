@@ -95,7 +95,13 @@ public final class SunburstView {
             java.util.prefs.Preferences.userNodeForPackage(SunburstView.class);
     private static final String PREF_FDA_SKIP = "fda.prompt.skip";
 
-    private static final int MAX_DEPTH = 6;
+    /** First {@value} rings render at full thickness ({@code normalW}); after that, up to
+     *  {@link #THIN_RINGS} additional rings are squeezed in at {@link #THIN_RING_FACTOR} of
+     *  the normal width so deep file structure stays visible without dominating the layout. */
+    private static final int NORMAL_RINGS = 5;
+    private static final int THIN_RINGS = 4;
+    private static final int MAX_DEPTH = NORMAL_RINGS + THIN_RINGS;
+    private static final double THIN_RING_FACTOR = 0.2;
     private static final double HUB_RADIUS = 78;
     private static final double MIN_VISIBLE_SWEEP_DEG = 0.6;
     private static final long LIVE_REFRESH_INTERVAL_NANOS = 100_000_000L; // 10 Hz
@@ -138,6 +144,26 @@ public final class SunburstView {
     private String progressPath;
     private long lastPermDeniedCount;
     private volatile MacHiddenSpace.HiddenSpace cachedHidden;
+    /** The synthetic "Hidden" node attached as a child of scanRoot. Held so layout and
+     *  table sorters can pin it to the end regardless of size. Null until injected. */
+    private volatile DirectoryNode hiddenNode;
+
+    /** Memoized sunburst color per node. Family root (immediate child of scanRoot) gets a
+     *  palette pick by name; deeper descendants inherit the parent's color, lightened and
+     *  hue-shifted by sibling rank + depth so the largest-child trunk reads as one ribbon
+     *  while side branches fade outward. Cleared on every (re)scan. */
+    private final java.util.Map<DirectoryNode, Color> colorCache = new java.util.IdentityHashMap<>();
+
+    /** Palette index claimed by each top-level family (immediate child of scanRoot).
+     *  Allocated lazily with collision avoidance so two top-level siblings can't end up on
+     *  the same color even when their names hash to the same bucket. */
+    private final java.util.Map<DirectoryNode, Integer> topLevelPaletteIdx = new java.util.IdentityHashMap<>();
+
+    /** Top-level folders whose scan has completed and whose descendant colors have been
+     *  invalidated against final ranks. Walked on every live tick so colors stabilize
+     *  per-folder as each finishes, instead of all flipping at the end of the scan. */
+    private final java.util.Set<DirectoryNode> finalizedTopLevels =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
     private final Scanner scanner = new WalkFileTreeScanner();
     private final AnimationTimer liveTicker;
@@ -207,6 +233,7 @@ public final class SunburstView {
             public void handle(long now) {
                 if (now - lastTickNanos < LIVE_REFRESH_INTERVAL_NANOS) return;
                 lastTickNanos = now;
+                stabilizeFinalizedTopLevels();
                 refreshTable();
                 if (!stagedItems.isEmpty()) {
                     stagingTable.refresh();
@@ -315,7 +342,7 @@ public final class SunburstView {
                     // Large file or "Smaller files" aggregate — grey swatch (matches the
                     // sunburst sector) and italic muted text so users know it isn't a
                     // drillable folder.
-                    swatch.setFill(SectorPalette.forFileSector(node.name(), 0));
+                    swatch.setFill(getNodeColor(node));
                     setGraphic(swatch);
                     setText(item);
                     setStyle("-fx-font-style: italic; -fx-text-fill: "
@@ -324,13 +351,13 @@ public final class SunburstView {
                     // Synthetic Hidden node — keep the color swatch so the row maps visually
                     // to its sunburst sector, but render the text italic muted to signal it
                     // isn't a real on-disk folder.
-                    swatch.setFill(SectorPalette.forName(node.name(), 0));
+                    swatch.setFill(getNodeColor(node));
                     setGraphic(swatch);
                     setText(item);
                     setStyle("-fx-font-style: italic; -fx-text-fill: "
                             + css(scheme.textMuted()) + ";");
                 } else if (node != null) {
-                    swatch.setFill(SectorPalette.forName(node.name(), 0));
+                    swatch.setFill(getNodeColor(node));
                     setGraphic(swatch);
                     switch (node.state()) {
                         case QUEUED -> {
@@ -382,6 +409,7 @@ public final class SunburstView {
         table.setRowFactory(tv -> new javafx.scene.control.TableRow<Entry>() {
             {
                 selectedProperty().addListener((o, a, b) -> applyRowStyle());
+                hoverProperty().addListener((o, a, b) -> applyRowStyle());
                 setOnMouseClicked(e -> {
                     if (e.getButton() == MouseButton.PRIMARY && !isEmpty()) {
                         Entry it = getItem();
@@ -408,6 +436,11 @@ public final class SunburstView {
                 String bg;
                 if (isSelected()) {
                     bg = css(scheme.accent().deriveColor(0, 1.0, 1.0, 0.30));
+                } else if (isHover() && item != null) {
+                    // Hover lands between selection and alternation in visual weight, so
+                    // the user can see exactly which row a click would target without it
+                    // being mistaken for a selected row.
+                    bg = "rgba(255,255,255,0.12)";
                 } else if (item != null && item.isDirectory()) {
                     bg = odd ? "rgba(255,255,255,0.075)" : "rgba(255,255,255,0.045)";
                 } else {
@@ -734,6 +767,10 @@ public final class SunburstView {
         lastListedRoot = null;
         lastPermDeniedCount = 0;
         cachedHidden = null;
+        hiddenNode = null;
+        colorCache.clear();
+        topLevelPaletteIdx.clear();
+        finalizedTopLevels.clear();
         currentFiles = List.of();
         tableItems.clear();
         sectors.clear();
@@ -937,6 +974,13 @@ public final class SunburstView {
         scanner.scan(target.root(), new Scanner.ScanListener() {
             @Override
             public void onStart(DirectoryNode liveRoot) {
+                // Compute Hidden up front and inject it now — its bytes (df / diskutil)
+                // don't depend on the scan walk, and pre-injecting avoids the visual jump
+                // where the rest of the chart would shrink at scan completion to make
+                // room for a sector that was always going to be there.
+                long containerUsed = Math.max(0L, target.totalBytes() - target.usableBytes());
+                cachedHidden = MacHiddenSpace.gather(target.root(), containerUsed, target.usedBytes());
+                injectHiddenInto(liveRoot);
                 Platform.runLater(() -> {
                     scanRoot = liveRoot;
                     viewRoot = liveRoot;
@@ -963,14 +1007,19 @@ public final class SunburstView {
 
             @Override
             public void onComplete(DirectoryNode result) {
-                long containerUsed = Math.max(0L, target.totalBytes() - target.usableBytes());
-                cachedHidden = MacHiddenSpace.gather(target.root(), containerUsed, target.usedBytes());
                 logScanSummary(result);
                 injectFileChildrenInto(result);
-                injectHiddenInto(result);
+                // Hidden was injected at scan start; nothing more to do for it here.
                 Platform.runLater(() -> {
                     scanning = false;
                     liveTicker.stop();
+                    // Drop colors that were memoized during the scan against stale child
+                    // sort orders — a node briefly cached as rank-0 stays cached as rank-0
+                    // until invalidated, even if siblings overtook it. Same for the
+                    // top-level palette allocation: redo it in final-size order so the
+                    // largest top-level family gets its hashed index first.
+                    colorCache.clear();
+                    topLevelPaletteIdx.clear();
                     refreshTable();
                     redraw();
                 });
@@ -1025,10 +1074,14 @@ public final class SunburstView {
             entries.add(Entry.forDir(c));
         }
         entries.addAll(currentFiles);
-        // Folders first (sorted by size desc), then files (sorted by size desc).
+        // Folders first (sorted by size desc with Hidden pinned last), then files
+        // (sorted by size desc).
         entries.sort((a, b) -> {
             int byKind = Boolean.compare(b.isDirectory(), a.isDirectory());
             if (byKind != 0) return byKind;
+            boolean aHidden = (a.dirNode() == hiddenNode);
+            boolean bHidden = (b.dirNode() == hiddenNode);
+            if (aHidden != bHidden) return aHidden ? 1 : -1;
             return Long.compare(b.currentSize(), a.currentSize());
         });
 
@@ -1112,9 +1165,11 @@ public final class SunburstView {
         MacHiddenSpace.HiddenSpace h = cachedHidden;
         if (h == null) return;
         if (h.totalBytes() <= 0 && h.localSnapshotCount() == 0 && lastPermDeniedCount == 0) return;
+        if (hiddenNode != null) return;  // already injected (e.g. at scan start)
 
         DirectoryNode hidden = new DirectoryNode(scanRootNode, "Hidden", null);
         hidden.markDone();
+        hiddenNode = hidden;
 
         DirectoryNode otherVols = new DirectoryNode(hidden, "Other volumes", null);
         otherVols.addSyntheticBytes(h.otherVolumesBytes());
@@ -1197,6 +1252,178 @@ public final class SunburstView {
         root.requestFocus();
     }
 
+    /**
+     * Color for {@code node}'s sunburst sector. Used by both the canvas drawing path and the
+     * right-pane table swatch so they stay in sync.
+     *
+     * <p>Algorithm — DaisyDisk-style family inheritance:
+     * <ul>
+     *  <li>{@code scanRoot} → hub fill (no sector color).</li>
+     *  <li>File sectors (large files, "Smaller files") → grey via
+     *      {@link SectorPalette#forFileSector}, regardless of family.</li>
+     *  <li>Family root (immediate child of {@code scanRoot}) → palette pick by name.</li>
+     *  <li>Deeper descendants → parent's color, with a small hue shift, mild saturation
+     *      pull-back, and lightening proportional to sibling rank + depth. The rank-0 child
+     *      stays nearly identical to its parent (the "trunk"); higher-rank siblings drift
+     *      lighter and slightly hue-shifted (visible as the soft halo at the rim).</li>
+     * </ul>
+     */
+    Color getNodeColor(DirectoryNode node) {
+        if (node == null || node == scanRoot) return scheme.surface();
+        Color cached = colorCache.get(node);
+        if (cached != null) return cached;
+
+        Color computed;
+        if (node.isFileSector()) {
+            int d = depthFromScanRoot(node);
+            computed = SectorPalette.forFileSector(node.name(), Math.max(0, d - 1));
+        } else if (node.parent() == scanRoot || node.parent() == null) {
+            // Family root — pick from the palette by name, with collision avoidance so two
+            // top-level siblings whose names hash to the same bucket don't render in the
+            // same color (e.g. "System" and "Applications" both hash to idx 11 on JDK 25).
+            if ("Hidden".equals(node.name())) {
+                // Hidden has its own reserved grey via SectorPalette.forName.
+                computed = SectorPalette.forName("Hidden", 0);
+            } else {
+                computed = SectorPalette.atIndex(allocateTopLevelIdx(node), 0);
+            }
+        } else {
+            // Drive lightness off how much the child shrinks relative to its parent, not off
+            // depth. A child that takes ~100% of its parent (a true "trunk" continuation)
+            // keeps the parent's color exactly — without this the color washes toward white
+            // in deep single-folder chains. Side branches with low fraction lighten and
+            // hue-shift more, which is what creates the soft halo at the rim.
+            Color parentColor = getNodeColor(node.parent());
+            int rank = sortedRank(node);
+            DirectoryNode p = node.parent();
+            long parentBytes = p.totalBytes();
+            double frac = parentBytes > 0
+                    ? Math.min(1.0, (double) node.totalBytes() / parentBytes)
+                    : 1.0;
+            double shrink = Math.max(0.0, 1.0 - frac);
+            // Trunk vs branch — two different regimes:
+            //
+            //  * Rank 0 (trunk): the largest-descendant chain. Apply a small baseline
+            //    darkening (5%) plus shrink-proportional darkening, so deep trunks visibly
+            //    deepen ring-by-ring like roots into ground, even when each step takes
+            //    ~100% of its parent. Saturation stays close to the parent's so warm
+            //    colors don't go muddy.
+            //
+            //  * Rank ≥ 1 (side branches): brightness has hard clipping at 1.0, so once
+            //    the brightFactor pushes past that, additional lightening does nothing.
+            //    Push saturation DOWN aggressively instead — that's what makes a branch
+            //    read as "pale / washed-out" relative to its parent rather than just
+            //    "still saturated yellow." Combined with the brightness lift, the result
+            //    is the cream/pastel halo at the rim.
+            double brightFactor;
+            double satFactor;
+            if (rank == 0) {
+                brightFactor = Math.max(0.65, 0.95 - shrink * 0.20);
+                satFactor = Math.max(0.88, 1.0 - shrink * 0.04);
+            } else {
+                brightFactor = Math.min(1.35, 1.0 + shrink * 0.20 + rank * 0.05);
+                satFactor = Math.max(0.30, 1.0 - shrink * 0.40 - rank * 0.04);
+            }
+            double hueShift = Math.min(20.0, rank * 5.0);
+            if (rank == 0) {
+                // Yellow-family trunks read as muddy/olive when darkened straight down. Pull
+                // the hue toward red (-8° at full shrink) so darker yellows go amber/orange
+                // — what the eye expects from "shaded yellow" in nature.
+                double pHue = parentColor.getHue();
+                if (pHue >= 30 && pHue <= 90) {
+                    hueShift -= shrink * 8.0;
+                }
+            }
+            computed = parentColor.deriveColor(hueShift, satFactor, brightFactor, 1.0);
+        }
+        colorCache.put(node, computed);
+        return computed;
+    }
+
+    /** Returns the palette index this top-level family will use, allocating on first access.
+     *  Starts from {@code name.hashCode() % paletteSize} and walks forward to the first
+     *  index not already claimed by a previously-allocated sibling — so two top-level
+     *  siblings whose names happen to hash to the same bucket can't render identical. */
+    private int allocateTopLevelIdx(DirectoryNode node) {
+        Integer cached = topLevelPaletteIdx.get(node);
+        if (cached != null) return cached;
+        int n = SectorPalette.paletteSize();
+        java.util.Set<Integer> used = new java.util.HashSet<>(topLevelPaletteIdx.values());
+        int idx = Math.floorMod(node.name().hashCode(), n);
+        int tries = 0;
+        while (used.contains(idx) && tries < n) {
+            idx = (idx + 1) % n;
+            tries++;
+        }
+        topLevelPaletteIdx.put(node, idx);
+        return idx;
+    }
+
+    /**
+     * Per-tick: detect any top-level folders that have just transitioned to {@code DONE}
+     * and drop their descendants' cached colors. The next render re-derives those colors
+     * against the now-final sort order, so per-folder colors stabilize *as that folder
+     * finishes* rather than all flipping at the very end of the scan.
+     *
+     * <p>The top-level node itself is left in the cache because its color is hash-based via
+     * {@link #allocateTopLevelIdx}, not rank-based — it doesn't shift during the scan.
+     */
+    private void stabilizeFinalizedTopLevels() {
+        if (scanRoot == null) return;
+        for (DirectoryNode c : scanRoot.children()) {
+            if (c == hiddenNode) continue;
+            if (c.isDone() && finalizedTopLevels.add(c)) {
+                clearDescendantColors(c);
+            }
+        }
+    }
+
+    private void clearDescendantColors(DirectoryNode root) {
+        java.util.Deque<DirectoryNode> stack = new java.util.ArrayDeque<>();
+        for (DirectoryNode c : root.children()) stack.push(c);
+        while (!stack.isEmpty()) {
+            DirectoryNode n = stack.pop();
+            colorCache.remove(n);
+            for (DirectoryNode c : n.children()) stack.push(c);
+        }
+    }
+
+    /** Sort comparator that puts {@link #hiddenNode} last and otherwise sorts by size desc.
+     *  Used wherever scanRoot's children are ordered so Hidden never moves position as the
+     *  scan progresses or as users navigate. */
+    private Comparator<DirectoryNode> hiddenLastSizeDesc() {
+        return (a, b) -> {
+            boolean aHidden = (a == hiddenNode);
+            boolean bHidden = (b == hiddenNode);
+            if (aHidden != bHidden) return aHidden ? 1 : -1;
+            return Long.compare(b.totalBytes(), a.totalBytes());
+        };
+    }
+
+    private int depthFromScanRoot(DirectoryNode node) {
+        int d = 0;
+        for (DirectoryNode n = node; n != null && n != scanRoot; n = n.parent()) d++;
+        return d;
+    }
+
+    private static int sortedRank(DirectoryNode node) {
+        DirectoryNode parent = node.parent();
+        if (parent == null) return 0;
+        List<DirectoryNode> sorted = new ArrayList<>(parent.children());
+        sorted.sort(Comparator.comparingLong(DirectoryNode::totalBytes).reversed());
+        return Math.max(0, sorted.indexOf(node));
+    }
+
+    /** Inner radius of the ring at layout depth {@code depth}. Depths {@code <= NORMAL_RINGS}
+     *  use full-width rings; deeper depths use thin rings. Accepts fractional depths so the
+     *  drill-in animation can interpolate radii smoothly. */
+    private static double ringInnerR(double depth, double normalW, double thinW) {
+        if (depth <= 1) return HUB_RADIUS;
+        double normalRings = Math.min(depth - 1, (double) NORMAL_RINGS);
+        double thinRings = Math.max(0, depth - 1 - NORMAL_RINGS);
+        return HUB_RADIUS + normalRings * normalW + thinRings * thinW;
+    }
+
     private Map<DirectoryNode, Layout> computeLayout(DirectoryNode rootForView) {
         Map<DirectoryNode, Layout> out = new HashMap<>();
         if (rootForView == null) return out;
@@ -1206,7 +1433,7 @@ public final class SunburstView {
         // and ring 2 onward shows its descendants.
         boolean rootHasRing = rootForView != scanRoot;
         if (rootHasRing) {
-            out.put(rootForView, new Layout(1, 90.0, 360.0));
+            out.put(rootForView, new Layout(1, 90.0, 360.0, getNodeColor(rootForView)));
             layoutChildrenInto(rootForView, 2, 90.0, 360.0, out);
         } else {
             double usedSweep = target.totalBytes() > 0 ? target.usedFraction() * 360.0 : 360.0;
@@ -1227,7 +1454,10 @@ public final class SunburstView {
         if (total <= 0) return;
 
         List<DirectoryNode> ordered = new ArrayList<>(parent.children());
-        ordered.sort(Comparator.comparingLong(DirectoryNode::totalBytes).reversed());
+        // Hidden always lands at the end of scanRoot's children regardless of size — it's
+        // less actionable than real folders and a stable position is more useful than a
+        // size-correct one.
+        ordered.sort(hiddenLastSizeDesc());
 
         double a = startDeg;
         for (DirectoryNode child : ordered) {
@@ -1237,7 +1467,7 @@ public final class SunburstView {
                 a += childSweep;
                 continue;
             }
-            out.put(child, new Layout(depth, a, childSweep));
+            out.put(child, new Layout(depth, a, childSweep, getNodeColor(child)));
             layoutChildrenInto(child, depth + 1, a, childSweep, out);
             a += childSweep;
         }
@@ -1262,20 +1492,23 @@ public final class SunburstView {
         double cx = w / 2.0;
         double cy = h / 2.0;
         double maxR = Math.max(40, Math.min(w, h) * 0.46);
-        double ringWidth = (maxR - HUB_RADIUS) / MAX_DEPTH;
-        if (ringWidth < 6) ringWidth = 6;
+        // Pack the rings: NORMAL_RINGS at full thickness + THIN_RINGS at THIN_RING_FACTOR.
+        double normalW = (maxR - HUB_RADIUS) / (NORMAL_RINGS + THIN_RINGS * THIN_RING_FACTOR);
+        if (normalW < 6) normalW = 6;
+        double thinW = normalW * THIN_RING_FACTOR;
 
         // Draw sectors first, hub on top so anti-aliasing edges are clipped cleanly.
         if (animating) {
-            drawAnimatedFrame(g, cx, cy, ringWidth);
+            drawAnimatedFrame(g, cx, cy, normalW, thinW);
         } else if (viewRoot != null) {
-            drawLayout(g, cx, cy, ringWidth, computeLayout(viewRoot));
+            drawLayout(g, cx, cy, normalW, thinW, computeLayout(viewRoot));
         }
 
         drawHub(g, cx, cy);
     }
 
-    private void drawLayout(GraphicsContext g, double cx, double cy, double ringWidth,
+    private void drawLayout(GraphicsContext g, double cx, double cy,
+                            double normalW, double thinW,
                             Map<DirectoryNode, Layout> layout) {
         // Render outer rings first so that any anti-aliasing edges are overdrawn cleanly
         // by the inner rings.
@@ -1287,17 +1520,17 @@ public final class SunburstView {
             Layout l = entry.getValue();
             if (l.sweepDeg() < MIN_VISIBLE_SWEEP_DEG) continue;
 
-            double r1 = HUB_RADIUS + (l.depth() - 1) * ringWidth;
-            double r2 = HUB_RADIUS + l.depth() * ringWidth;
+            double r1 = ringInnerR(l.depth(), normalW, thinW);
+            double r2 = ringInnerR(l.depth() + 1, normalW, thinW);
 
-            int colorDepth = Math.max(0, (int) l.depth() - 1);
-            Color base = node.isFileSector()
-                    ? SectorPalette.forFileSector(node.name(), colorDepth)
-                    : SectorPalette.forName(node.name(), colorDepth);
+            Color base = l.color();
             double alpha = node.isDone() ? 1.0 : 0.45;
             if (hoverNode == node) {
-                base = base.brighter();
-                alpha = Math.min(1.0, alpha + 0.25);
+                // Universal hover: slight darkening + saturation boost. JavaFX brightness
+                // clamps at 1.0, so .brighter() on already-light rim sectors is a no-op —
+                // darken-plus-saturate guarantees visible change for both vivid and grey.
+                base = base.deriveColor(0, 1.20, 0.85, 1.0);
+                alpha = Math.min(1.0, alpha + 0.10);
             }
             Color fill = base.deriveColor(0, 1, 1, alpha);
             drawAnnularSector(g, cx, cy, r1, r2, l.startDeg(), l.sweepDeg(), fill);
@@ -1309,7 +1542,7 @@ public final class SunburstView {
             double usedSweep = usedFraction * 360.0;
             double startAngle = 90.0 - usedSweep / 2.0;
             double r1 = HUB_RADIUS;
-            double r2 = HUB_RADIUS + ringWidth;
+            double r2 = ringInnerR(2, normalW, thinW);
 
             long unaccountedBytes = target.usedBytes() - viewRoot.totalBytes();
             if (unaccountedBytes > 0 && target.usedBytes() > 0) {
@@ -1338,7 +1571,8 @@ public final class SunburstView {
         }
     }
 
-    private void drawAnimatedFrame(GraphicsContext g, double cx, double cy, double ringWidth) {
+    private void drawAnimatedFrame(GraphicsContext g, double cx, double cy,
+                                   double normalW, double thinW) {
         long elapsed = System.nanoTime() - animStartNanos;
         double t = Math.min(1.0, elapsed / (double) ANIM_DURATION_NANOS);
         double e = easeOutCubic(t);
@@ -1352,6 +1586,7 @@ public final class SunburstView {
             Layout w = animNew.get(n);
             Layout from, to;
             double alphaScale = 1.0;
+            Color color = getNodeColor(n);
             if (o != null && w != null) {
                 from = o; to = w;
             } else if (o != null) {
@@ -1363,7 +1598,7 @@ public final class SunburstView {
                 } else {
                     // Sibling/cousin not in new view: shrink in place.
                     from = o;
-                    to = new Layout(o.depth(), o.startDeg() + o.sweepDeg() / 2, 0);
+                    to = new Layout(o.depth(), o.startDeg() + o.sweepDeg() / 2, 0, color);
                 }
             } else {
                 if (n == animNewViewRoot) {
@@ -1372,7 +1607,7 @@ public final class SunburstView {
                     alphaScale = e;
                 } else {
                     // Newly visible deep node: grow from a point.
-                    from = new Layout(w.depth(), w.startDeg() + w.sweepDeg() / 2, 0);
+                    from = new Layout(w.depth(), w.startDeg() + w.sweepDeg() / 2, 0, color);
                     to = w;
                 }
             }
@@ -1380,7 +1615,7 @@ public final class SunburstView {
             double start = lerp(from.startDeg(), to.startDeg(), e);
             double sweep = lerp(from.sweepDeg(), to.sweepDeg(), e);
             if (sweep < 0.05) continue;
-            frame.add(new FrameEntry(n, depth, start, sweep, alphaScale));
+            frame.add(new FrameEntry(n, depth, start, sweep, alphaScale, color));
         }
 
         // Render outer rings first so inner rings overdraw on radial overlap regions.
@@ -1390,12 +1625,9 @@ public final class SunburstView {
                 .thenComparingDouble(FrameEntry::sweep));
 
         for (FrameEntry fe : frame) {
-            double r1 = Math.max(1, HUB_RADIUS + (fe.depth - 1) * ringWidth);
-            double r2 = Math.max(r1 + 1, HUB_RADIUS + fe.depth * ringWidth);
-            int colorDepth = Math.max(0, (int) Math.round(fe.depth) - 1);
-            Color base = fe.node.isFileSector()
-                    ? SectorPalette.forFileSector(fe.node.name(), colorDepth)
-                    : SectorPalette.forName(fe.node.name(), colorDepth);
+            double r1 = Math.max(1, ringInnerR(fe.depth, normalW, thinW));
+            double r2 = Math.max(r1 + 1, ringInnerR(fe.depth + 1, normalW, thinW));
+            Color base = fe.color;
             double alpha = (fe.node.isDone() ? 1.0 : 0.45) * fe.alphaScale;
             if (alpha <= 0.001) continue;
             Color fill = base.deriveColor(0, 1, 1, alpha);
@@ -1746,9 +1978,10 @@ public final class SunburstView {
                               double startDeg, double sweepDeg,
                               double r1, double r2, boolean unaccounted) {}
 
-    private record Layout(double depth, double startDeg, double sweepDeg) {}
+    private record Layout(double depth, double startDeg, double sweepDeg, Color color) {}
 
-    private record FrameEntry(DirectoryNode node, double depth, double start, double sweep, double alphaScale) {}
+    private record FrameEntry(DirectoryNode node, double depth, double start, double sweep,
+                              double alphaScale, Color color) {}
 
     /** Row in the staging (delete-tray) table: a folder or file the user has marked for deletion.
      *  {@code parentNode} is captured at staging time so a successful delete can apply size/count
