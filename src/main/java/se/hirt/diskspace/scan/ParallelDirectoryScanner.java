@@ -59,12 +59,6 @@ public final class ParallelDirectoryScanner implements Scanner {
 
 	private static final Logger LOG = Logger.getLogger(ParallelDirectoryScanner.class.getName());
 
-	/**
-	 * Default parallelism. SATA SSD metadata throughput saturates around 4–8 concurrent readers; NVMe handles more but with diminishing
-	 * returns. Conservative-correct.
-	 */
-	private static final int PARALLELISM = 8;
-
 	private static final long PROGRESS_INTERVAL_NANOS = 100_000_000L; // 10 Hz
 
 	/**
@@ -73,16 +67,29 @@ public final class ParallelDirectoryScanner implements Scanner {
 	 */
 	private static final long LARGE_FILE_THRESHOLD_BYTES = 1_000_000_000L;
 
+	private final int parallelism;
 	private volatile boolean cancelled;
 	private volatile ForkJoinPool pool;
 	private volatile Thread coordinator;
+
+	/**
+	 * @param parallelism size of the per-scan ForkJoinPool. {@code 1} runs sequentially (right for spinning disks where the kernel can do
+	 *     readahead and concurrent threads only cost seeks); higher values exploit metadata-throughput parallelism on SSD/NVMe and hide
+	 *     RTT on network filesystems. See {@link Scanner#forVolume} for the mapping by storage profile.
+	 */
+	public ParallelDirectoryScanner(int parallelism) {
+		if (parallelism < 1)
+			throw new IllegalArgumentException("parallelism must be >= 1, got " + parallelism);
+		this.parallelism = parallelism;
+	}
 
 	@Override
 	public void scan(Path rootPath, ScanListener listener) {
 		cancelled = false;
 		DirectoryNode root = new DirectoryNode(null, displayName(rootPath), rootPath);
 		listener.onStart(root);
-		LOG.info(() -> "Scan start: " + rootPath + " (strategy=parallel parallelism=" + PARALLELISM + ")");
+		String strategy = parallelism == 1 ? "sequential" : "parallel";
+		LOG.info(() -> "Scan start: " + rootPath + " (strategy=" + strategy + " parallelism=" + parallelism + ")");
 		long startNanos = System.nanoTime();
 
 		coordinator = new Thread(() -> {
@@ -94,7 +101,7 @@ public final class ParallelDirectoryScanner implements Scanner {
 					listener.onError(e);
 				return;
 			}
-			ForkJoinPool fjp = new ForkJoinPool(PARALLELISM);
+			ForkJoinPool fjp = new ForkJoinPool(parallelism);
 			pool = fjp;
 			try {
 				fjp.invoke(new DirScanTask(rootPath, root, ctx));
@@ -104,7 +111,7 @@ public final class ParallelDirectoryScanner implements Scanner {
 					long denied = ctx.permDeniedCount.sum();
 					if (denied > 0)
 						listener.onPermissionsDenied(denied);
-					ScanTiming.log(LOG, rootPath, root, startNanos, "parallel(" + PARALLELISM + ")");
+					ScanTiming.log(LOG, rootPath, root, startNanos, strategy + "(" + parallelism + ")");
 					listener.onComplete(root);
 				}
 			} catch (Throwable t) {

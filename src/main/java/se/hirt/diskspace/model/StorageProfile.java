@@ -61,11 +61,11 @@ public enum StorageProfile {
 	 *  this profile — the storage type itself is already shown as its own key/value line. */
 	public String tooltipDescription() {
 		return switch (this) {
-			case SSD -> "Parallel — SSD metadata throughput peaks around 4–8 concurrent readers, which is exactly what the scanner uses.";
-			case HDD -> "Parallel — the OS I/O scheduler reorders concurrent requests to keep the head moving efficiently.";
-			case NETWORK -> "Parallel — round-trip latency dominates, so concurrency is a big win.";
-			case MIXED -> "Parallel — the logical-volume layer reorders requests so concurrent reads still come out ahead.";
-			case UNKNOWN -> "Parallel by default — the only profile that would lose to parallelism is a confirmed spinning disk.";
+			case SSD -> "Parallel (8 readers) — SSD metadata throughput peaks around 4–8 concurrent readers.";
+			case HDD -> "Sequential — concurrent readers on spinning media trade kernel readahead for head seeks.";
+			case NETWORK -> "Parallel (16 readers) — round-trip latency dominates, so concurrency hides it.";
+			case MIXED -> "Parallel (8 readers) — the logical-volume layer reorders requests across the underlying disks.";
+			case UNKNOWN -> "Parallel (8 readers) by default — the only profile that loses to parallelism is a confirmed spinning disk.";
 		};
 	}
 }

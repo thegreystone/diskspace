@@ -29,6 +29,7 @@
 package se.hirt.diskspace.scan;
 
 import se.hirt.diskspace.model.DirectoryNode;
+import se.hirt.diskspace.model.StorageProfile;
 import se.hirt.diskspace.model.Volume;
 
 import java.nio.file.Path;
@@ -45,12 +46,30 @@ public interface Scanner {
 	void cancel();
 
 	/**
-	 * Returns the scanner used for a volume. Currently a single implementation ({@link ParallelDirectoryScanner}) regardless of profile —
-	 * the parallel scanner is fast on SSD/NVMe/network and acceptable on HDD given OS-level I/O reordering, so the previous sequential
-	 * fallback was retired. Kept as a factory so a future override (system property, settings toggle) has one place to land.
+	 * Returns the scanner used for a volume, with parallelism sized to the storage profile. {@link ParallelDirectoryScanner} runs
+	 * sequentially when given parallelism 1, so a single implementation covers both spinning and solid-state media; the per-profile
+	 * pool size is the only knob that changes.
 	 */
 	static Scanner forVolume(Volume volume) {
-		return new ParallelDirectoryScanner();
+		return new ParallelDirectoryScanner(parallelismFor(volume.storageProfile()));
+	}
+
+	/**
+	 * Maps a storage profile to a ForkJoinPool size. {@link StorageProfile#HDD HDD} is sequential because two concurrent readers on a
+	 * spinning disk only trade kernel readahead for head seeks. {@link StorageProfile#SSD SSD} stops scaling around 4–8 concurrent
+	 * metadata readers. {@link StorageProfile#NETWORK NETWORK} is latency-bound, so concurrency hides RTT. {@link StorageProfile#MIXED
+	 * MIXED} and {@link StorageProfile#UNKNOWN UNKNOWN} fall back to the SSD value — the common case is solid-state, and the only
+	 * profile that loses badly to parallelism (HDD) is the one we explicitly identify.
+	 */
+	static int parallelismFor(StorageProfile profile) {
+		if (profile == null)
+			return 8;
+		return switch (profile) {
+			case HDD -> 1;
+			case SSD -> 8;
+			case NETWORK -> 16;
+			case MIXED, UNKNOWN -> 8;
+		};
 	}
 
 	interface ScanListener {
