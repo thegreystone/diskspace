@@ -68,8 +68,12 @@ public final class SunburstView {
 
 	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(SunburstView.class.getName());
 
-	private static final java.util.prefs.Preferences PREFS = java.util.prefs.Preferences.userNodeForPackage(SunburstView.class);
-	private static final String PREF_FDA_SKIP = "fda.prompt.skip";
+	/**
+	 * Session-only "don't ask again" flag for the FDA prompt. Deliberately not persisted: an occasional user who clicks "skip" today and
+	 * upgrades macOS in six months would otherwise get silently incomplete scans, with no way to recover the prompt short of editing
+	 * preferences. Forgetting on quit means the worst case is one extra dialog per launch — fine for an "occasionally used" tool.
+	 */
+	private static volatile boolean fdaPromptSkippedThisSession = false;
 
 	/**
 	 * First {@value} rings render at full thickness ({@code normalW}); after that, up to {@link #THIN_RINGS} additional rings are squeezed
@@ -888,24 +892,14 @@ public final class SunburstView {
 		LOG.info(sb.toString());
 	}
 
-	private void showPermissionDeniedDialog(long count) {
-		Alert alert = new Alert(Alert.AlertType.INFORMATION);
-		alert.setTitle("Limited Access");
-		alert.setHeaderText(count + " location" + (count == 1 ? "" : "s") + " couldn't be read");
-		alert.setContentText("Grant DiskSpace Full Disk Access in System Settings\n" + "to include protected directories in the scan.");
-		ButtonType openSettings = new ButtonType("Open System Settings");
-		alert.getButtonTypes().setAll(openSettings, ButtonType.CANCEL);
-		alert.showAndWait().filter(b -> b == openSettings).ifPresent(b -> {
-			try {
-				new ProcessBuilder("open", "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles").start();
-			} catch (java.io.IOException ignore) {
-			}
-		});
-	}
-
 	private void startScan() {
-		if (isMac() && !isFdaGranted() && !PREFS.getBoolean(PREF_FDA_SKIP, false)) {
-			promptForFda();
+		if (isMac()) {
+			boolean granted = isFdaGranted();
+			boolean skip = fdaPromptSkippedThisSession;
+			LOG.fine(() -> "FDA gate: granted=" + granted + " sessionSkip=" + skip + " → " + (!granted && !skip ? "show prompt" : "no prompt"));
+			if (!granted && !skip) {
+				promptForFda();
+			}
 		}
 		doStartScan();
 	}
@@ -915,12 +909,18 @@ public final class SunburstView {
 	}
 
 	private static boolean isFdaGranted() {
-		Path tcc = Path.of("/Library/Application Support/com.apple.TCC");
-		if (!Files.exists(tcc))
+		// Open TCC.db directly: without FDA the syscall fails immediately with EPERM.
+		// The directory listing this used to do can succeed in edge cases even without
+		// FDA, leading to spurious prompts; opening the file is the unambiguous probe.
+		Path tccDb = Path.of("/Library/Application Support/com.apple.TCC/TCC.db");
+		try (var ignored = Files.newInputStream(tccDb)) {
+			LOG.fine(() -> "FDA probe: opened " + tccDb + " — granted");
 			return true;
-		try (var ignored = Files.newDirectoryStream(tcc)) {
+		} catch (java.nio.file.NoSuchFileException e) {
+			LOG.fine(() -> "FDA probe: " + tccDb + " not found — assuming pre-TCC macOS, treating as granted");
 			return true;
 		} catch (java.io.IOException e) {
+			LOG.fine(() -> "FDA probe: " + tccDb + " open failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ") — not granted");
 			return false;
 		}
 	}
@@ -932,7 +932,7 @@ public final class SunburstView {
 		alert.setContentText(
 				"Without Full Disk Access, protected folders like Mail, Messages,\n" + "and system directories won't be included in the scan.\n\n" + "DiskSpace only reads names, sizes, and folder structure.\n" + "It never reads file contents, and never modifies files\n" + "without your explicit action.");
 		ButtonType openSettings = new ButtonType("Open System Settings…");
-		ButtonType scanAnyway = new ButtonType("Scan without Full Access");
+		ButtonType scanAnyway = new ButtonType("Skip for this session");
 		alert.getButtonTypes().setAll(openSettings, scanAnyway);
 		alert.showAndWait().ifPresent(b -> {
 			if (b == openSettings) {
@@ -941,7 +941,7 @@ public final class SunburstView {
 				} catch (java.io.IOException ignore) {
 				}
 			} else {
-				PREFS.putBoolean(PREF_FDA_SKIP, true);
+				fdaPromptSkippedThisSession = true;
 			}
 		});
 	}
@@ -978,7 +978,6 @@ public final class SunburstView {
 			@Override
 			public void onPermissionsDenied(long count) {
 				lastPermDeniedCount = count;
-				Platform.runLater(() -> showPermissionDeniedDialog(count));
 			}
 
 			@Override
@@ -1034,6 +1033,11 @@ public final class SunburstView {
 		// file count (it's always 0 for synthetic).
 		String headerLeft = viewRoot.path() != null ? viewRoot.path().toString() : viewRoot.name();
 		String headerRight = viewRoot.path() != null ? "   " + viewRoot.totalFileCount() + " files" : "";
+		// Inaccessible count is a scan-level concept; surface it only at the scan root
+		// so it doesn't read as "this directory has N inaccessible" while drilled in.
+		if (viewRoot == scanRoot && lastPermDeniedCount > 0) {
+			headerRight += "   ·   " + lastPermDeniedCount + " inaccessible";
+		}
 		rightHeader.setText("  " + headerLeft + "  —  " + humanSize(viewRoot.totalBytes()) + headerRight);
 
 		// Re-list immediate files only when the viewRoot itself changes; files of a fixed
