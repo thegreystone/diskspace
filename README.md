@@ -34,6 +34,41 @@ thanks to LZMA2 compression.
 On Linux, make the binary executable: `chmod +x diskspace-*-linux-*`.
 On macOS, open the `.dmg` and drag DiskSpace into Applications.
 
+#### Windows: getting past Edge / SmartScreen
+
+The Windows installer and standalone `.exe` aren't code-signed yet, so Microsoft Edge / Defender
+SmartScreen treat them as "isn't commonly downloaded". On recent Edge versions the warning dialog
+only offers *Cancel* and *Delete* — there's no *Keep anyway* button. The download bar's hidden
+*Keep anyway* item has also been removed in some Edge releases. You have a few options.
+
+**Download via PowerShell** (bypasses Edge's SmartScreen entirely):
+
+```powershell
+$url = "https://github.com/thegreystone/diskspace/releases/latest/download/diskspace-0.2.4-windows-x86_64-setup.exe"
+$out = "$env:USERPROFILE\Downloads\diskspace-setup.exe"
+Invoke-WebRequest -Uri $url -OutFile $out
+Unblock-File $out         # clears the "downloaded from internet" mark so the OS doesn't re-warn
+Start-Process $out         # runs the installer (UAC prompt will appear)
+```
+
+Substitute the version in the URL for the release you want, or use `curl.exe -L -o $out $url`
+if you prefer. Edit `$url` for the standalone `.exe` if you'd rather skip the installer.
+
+**Alternative: download with another browser.** Firefox and Chrome show different warning UX
+that still includes a *Keep / Save anyway* path.
+
+**Last resort: temporarily disable SmartScreen for downloads.**
+`edge://settings/privacy` → *Security* section → toggle *Microsoft Defender SmartScreen* off,
+download, toggle it back on. Heavy-handed but works on locked-down Edge configurations.
+
+After the file is on disk, opening it triggers a separate OS-level *"Windows protected your PC"*
+dialog — that one **does** have a *More info → Run anyway* path. Approve the UAC prompt
+afterward. *Publisher: Unknown* is expected until we sign the binary.
+
+Want to help the next person? On the SmartScreen dialog there's a *"Report this app as safe"*
+link — enough such reports build the file's reputation in SmartScreen and the warnings ease off
+on their own. Long-term fix is a code-signing cert; not done yet.
+
 ### Option B: Run from source (dev)
 
 Requires Java 21+ and Maven 3.9+:
