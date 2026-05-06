@@ -147,9 +147,6 @@ public final class PickerView {
 		if (!tagText.isEmpty()) {
 			Label tag = new Label(tagText);
 			tag.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-font-weight: 600;");
-			Tooltip tip = new Tooltip(v.storageProfile().tooltipDescription());
-			tip.setShowDelay(Duration.millis(300));
-			Tooltip.install(tag, tip);
 			sizeBlock.getChildren().add(tag);
 		}
 		sizeBlock.getChildren().add(total);
@@ -167,7 +164,101 @@ public final class PickerView {
 				e -> box.setStyle(baseStyle + "-fx-effect: dropshadow(gaussian, " + toCss(scheme.accent()) + ", 12, 0.15, 0, 0);"));
 		box.setOnMouseExited(e -> box.setStyle(baseStyle));
 		box.setOnMouseClicked(e -> onSelection.accept(v));
+
+		// Rich tooltip with FS, storage type, sizes (with %), and a per-profile description
+		// of how the scan will run. Regenerated on each show so it picks up the U-key unit
+		// toggle without needing a refresher hook. Monospace font so the column-style key:
+		// value lines actually line up — JavaFX's default proportional font + tab characters
+		// produces inconsistent column positions.
+		Tooltip tip = new Tooltip();
+		tip.setShowDelay(Duration.millis(300));
+		tip.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace; -fx-font-size: 12px;");
+		tip.setOnShowing(e -> tip.setText(buildVolumeTooltip(v)));
+		Tooltip.install(box, tip);
 		return box;
+	}
+
+	/** Width keys are padded to in the top key/value block. Longest = "File system". */
+	private static final int TOOLTIP_KEY_WIDTH = 11;
+	/** Word-wrap target for value text in the tooltip. Tuned for the monospace 12px font
+	 *  so the rendered width stays comfortably narrow without orphaning short trailing
+	 *  words on their own line. */
+	private static final int TOOLTIP_WRAP_WIDTH = 50;
+
+	private static String buildVolumeTooltip(Volume v) {
+		StringBuilder sb = new StringBuilder();
+		sb.append(v.displayName()).append('\n');
+		sb.append(v.root()).append("\n\n");
+
+		String fs = v.fsType();
+		String storage = v.storageProfile() == null || v.storageProfile().shortLabel().isEmpty()
+				? "Unknown"
+				: v.storageProfile().shortLabel();
+		appendKeyValue(sb, "File system", fs == null || fs.isBlank() ? "—" : fs);
+		appendKeyValue(sb, "Storage", storage);
+		if (v.storageProfile() != null) {
+			appendWrappedKeyValue(sb, "Scan", v.storageProfile().tooltipDescription());
+		}
+
+		long total = v.totalBytes();
+		long used = v.usedBytes();
+		long free = v.usableBytes();
+		if (total > 0) {
+			sb.append('\n');
+			String usedStr = humanSize(used);
+			String freeStr = humanSize(free);
+			String totalStr = humanSize(total);
+			// Right-align all three sizes to the widest so digit columns line up regardless
+			// of unit length (e.g. "543 GB" vs "1.86 TB").
+			int sizeWidth = Math.max(usedStr.length(), Math.max(freeStr.length(), totalStr.length()));
+			double usedPct = used * 100.0 / total;
+			double freePct = free * 100.0 / total;
+			String sizeFmt = "%-5s : %" + sizeWidth + "s  (%3.0f%%)%n";
+			sb.append(String.format(sizeFmt, "Used", usedStr, usedPct));
+			sb.append(String.format(sizeFmt, "Free", freeStr, freePct));
+			sb.append(String.format("%-5s : %" + sizeWidth + "s%n", "Total", totalStr));
+		}
+
+		return sb.toString();
+	}
+
+	private static void appendKeyValue(StringBuilder sb, String key, String value) {
+		sb.append(String.format("%-" + TOOLTIP_KEY_WIDTH + "s : %s%n", key, value));
+	}
+
+	/** Word-wraps {@code value} to {@link #TOOLTIP_WRAP_WIDTH}, indenting continuation
+	 *  lines to align under the first value character (i.e. {@code keyWidth + " : ".length}). */
+	private static void appendWrappedKeyValue(StringBuilder sb, String key, String value) {
+		List<String> lines = wordWrap(value, TOOLTIP_WRAP_WIDTH);
+		if (lines.isEmpty()) {
+			appendKeyValue(sb, key, "");
+			return;
+		}
+		sb.append(String.format("%-" + TOOLTIP_KEY_WIDTH + "s : %s%n", key, lines.get(0)));
+		String indent = " ".repeat(TOOLTIP_KEY_WIDTH + 3); // " : " = 3 chars
+		for (int i = 1; i < lines.size(); i++) {
+			sb.append(indent).append(lines.get(i)).append('\n');
+		}
+	}
+
+	/** Greedy word-wrap. Long single tokens (e.g. URLs) overflow the target width rather
+	 *  than getting hyphenated — this is fine for our short, prose-only descriptions. */
+	private static List<String> wordWrap(String text, int width) {
+		List<String> lines = new ArrayList<>();
+		StringBuilder current = new StringBuilder();
+		for (String word : text.split(" ")) {
+			if (current.length() == 0) {
+				current.append(word);
+			} else if (current.length() + 1 + word.length() <= width) {
+				current.append(' ').append(word);
+			} else {
+				lines.add(current.toString());
+				current.setLength(0);
+				current.append(word);
+			}
+		}
+		if (current.length() > 0) lines.add(current.toString());
+		return lines;
 	}
 
 	private Region buildCapacityBar(double fraction) {

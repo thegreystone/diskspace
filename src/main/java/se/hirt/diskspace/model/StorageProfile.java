@@ -57,14 +57,15 @@ public enum StorageProfile {
 		};
 	}
 
-	/** Longer explanation for tooltip display. */
+	/** Scan-strategy explanation for tooltip display. Stays focused on how DiskSpace walks
+	 *  this profile — the storage type itself is already shown as its own key/value line. */
 	public String tooltipDescription() {
 		return switch (this) {
-			case SSD -> "Solid-state storage.";
-			case HDD -> "Spinning hard disk.";
-			case NETWORK -> "Network filesystem.";
-			case MIXED -> "Composite volume (RAID / pool).";
-			case UNKNOWN -> "Storage type couldn't be determined.";
+			case SSD -> "Parallel — SSD metadata throughput peaks around 4–8 concurrent readers, which is exactly what the scanner uses.";
+			case HDD -> "Parallel — the OS I/O scheduler reorders concurrent requests to keep the head moving efficiently.";
+			case NETWORK -> "Parallel — round-trip latency dominates, so concurrency is a big win.";
+			case MIXED -> "Parallel — the logical-volume layer reorders requests so concurrent reads still come out ahead.";
+			case UNKNOWN -> "Parallel by default — the only profile that would lose to parallelism is a confirmed spinning disk.";
 		};
 	}
 }
