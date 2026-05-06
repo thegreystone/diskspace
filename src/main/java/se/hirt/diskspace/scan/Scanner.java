@@ -28,35 +28,45 @@
  */
 package se.hirt.diskspace.scan;
 
-import java.nio.file.Path;
-
 import se.hirt.diskspace.model.DirectoryNode;
+import se.hirt.diskspace.model.Volume;
+
+import java.nio.file.Path;
 
 public interface Scanner {
 
-    /**
-     * Starts scanning {@code root} on a background thread. The listener's {@code onStart}
-     * fires synchronously with the live, mutating tree before the thread is started — UI
-     * code can begin observing the root immediately. Other callbacks fire on the scan
-     * thread; UI code is responsible for marshalling to the JavaFX Application Thread.
-     */
-    void scan(Path root, ScanListener listener);
+	/**
+	 * Starts scanning {@code root} on a background thread. The listener's {@code onStart} fires synchronously with the live, mutating tree
+	 * before the thread is started — UI code can begin observing the root immediately. Other callbacks fire on the scan thread; UI code is
+	 * responsible for marshalling to the JavaFX Application Thread.
+	 */
+	void scan(Path root, ScanListener listener);
 
-    void cancel();
+	void cancel();
 
-    interface ScanListener {
-        /** Called once, before scanning begins, with the live tree root. */
-        void onStart(DirectoryNode liveRoot);
+	/**
+	 * Returns the scanner used for a volume. Currently a single implementation ({@link ParallelDirectoryScanner}) regardless of profile —
+	 * the parallel scanner is fast on SSD/NVMe/network and acceptable on HDD given OS-level I/O reordering, so the previous sequential
+	 * fallback was retired. Kept as a factory so a future override (system property, settings toggle) has one place to land.
+	 */
+	static Scanner forVolume(Volume volume) {
+		return new ParallelDirectoryScanner();
+	}
 
-        /** Periodic progress, throttled by the scanner. {@code currentPath} may be null. */
-        void onProgress(long files, long bytes, String currentPath);
+	interface ScanListener {
+		/** Called once, before scanning begins, with the live tree root. */
+		void onStart(DirectoryNode liveRoot);
 
-        /** Called before {@link #onComplete} if any entries were inaccessible (permission denied). */
-        default void onPermissionsDenied(long count) {}
+		/** Periodic progress, throttled by the scanner. {@code currentPath} may be null. */
+		void onProgress(long files, long bytes, String currentPath);
 
-        /** Final tree (children sorted by size desc, recursively). */
-        void onComplete(DirectoryNode root);
+		/** Called before {@link #onComplete} if any entries were inaccessible (permission denied). */
+		default void onPermissionsDenied(long count) {
+		}
 
-        void onError(Throwable t);
-    }
+		/** Final tree (children sorted by size desc, recursively). */
+		void onComplete(DirectoryNode root);
+
+		void onError(Throwable t);
+	}
 }

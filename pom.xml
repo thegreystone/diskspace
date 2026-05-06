@@ -33,7 +33,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     <groupId>se.hirt</groupId>
     <artifactId>diskspace</artifactId>
-    <version>0.2.3-SNAPSHOT</version>
+    <version>0.2.4-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>DiskSpace</name>
@@ -101,6 +101,29 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     </build>
 
     <profiles>
+        <!--
+          Debug logging for `mvn javafx:run`. Activates -Ddiskspace.log.level=FINE on the
+          spawned JVM so se.hirt.diskspace.* logs to the console at FINE level.
+          Run: `mvn -Pdebug-logging javafx:run`
+        -->
+        <profile>
+            <id>debug-logging</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.openjfx</groupId>
+                        <artifactId>javafx-maven-plugin</artifactId>
+                        <configuration>
+                            <mainClass>${main.class}</mainClass>
+                            <options>
+                                <option>-Ddiskspace.log.level=FINE</option>
+                            </options>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!--
           Native build via Gluon Substrate.
           Run: `mvn -Pnative gluonfx:build gluonfx:nativerun`

@@ -37,130 +37,182 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Live, thread-safe size tree. The scanner mutates from a background thread; the JavaFX
- * thread reads. {@link #addFile} propagates each file's size up to every ancestor's
- * {@link #totalBytes}, so reads at any time give an accurate running total of everything
- * scanned so far. Children are appended via a copy-on-write list during the scan and
- * replaced with a sorted snapshot on completion.
+ * Live, thread-safe size tree. The scanner mutates from a background thread; the JavaFX thread reads. {@link #addFile} propagates each
+ * file's size up to every ancestor's {@link #totalBytes}, so reads at any time give an accurate running total of everything scanned so far.
+ * Children are appended via a copy-on-write list during the scan and replaced with a sorted snapshot on completion.
  */
 public final class DirectoryNode {
 
-    public enum ScanState { QUEUED, SCANNING, DONE }
+	public enum ScanState {QUEUED, SCANNING, DONE}
 
-    /** A file recorded for sunburst display (≥ 1 GB on the volume). Capturing only large
-     *  files keeps memory bounded — typical scans hit ≤ a few dozen of these. */
-    public record FileRecord(String name, long size) {}
+	/**
+	 * A file recorded for sunburst display (≥ 1 GB on the volume). Capturing only large files keeps memory bounded — typical scans hit ≤ a
+	 * few dozen of these.
+	 */
+	public record FileRecord(String name, long size) {
+	}
 
-    private final DirectoryNode parent;
-    private final String name;
-    private final Path path;
+	private final DirectoryNode parent;
+	private final String name;
+	private final Path path;
 
-    private final AtomicLong ownBytes = new AtomicLong();
-    private final AtomicLong totalBytes = new AtomicLong();
-    private final AtomicInteger totalFileCount = new AtomicInteger();
+	private final AtomicLong ownBytes = new AtomicLong();
+	private final AtomicLong totalBytes = new AtomicLong();
+	private final AtomicInteger totalFileCount = new AtomicInteger();
 
-    /** Per-directory list of large files (immediate children, not recursive). Mutated by
-     *  the scanner thread; published to readers via the COW list. */
-    private final List<FileRecord> largeFiles = new CopyOnWriteArrayList<>();
+	/**
+	 * Per-directory list of large files (immediate children, not recursive). Mutated by the scanner thread; published to readers via the
+	 * COW list.
+	 */
+	private final List<FileRecord> largeFiles = new CopyOnWriteArrayList<>();
 
-    /** Sum of immediate-file bytes that fell below the large-file threshold. */
-    private final AtomicLong smallerFilesBytes = new AtomicLong();
+	/** Sum of immediate-file bytes that fell below the large-file threshold. */
+	private final AtomicLong smallerFilesBytes = new AtomicLong();
 
-    /** True for synthetic "file" sectors (large-file leaves and "Smaller files" aggregates)
-     *  injected post-scan. They render in the sunburst but clicking them drills to the
-     *  containing directory rather than into the leaf itself. */
-    private volatile boolean fileSector;
+	/**
+	 * True for synthetic "file" sectors (large-file leaves and "Smaller files" aggregates) injected post-scan. They render in the sunburst
+	 * but clicking them drills to the containing directory rather than into the leaf itself.
+	 */
+	private volatile boolean fileSector;
 
-    /** Volatile so post-scan replacement with a sorted list publishes safely to readers. */
-    private volatile List<DirectoryNode> children = new CopyOnWriteArrayList<>();
+	/** Volatile so post-scan replacement with a sorted list publishes safely to readers. */
+	private volatile List<DirectoryNode> children = new CopyOnWriteArrayList<>();
 
-    /** Scan state: QUEUED until the scanner enters this dir, SCANNING while inside, DONE when exited. */
-    private volatile ScanState state = ScanState.QUEUED;
+	/** Scan state: QUEUED until the scanner enters this dir, SCANNING while inside, DONE when exited. */
+	private volatile ScanState state = ScanState.QUEUED;
 
-    public DirectoryNode(DirectoryNode parent, String name, Path path) {
-        this.parent = parent;
-        this.name = name;
-        this.path = path;
-    }
+	public DirectoryNode(DirectoryNode parent, String name, Path path) {
+		this.parent = parent;
+		this.name = name;
+		this.path = path;
+	}
 
-    public DirectoryNode parent()              { return parent; }
-    public String name()                       { return name; }
-    public Path path()                         { return path; }
-    public List<DirectoryNode> children()      { return children; }
-    public long ownBytes()                     { return ownBytes.get(); }
-    public long totalBytes()                   { return totalBytes.get(); }
-    public int totalFileCount()                { return totalFileCount.get(); }
-    public ScanState state()                   { return state; }
-    public boolean isDone()                    { return state == ScanState.DONE; }
-    public void setScanning()                  { state = ScanState.SCANNING; }
-    public void markDone()                     { state = ScanState.DONE; }
-    public List<FileRecord> largeFiles()       { return largeFiles; }
-    public long smallerFilesBytes()            { return smallerFilesBytes.get(); }
-    public boolean isFileSector()              { return fileSector; }
-    public void markFileSector()               { fileSector = true; }
+	public DirectoryNode parent() {
+		return parent;
+	}
 
-    public void addLargeFile(String fileName, long size) {
-        largeFiles.add(new FileRecord(fileName, size));
-    }
+	public String name() {
+		return name;
+	}
 
-    public void addSmallerFileBytes(long size) {
-        smallerFilesBytes.addAndGet(size);
-    }
+	public Path path() {
+		return path;
+	}
 
-    public DirectoryNode addChild(String name, Path path) {
-        DirectoryNode child = new DirectoryNode(this, name, path);
-        children.add(child);
-        return child;
-    }
+	public List<DirectoryNode> children() {
+		return children;
+	}
 
-    /** For synthetic post-scan nodes (e.g. the "Hidden" subtree on macOS): bumps this node's
-     *  {@code totalBytes} without propagating to ancestors and without affecting file count.
-     *  The caller is responsible for bumping ancestors separately when wiring these nodes
-     *  into the live tree. */
-    public void addSyntheticBytes(long bytes) {
-        totalBytes.addAndGet(bytes);
-    }
+	public long ownBytes() {
+		return ownBytes.get();
+	}
 
-    /** Records a file of {@code size} bytes; propagates totals up the ancestor chain. */
-    public void addFile(long size) {
-        ownBytes.addAndGet(size);
-        for (DirectoryNode n = this; n != null; n = n.parent) {
-            n.totalBytes.addAndGet(size);
-            n.totalFileCount.incrementAndGet();
-        }
-    }
+	public long totalBytes() {
+		return totalBytes.get();
+	}
 
-    /** Reverses {@link #addFile} after a file at this dir is deleted on disk. */
-    public void removeFile(long size) {
-        ownBytes.addAndGet(-size);
-        for (DirectoryNode n = this; n != null; n = n.parent) {
-            n.totalBytes.addAndGet(-size);
-            n.totalFileCount.addAndGet(-1);
-        }
-    }
+	public int totalFileCount() {
+		return totalFileCount.get();
+	}
 
-    /** Removes a child subtree after it has been deleted on disk. Subtracts the child's
-     *  contribution from this node and every ancestor. */
-    public void removeChild(DirectoryNode child) {
-        if (child == null) return;
-        long bytes = child.totalBytes();
-        int count = child.totalFileCount();
-        if (!children.remove(child)) return;
-        for (DirectoryNode n = this; n != null; n = n.parent) {
-            n.totalBytes.addAndGet(-bytes);
-            n.totalFileCount.addAndGet(-count);
-        }
-    }
+	public ScanState state() {
+		return state;
+	}
 
-    /** After scan completion: sort children by size desc, recursively. */
-    public void sortBySizeRecursive() {
-        for (DirectoryNode c : children) {
-            c.sortBySizeRecursive();
-        }
-        if (children.size() > 1) {
-            List<DirectoryNode> sorted = new ArrayList<>(children);
-            sorted.sort(Comparator.comparingLong(DirectoryNode::totalBytes).reversed());
-            children = new CopyOnWriteArrayList<>(sorted);
-        }
-    }
+	public boolean isDone() {
+		return state == ScanState.DONE;
+	}
+
+	public void setScanning() {
+		state = ScanState.SCANNING;
+	}
+
+	public void markDone() {
+		state = ScanState.DONE;
+	}
+
+	public List<FileRecord> largeFiles() {
+		return largeFiles;
+	}
+
+	public long smallerFilesBytes() {
+		return smallerFilesBytes.get();
+	}
+
+	public boolean isFileSector() {
+		return fileSector;
+	}
+
+	public void markFileSector() {
+		fileSector = true;
+	}
+
+	public void addLargeFile(String fileName, long size) {
+		largeFiles.add(new FileRecord(fileName, size));
+	}
+
+	public void addSmallerFileBytes(long size) {
+		smallerFilesBytes.addAndGet(size);
+	}
+
+	public DirectoryNode addChild(String name, Path path) {
+		DirectoryNode child = new DirectoryNode(this, name, path);
+		children.add(child);
+		return child;
+	}
+
+	/**
+	 * For synthetic post-scan nodes (e.g. the "Hidden" subtree on macOS): bumps this node's {@code totalBytes} without propagating to
+	 * ancestors and without affecting file count. The caller is responsible for bumping ancestors separately when wiring these nodes into
+	 * the live tree.
+	 */
+	public void addSyntheticBytes(long bytes) {
+		totalBytes.addAndGet(bytes);
+	}
+
+	/** Records a file of {@code size} bytes; propagates totals up the ancestor chain. */
+	public void addFile(long size) {
+		ownBytes.addAndGet(size);
+		for (DirectoryNode n = this; n != null; n = n.parent) {
+			n.totalBytes.addAndGet(size);
+			n.totalFileCount.incrementAndGet();
+		}
+	}
+
+	/** Reverses {@link #addFile} after a file at this dir is deleted on disk. */
+	public void removeFile(long size) {
+		ownBytes.addAndGet(-size);
+		for (DirectoryNode n = this; n != null; n = n.parent) {
+			n.totalBytes.addAndGet(-size);
+			n.totalFileCount.addAndGet(-1);
+		}
+	}
+
+	/**
+	 * Removes a child subtree after it has been deleted on disk. Subtracts the child's contribution from this node and every ancestor.
+	 */
+	public void removeChild(DirectoryNode child) {
+		if (child == null)
+			return;
+		long bytes = child.totalBytes();
+		int count = child.totalFileCount();
+		if (!children.remove(child))
+			return;
+		for (DirectoryNode n = this; n != null; n = n.parent) {
+			n.totalBytes.addAndGet(-bytes);
+			n.totalFileCount.addAndGet(-count);
+		}
+	}
+
+	/** After scan completion: sort children by size desc, recursively. */
+	public void sortBySizeRecursive() {
+		for (DirectoryNode c : children) {
+			c.sortBySizeRecursive();
+		}
+		if (children.size() > 1) {
+			List<DirectoryNode> sorted = new ArrayList<>(children);
+			sorted.sort(Comparator.comparingLong(DirectoryNode::totalBytes).reversed());
+			children = new CopyOnWriteArrayList<>(sorted);
+		}
+	}
 }
