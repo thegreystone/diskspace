@@ -64,9 +64,11 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 
-public final class SunburstView {
+public final class DiskView {
 
-	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(SunburstView.class.getName());
+	public enum RenderMode {SUNBURST, HEATMAP}
+
+	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(DiskView.class.getName());
 
 	/**
 	 * Session-only "don't ask again" flag for the FDA prompt. Deliberately not persisted: an occasional user who clicks "skip" today and
@@ -89,6 +91,8 @@ public final class SunburstView {
 	private static final long ANIM_DURATION_NANOS = 350_000_000L;        // 350 ms
 
 	private final SplitPane root;
+	private final StackPane outerRoot;
+	private final StackPane helpOverlay;
 	private final Canvas canvas;
 	private final ColorScheme scheme;
 	private final Volume target;
@@ -111,6 +115,8 @@ public final class SunburstView {
 	private volatile boolean deleting;
 
 	private final List<SectorRect> sectors = new ArrayList<>();
+	private final List<RectHit> rects = new ArrayList<>();
+	private RenderMode currentMode = RenderMode.SUNBURST;
 	private DirectoryNode scanRoot;
 	private DirectoryNode viewRoot;
 	private DirectoryNode hoverNode;
@@ -163,7 +169,7 @@ public final class SunburstView {
 	private Map<DirectoryNode, Layout> animNew;
 	private final AnimationTimer animTimer;
 
-	public SunburstView(Volume target, ColorScheme scheme) {
+	public DiskView(Volume target, ColorScheme scheme) {
 		this.target = target;
 		this.scheme = scheme;
 		this.scanner = Scanner.forVolume(target);
@@ -247,61 +253,123 @@ public final class SunburstView {
 			}
 		};
 
-		// Keyboard shortcuts.
+		// Keyboard shortcuts. The same dispatch is also installed at the MainWindow
+		// level so the keys work even when focus is on the TabPane header — see
+		// dispatchTopLevelKey.
 		root.setFocusTraversable(true);
-		root.addEventHandler(KeyEvent.KEY_PRESSED, e -> {
-			if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown())
-				return;
-			switch (e.getCode()) {
-			case E, F -> {
-				openInExplorer();
-				e.consume();
-			}
-			case LEFT, UP -> {
-				// Up one level. Push the current viewRoot onto the forward stack so
-				// Right arrow can replay the path back down. Always consume — at
-				// scanRoot we no-op, but unconsumed arrow keys bubble to the TabPane
-				// and would step to the "+" tab, opening a new picker.
-				if (viewRoot != null && viewRoot != scanRoot && viewRoot.parent() != null) {
-					forwardStack.push(viewRoot);
-					select(viewRoot.parent(), false);
-				}
-				e.consume();
-			}
-			case RIGHT, DOWN -> {
-				// Forward: pop the most recently traversed-up node and drill back into it.
-				// Right pairs with Left; Down pairs with Up — both bound here.
-				// Always consume so an empty-stack press doesn't fall through to the TabPane.
-				if (!forwardStack.isEmpty()) {
-					DirectoryNode next = forwardStack.pop();
-					select(next, false);
-				}
-				e.consume();
-			}
-			case DELETE -> {
-				handleDeleteKey();
-				e.consume();
-			}
-			case R -> {
-				// Full rescan. Useful after external changes (e.g. something deleted outside diskspace).
-				if (!deleting)
-					rescan();
-				e.consume();
-			}
-			case U -> {
-				SizeFormat.toggle();
-				refreshAfterUnitChange();
-				e.consume();
-			}
-			default -> { /* let it bubble */ }
-			}
-		});
+		root.addEventHandler(KeyEvent.KEY_PRESSED, this::dispatchTopLevelKey);
+
+		// Help overlay floats on top of the live visualization. The split pane keeps
+		// running underneath (scan progress, redraws, etc.); the overlay is just a
+		// semi-transparent layer toggled with Esc.
+		this.helpOverlay = buildHelpOverlay();
+		helpOverlay.setVisible(false);
+		helpOverlay.setManaged(false);
+		this.outerRoot = new StackPane(root, helpOverlay);
+		outerRoot.setStyle(bg(scheme.background()));
 
 		startScan();
 	}
 
 	public Region getRoot() {
-		return root;
+		return outerRoot;
+	}
+
+	/**
+	 * Cancel the running scan and stop animation timers. Called during app quit so the scanner's {@link Platform#runLater} callbacks don't
+	 * fire into a half-torn-down toolkit.
+	 */
+	public void shutdown() {
+		try {
+			scanner.cancel();
+		} catch (RuntimeException ignored) {
+		}
+		try {
+			liveTicker.stop();
+		} catch (RuntimeException ignored) {
+		}
+		try {
+			animTimer.stop();
+		} catch (RuntimeException ignored) {
+		}
+	}
+
+	/**
+	 * Top-level command dispatch. Invoked both by this view's own key handler and by MainWindow's BorderPane-level handler so single-key
+	 * shortcuts fire whether focus is inside the view or on the TabPane / picker. Plain modifier-free keys only — chords belong to focused
+	 * controls.
+	 */
+	public void dispatchTopLevelKey(KeyEvent e) {
+		// Esc toggles the help overlay even with modifiers off-path; check it first so
+		// users always have a way out.
+		if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
+			toggleHelp();
+			e.consume();
+			return;
+		}
+		// Modifier-held keys (Cmd-Q, etc.) belong to native handlers — get out of the way.
+		if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown())
+			return;
+		// Q quits unconditionally — must work even when the help overlay is up. Route
+		// through App.requestQuit so scanners are cancelled before the toolkit tears down.
+		if (e.getCode() == javafx.scene.input.KeyCode.Q) {
+			se.hirt.diskspace.App.requestQuit();
+			e.consume();
+			return;
+		}
+		// While help is visible swallow other keys so they don't trigger silently behind
+		// the overlay.
+		if (helpOverlay != null && helpOverlay.isVisible()) {
+			e.consume();
+			return;
+		}
+		switch (e.getCode()) {
+		case E, F -> {
+			openInExplorer();
+			e.consume();
+		}
+		case LEFT, UP -> {
+			// Up one level. Push the current viewRoot onto the forward stack so
+			// Right arrow can replay the path back down. Always consume — at
+			// scanRoot we no-op, but unconsumed arrow keys bubble to the TabPane
+			// and would step to the "+" tab, opening a new picker.
+			if (viewRoot != null && viewRoot != scanRoot && viewRoot.parent() != null) {
+				forwardStack.push(viewRoot);
+				select(viewRoot.parent(), false);
+			}
+			e.consume();
+		}
+		case RIGHT, DOWN -> {
+			// Forward: pop the most recently traversed-up node and drill back into it.
+			// Right pairs with Left; Down pairs with Up — both bound here.
+			// Always consume so an empty-stack press doesn't fall through to the TabPane.
+			if (!forwardStack.isEmpty()) {
+				DirectoryNode next = forwardStack.pop();
+				select(next, false);
+			}
+			e.consume();
+		}
+		case DELETE -> {
+			handleDeleteKey();
+			e.consume();
+		}
+		case R -> {
+			// Full rescan. Useful after external changes (e.g. something deleted outside diskspace).
+			if (!deleting)
+				rescan();
+			e.consume();
+		}
+		case U -> {
+			SizeFormat.toggle();
+			refreshAfterUnitChange();
+			e.consume();
+		}
+		case V -> {
+			toggleRenderMode();
+			e.consume();
+		}
+		default -> { /* let it bubble */ }
+		}
 	}
 
 	private void configureTable() {
@@ -670,7 +738,9 @@ public final class SunburstView {
 			return;
 
 		// Snapshot the pre-delete layout so we can lerp from it to the post-delete layout.
-		Map<DirectoryNode, Layout> beforeLayout = computeLayout(viewRoot);
+		// Only meaningful in sunburst mode — treemap layouts shuffle every rectangle.
+		boolean animateRemoval = currentMode == RenderMode.SUNBURST;
+		Map<DirectoryNode, Layout> beforeLayout = animateRemoval ? computeLayout(viewRoot) : null;
 		DirectoryNode previousViewRoot = viewRoot;
 
 		boolean filesListChanged = false;
@@ -719,6 +789,10 @@ public final class SunburstView {
 		refreshTable();
 		rebuildBreadcrumb();
 
+		if (!animateRemoval) {
+			redraw();
+			return;
+		}
 		// Snapshot the post-delete layout and run the standard old→new tween. Deleted
 		// sectors are "in old only" (shrink in place); surviving siblings whose sweeps
 		// grew (less weight in the parent) tween into their new wider positions.
@@ -1228,6 +1302,19 @@ public final class SunburstView {
 		if (clearForward)
 			forwardStack.clear();
 
+		if (currentMode == RenderMode.HEATMAP) {
+			// Treemap layouts shuffle every rectangle on drill, so a polar lerp doesn't apply.
+			// Swap the view root and repaint statically.
+			viewRoot = newViewRoot;
+			hoverNode = null;
+			hoveringHub = false;
+			refreshTable();
+			rebuildBreadcrumb();
+			redraw();
+			root.requestFocus();
+			return;
+		}
+
 		Map<DirectoryNode, Layout> oldL = computeLayout(viewRoot);
 		Map<DirectoryNode, Layout> newL = computeLayout(newViewRoot);
 
@@ -1247,6 +1334,83 @@ public final class SunburstView {
 		animTimer.start();
 		// Make sure the root has focus so keyboard shortcuts work after a drill.
 		root.requestFocus();
+	}
+
+	private void toggleHelp() {
+		boolean show = !helpOverlay.isVisible();
+		helpOverlay.setVisible(show);
+		helpOverlay.setManaged(show);
+		// Keep keyboard focus inside the view so Esc/Q keep working in either state.
+		root.requestFocus();
+	}
+
+	private StackPane buildHelpOverlay() {
+		javafx.scene.layout.GridPane grid = new javafx.scene.layout.GridPane();
+		grid.setHgap(20);
+		grid.setVgap(8);
+
+		int row = 0;
+		addHelpRow(grid, row++, "Esc", "Show / hide this help");
+		addHelpRow(grid, row++, "←  ↑", "Go up one level");
+		addHelpRow(grid, row++, "→  ↓", "Go forward (replay an up step)");
+		addHelpRow(grid, row++, "E  F", "Open in system file explorer");
+		addHelpRow(grid, row++, "Del", "Stage / unstage selection for deletion");
+		addHelpRow(grid, row++, "R", "Re-scan the current disk");
+		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
+		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
+		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
+
+		Label title = new Label("Keyboard Shortcuts");
+		title.setStyle("-fx-text-fill: " + css(scheme.textPrimary()) + ";"
+				+ "-fx-font-size: 18px; -fx-font-weight: 600; -fx-padding: 0 0 14 0;");
+
+		Label hint = new Label("Press Esc to close");
+		hint.setStyle("-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
+
+		VBox card = new VBox(title, grid, hint);
+		card.setAlignment(Pos.TOP_LEFT);
+		card.setPadding(new Insets(24, 28, 20, 28));
+		card.setMaxWidth(460);
+		card.setMaxHeight(Region.USE_PREF_SIZE);
+		card.setStyle("-fx-background-color: " + css(scheme.surface()) + ";" + "-fx-background-radius: 12;"
+				+ "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);");
+
+		StackPane overlay = new StackPane(card);
+		overlay.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
+		// Backdrop click dismisses; the card consumes its own clicks before they reach here.
+		overlay.setOnMouseClicked(e -> {
+			if (e.getTarget() == overlay)
+				toggleHelp();
+		});
+		return overlay;
+	}
+
+	private void addHelpRow(javafx.scene.layout.GridPane grid, int row, String key, String desc) {
+		Label k = new Label(key);
+		k.setStyle("-fx-text-fill: " + css(scheme.accent()) + ";"
+				+ "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;"
+				+ "-fx-font-size: 13px; -fx-font-weight: 600;");
+		k.setMinWidth(64);
+		Label d = new Label(desc);
+		d.setStyle("-fx-text-fill: " + css(scheme.textPrimary()) + ";" + "-fx-font-size: 13px;");
+		grid.add(k, 0, row);
+		grid.add(d, 1, row);
+	}
+
+	private void toggleRenderMode() {
+		currentMode = (currentMode == RenderMode.SUNBURST) ? RenderMode.HEATMAP : RenderMode.SUNBURST;
+		hoverNode = null;
+		hoveringHub = false;
+		hoveringFreeSpace = false;
+		hoveringUnaccounted = false;
+		// Cancel any in-flight sunburst drill animation; the new mode draws statically.
+		if (animating) {
+			animating = false;
+			animTimer.stop();
+		}
+		// Reclaim focus so subsequent keypresses route through this view's handler.
+		root.requestFocus();
+		redraw();
 	}
 
 	/**
@@ -1508,9 +1672,23 @@ public final class SunburstView {
 		g.fillRect(0, 0, w, h);
 
 		sectors.clear();
+		rects.clear();
 
 		if (scanRoot == null) {
 			drawCenterText(g, w / 2, h / 2, "Scanning…");
+			return;
+		}
+
+		if (currentMode == RenderMode.HEATMAP) {
+			// Wrap to keep a paint-time exception from bricking the live ticker / animation
+			// timer infrastructure. Logged so we still see what blew up.
+			try {
+				drawHeatmap(g, w, h);
+				drawHeatmapHoverOverlay(g, w, h);
+			} catch (RuntimeException ex) {
+				LOG.log(java.util.logging.Level.WARNING, "Heatmap render failed", ex);
+				drawCenterText(g, w / 2, h / 2, "Heatmap render error — see logs");
+			}
 			return;
 		}
 
@@ -1733,6 +1911,304 @@ public final class SunburstView {
 		}
 	}
 
+	// ---- heatmap (squarified treemap) -----------------------------------
+
+	private static final double HEATMAP_TOP_INSET = 36.0;
+	private static final double HEATMAP_MIN_RECURSE_PX = 12.0;
+	private static final double HEATMAP_LABEL_MIN_W = 100.0;
+	private static final double HEATMAP_LABEL_MIN_H = 24.0;
+	private static final double HEATMAP_INNER_PAD = 2.0;
+
+	private void drawHeatmap(GraphicsContext g, double w, double h) {
+		if (viewRoot == null)
+			return;
+		double x = 0;
+		double y = HEATMAP_TOP_INSET;
+		double availW = w;
+		double availH = h - HEATMAP_TOP_INSET;
+		if (availW < 4 || availH < 4)
+			return;
+
+		List<TreemapItem> items = buildTopLevelTreemapItems();
+		long totalBytes = 0;
+		for (TreemapItem it : items)
+			totalBytes += Math.max(0, it.bytes());
+		if (totalBytes <= 0 || items.isEmpty()) {
+			drawCenterText(g, w / 2.0, y + availH / 2.0, scanning ? "Scanning…" : "Empty");
+			return;
+		}
+
+		double scale = (availW * availH) / (double) totalBytes;
+
+		// Free space is pinned to a fixed strip on the right so it doesn't shuffle with
+		// the squarified layout — visual convention from capacity bars, and otherwise
+		// reads as buggy when the largest item lands on the left.
+		TreemapItem freeItem = null;
+		for (int i = 0; i < items.size(); i++) {
+			if (items.get(i).freeSpace()) {
+				freeItem = items.remove(i);
+				break;
+			}
+		}
+		if (freeItem != null && freeItem.bytes() > 0) {
+			double freeArea = freeItem.bytes() * scale;
+			double freeW = Math.min(availW, freeArea / availH);
+			if (freeW >= 1) {
+				double freeX = x + availW - freeW;
+				drawTreemapCell(g, freeItem, freeX, y, freeW, availH, 0);
+				availW -= freeW;
+			}
+		}
+
+		if (availW < 4 || items.isEmpty())
+			return;
+
+		// Stable sort desc; ties keep declaration order so the unaccounted virtual entry
+		// stays positioned predictably relative to its siblings.
+		items.sort((a, b) -> Long.compare(b.bytes(), a.bytes()));
+		squarify(g, items, x, y, availW, availH, scale, 0);
+	}
+
+	private List<TreemapItem> buildTopLevelTreemapItems() {
+		List<TreemapItem> items = new ArrayList<>();
+		for (DirectoryNode child : viewRoot.children()) {
+			items.add(new TreemapItem(child, child.totalBytes(), getNodeColor(child), false, false));
+		}
+		if (viewRoot == scanRoot && target.totalBytes() > 0) {
+			long unaccounted = Math.max(0L, target.usedBytes() - viewRoot.totalBytes());
+			if (unaccounted > 0) {
+				items.add(new TreemapItem(null, unaccounted, scheme.surface().brighter(), true, false));
+			}
+			long free = Math.max(0L, target.usableBytes());
+			if (free > 0) {
+				items.add(new TreemapItem(null, free, scheme.capacityTrack(), false, true));
+			}
+		}
+		return items;
+	}
+
+	/**
+	 * Squarified treemap (Bruls/Huijgen/van Wijk). Items are pixel-area-scaled via {@code scale}. Walks items in size-desc order, packing
+	 * them into rows along the rectangle's short side until adding the next item would worsen the row's worst aspect ratio, then commits
+	 * the row and continues on the remaining strip.
+	 */
+	private void squarify(GraphicsContext g, List<TreemapItem> items, double x, double y, double w, double h, double scale, int depth) {
+		if (items.isEmpty() || w < 1 || h < 1)
+			return;
+		List<TreemapItem> remaining = new ArrayList<>(items);
+		while (!remaining.isEmpty() && w >= 1 && h >= 1) {
+			double shortSide = Math.min(w, h);
+			List<TreemapItem> row = new ArrayList<>();
+			double rowSum = 0;
+			double rowMin = Double.POSITIVE_INFINITY;
+			double rowMax = 0;
+			while (!remaining.isEmpty()) {
+				TreemapItem next = remaining.get(0);
+				double nextArea = Math.max(0, next.bytes()) * scale;
+				if (nextArea <= 0) {
+					remaining.remove(0);
+					continue;
+				}
+				double trialSum = rowSum + nextArea;
+				double trialMin = Math.min(rowMin, nextArea);
+				double trialMax = Math.max(rowMax, nextArea);
+				double currentWorst = row.isEmpty() ? Double.POSITIVE_INFINITY : worstAspect(rowSum, rowMin, rowMax, shortSide);
+				double trialWorst = worstAspect(trialSum, trialMin, trialMax, shortSide);
+				if (row.isEmpty() || trialWorst <= currentWorst) {
+					row.add(next);
+					rowSum = trialSum;
+					rowMin = trialMin;
+					rowMax = trialMax;
+					remaining.remove(0);
+				} else {
+					break;
+				}
+			}
+			if (row.isEmpty())
+				break;
+			double thickness = rowSum / shortSide;
+			boolean rowAlongTop = w < h;
+			if (rowAlongTop) {
+				layoutHeatmapRow(g, row, x, y, w, thickness, scale, true, depth);
+				y += thickness;
+				h -= thickness;
+			} else {
+				layoutHeatmapRow(g, row, x, y, thickness, h, scale, false, depth);
+				x += thickness;
+				w -= thickness;
+			}
+		}
+	}
+
+	private static double worstAspect(double sum, double min, double max, double shortSide) {
+		if (sum <= 0 || shortSide <= 0)
+			return Double.POSITIVE_INFINITY;
+		double s2 = sum * sum;
+		double w2 = shortSide * shortSide;
+		return Math.max((w2 * max) / s2, s2 / (w2 * min));
+	}
+
+	private void layoutHeatmapRow(
+			GraphicsContext g, List<TreemapItem> row, double x, double y, double w, double h, double scale, boolean rowAlongTop, int depth) {
+		double rowSum = 0;
+		for (TreemapItem t : row)
+			rowSum += Math.max(0, t.bytes()) * scale;
+		if (rowSum <= 0)
+			return;
+		double offset = 0;
+		for (TreemapItem t : row) {
+			double area = Math.max(0, t.bytes()) * scale;
+			double frac = area / rowSum;
+			double rx, ry, rw, rh;
+			if (rowAlongTop) {
+				rx = x + offset;
+				ry = y;
+				rw = w * frac;
+				rh = h;
+				offset += rw;
+			} else {
+				rx = x;
+				ry = y + offset;
+				rw = w;
+				rh = h * frac;
+				offset += rh;
+			}
+			drawTreemapCell(g, t, rx, ry, rw, rh, depth);
+		}
+	}
+
+	private void drawTreemapCell(GraphicsContext g, TreemapItem item, double x, double y, double w, double h, int depth) {
+		if (w < 0.5 || h < 0.5)
+			return;
+
+		Color base = item.color();
+		boolean hovered = false;
+		if (item.node() != null && hoverNode == item.node()) {
+			base = base.deriveColor(0, 1.20, 0.85, 1.0);
+			hovered = true;
+		} else if (item.freeSpace() && hoveringFreeSpace) {
+			base = scheme.capacityTrack().brighter();
+			hovered = true;
+		} else if (item.unaccounted() && hoveringUnaccounted) {
+			base = scheme.surface().brighter().brighter();
+			hovered = true;
+		}
+		double alpha = (item.node() == null || item.node().isDone()) ? 1.0 : 0.45;
+		if (hovered)
+			alpha = Math.min(1.0, alpha + 0.10);
+		Color fill = base.deriveColor(0, 1, 1, alpha);
+
+		g.setFill(fill);
+		g.fillRect(x, y, w, h);
+
+		if (w > 1.5 && h > 1.5) {
+			g.setStroke(scheme.background());
+			g.setLineWidth(1.0);
+			g.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+		}
+
+		rects.add(new RectHit(item.node(), x, y, w, h, item.unaccounted(), item.freeSpace()));
+
+		boolean recursable = item.node() != null && !item.node().isFileSector() && !item.node().children().isEmpty();
+		double childX = x + HEATMAP_INNER_PAD;
+		double childY = y + HEATMAP_INNER_PAD;
+		double childW = w - 2 * HEATMAP_INNER_PAD;
+		double childH = h - 2 * HEATMAP_INNER_PAD;
+
+		if (w >= HEATMAP_LABEL_MIN_W && h >= HEATMAP_LABEL_MIN_H && (item.node() != null || item.freeSpace() || item.unaccounted())) {
+			String name;
+			long bytes;
+			if (item.node() != null) {
+				name = item.node().name();
+				bytes = item.node().totalBytes();
+			} else if (item.freeSpace()) {
+				name = "Free";
+				bytes = target.usableBytes();
+			} else {
+				name = "Other";
+				bytes = item.bytes();
+			}
+			drawTreemapLabel(g, x, y, w, name, bytes, base);
+			if (recursable) {
+				double labelBand = 16;
+				if (childH > labelBand + HEATMAP_MIN_RECURSE_PX) {
+					childY += labelBand;
+					childH -= labelBand;
+				}
+			}
+		}
+
+		if (recursable && childW >= HEATMAP_MIN_RECURSE_PX && childH >= HEATMAP_MIN_RECURSE_PX) {
+			List<DirectoryNode> kids = item.node().children();
+			List<TreemapItem> childItems = new ArrayList<>(kids.size());
+			long childTotal = 0;
+			for (DirectoryNode k : kids) {
+				long b = k.totalBytes();
+				if (b <= 0)
+					continue;
+				childItems.add(new TreemapItem(k, b, getNodeColor(k), false, false));
+				childTotal += b;
+			}
+			if (childTotal > 0 && !childItems.isEmpty()) {
+				childItems.sort((a, b) -> Long.compare(b.bytes(), a.bytes()));
+				double childScale = (childW * childH) / (double) childTotal;
+				squarify(g, childItems, childX, childY, childW, childH, childScale, depth + 1);
+			}
+		}
+	}
+
+	private void drawTreemapLabel(GraphicsContext g, double x, double y, double w, String name, long bytes, Color fillBase) {
+		Color textColor = textOn(fillBase);
+		g.setFill(textColor);
+		g.setFont(Font.font("Segoe UI", FontWeight.SEMI_BOLD, 11));
+		g.setTextAlign(TextAlignment.LEFT);
+		g.setTextBaseline(VPos.TOP);
+		String size = humanSize(bytes);
+		double padded = Math.max(0, w - 12);
+		String sizeSuffix = "  " + size;
+		int approxCharsForName = Math.max(2, (int) (padded / 6.5) - sizeSuffix.length());
+		String shown = truncate(name, approxCharsForName) + sizeSuffix;
+		g.fillText(shown, x + 6, y + 4, padded);
+	}
+
+	private void drawHeatmapHoverOverlay(GraphicsContext g, double w, double h) {
+		String name;
+		long bytes;
+		if (hoverNode != null) {
+			name = hoverNode.name();
+			bytes = hoverNode.totalBytes();
+		} else if (hoveringFreeSpace) {
+			name = "Free";
+			bytes = target.usableBytes();
+		} else if (hoveringUnaccounted) {
+			name = "Other";
+			bytes = Math.max(0, target.usedBytes() - (scanRoot != null ? scanRoot.totalBytes() : 0));
+		} else if (scanning && progressPath != null) {
+			name = tailPath(progressPath);
+			bytes = progressBytes;
+		} else {
+			return;
+		}
+		String text = truncate(name, 60) + "  —  " + humanSize(bytes);
+		g.setFont(Font.font("Segoe UI", 11));
+		double pad = 8;
+		double textW = Math.min(w - 24, 6.5 * text.length() + 2 * pad);
+		double boxH = 22;
+		double boxX = 12;
+		double boxY = h - boxH - 12;
+		g.setFill(scheme.surface().deriveColor(0, 1, 1, 0.85));
+		g.fillRoundRect(boxX, boxY, textW, boxH, 6, 6);
+		g.setFill(scheme.textPrimary());
+		g.setTextAlign(TextAlignment.LEFT);
+		g.setTextBaseline(VPos.CENTER);
+		g.fillText(text, boxX + pad, boxY + boxH / 2.0, textW - 2 * pad);
+	}
+
+	private static Color textOn(Color bg) {
+		double lum = 0.299 * bg.getRed() + 0.587 * bg.getGreen() + 0.114 * bg.getBlue();
+		return lum > 0.55 ? Color.gray(0.10) : Color.gray(0.95);
+	}
+
 	private void drawHubProgress(GraphicsContext g, double cx, double cy) {
 		double r = HUB_RADIUS - 4;
 		double thickness = 2.5;
@@ -1770,41 +2246,56 @@ public final class SunburstView {
 	private void handleMouseMove(double mx, double my) {
 		if (scanRoot == null || animating)
 			return;
-		double cx = canvas.getWidth() / 2.0;
-		double cy = canvas.getHeight() / 2.0;
-		double dx = mx - cx;
-		double dy = my - cy;
-		double r = Math.hypot(dx, dy);
 
 		boolean wasHub = hoveringHub;
 		boolean wasFree = hoveringFreeSpace;
 		boolean wasUnaccounted = hoveringUnaccounted;
 		DirectoryNode wasNode = hoverNode;
 
-		if (r < HUB_RADIUS) {
-			hoveringHub = true;
-			hoverNode = null;
-			hoveringFreeSpace = false;
-			hoveringUnaccounted = false;
-		} else {
-			hoveringHub = false;
-			hoverNode = null;
-			hoveringFreeSpace = false;
-			hoveringUnaccounted = false;
-			double theta = Math.toDegrees(Math.atan2(-dy, dx));
-			if (theta < 0)
-				theta += 360;
-			for (SectorRect s : sectors) {
-				if (r >= s.r1 && r <= s.r2 && angleInSweep(theta, s.startDeg, s.sweepDeg)) {
-					if (s.node() == null) {
-						if (s.unaccounted())
-							hoveringUnaccounted = true;
-						else
-							hoveringFreeSpace = true;
-					} else {
-						hoverNode = s.node();
+		hoveringHub = false;
+		hoverNode = null;
+		hoveringFreeSpace = false;
+		hoveringUnaccounted = false;
+
+		if (currentMode == RenderMode.HEATMAP) {
+			// Iterate in reverse so deeper rects (added later by recursion) win the hit.
+			for (int i = rects.size() - 1; i >= 0; i--) {
+				RectHit r = rects.get(i);
+				if (r.contains(mx, my)) {
+					if (r.node() != null) {
+						hoverNode = r.node();
+					} else if (r.freeSpace()) {
+						hoveringFreeSpace = true;
+					} else if (r.unaccounted()) {
+						hoveringUnaccounted = true;
 					}
 					break;
+				}
+			}
+		} else {
+			double cx = canvas.getWidth() / 2.0;
+			double cy = canvas.getHeight() / 2.0;
+			double dx = mx - cx;
+			double dy = my - cy;
+			double r = Math.hypot(dx, dy);
+			if (r < HUB_RADIUS) {
+				hoveringHub = true;
+			} else {
+				double theta = Math.toDegrees(Math.atan2(-dy, dx));
+				if (theta < 0)
+					theta += 360;
+				for (SectorRect s : sectors) {
+					if (r >= s.r1 && r <= s.r2 && angleInSweep(theta, s.startDeg, s.sweepDeg)) {
+						if (s.node() == null) {
+							if (s.unaccounted())
+								hoveringUnaccounted = true;
+							else
+								hoveringFreeSpace = true;
+						} else {
+							hoverNode = s.node();
+						}
+						break;
+					}
 				}
 			}
 		}
@@ -1818,6 +2309,18 @@ public final class SunburstView {
 		if (scanRoot == null || animating)
 			return;
 		root.requestFocus();
+
+		if (currentMode == RenderMode.HEATMAP) {
+			for (int i = rects.size() - 1; i >= 0; i--) {
+				RectHit r = rects.get(i);
+				if (r.contains(mx, my) && r.node() != null) {
+					select(r.node());
+					return;
+				}
+			}
+			return;
+		}
+
 		double cx = canvas.getWidth() / 2.0;
 		double cy = canvas.getHeight() / 2.0;
 		double dx = mx - cx;
@@ -2021,6 +2524,22 @@ public final class SunburstView {
 	}
 
 	private record SectorRect(DirectoryNode node, int depth, double startDeg, double sweepDeg, double r1, double r2, boolean unaccounted) {
+	}
+
+	/**
+	 * Hit-test rect for the heatmap. {@code node == null} means the rectangle is the free-space or unaccounted virtual entry at scan root.
+	 */
+	private record RectHit(DirectoryNode node, double x, double y, double w, double h, boolean unaccounted, boolean freeSpace) {
+		boolean contains(double mx, double my) {
+			return mx >= x && mx <= x + w && my >= y && my <= y + h;
+		}
+	}
+
+	/**
+	 * Heatmap item — a directory child or a virtual entry (free / unaccounted) used while building the squarified layout. {@code bytes}
+	 * drives the layout area; {@code color} is the resolved fill before alpha/hover modulation.
+	 */
+	private record TreemapItem(DirectoryNode node, long bytes, Color color, boolean unaccounted, boolean freeSpace) {
 	}
 
 	private record Layout(double depth, double startDeg, double sweepDeg, Color color) {
