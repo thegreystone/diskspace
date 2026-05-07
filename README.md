@@ -87,6 +87,9 @@ mvn javafx:run
 | `Del`     | Stage selected rows (or the current section) for deletion. Press again on a staged row to unstage. |
 | `R`       | Re-scan the current disk from scratch.                                                             |
 | `U`       | Toggle size units between decimal (GB, default) and binary (GiB).                                  |
+| `V`       | Toggle visualization between sunburst (default) and heatmap (squarified treemap).                  |
+| `Esc`     | Show / hide the keyboard-shortcut overlay (renders on top of the live view).                       |
+| `Q`       | Quit DiskSpace.                                                                                    |
 
 You can also click any segment of the breadcrumb in the top-left to jump directly to that ancestor, or click the center
 hub to reset all the way back to the scan root.

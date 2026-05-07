@@ -52,10 +52,11 @@ import java.util.function.Consumer;
 
 public final class PickerView {
 
-	private final BorderPane root;
+	private final StackPane root;
 	private final ColorScheme scheme;
 	private final Consumer<Volume> onSelection;
 	private final List<Runnable> sizeRefreshers = new ArrayList<>();
+	private final StackPane helpOverlay;
 
 	public PickerView(ColorScheme scheme, Consumer<Volume> onSelection) {
 		this.scheme = scheme;
@@ -101,22 +102,22 @@ public final class PickerView {
 		scroll.setStyle(
 				"-fx-background: " + toCss(scheme.background()) + ";" + "-fx-background-color: " + toCss(scheme.background()) + ";");
 
-		root = new BorderPane(scroll);
+		BorderPane body = new BorderPane(scroll);
+		body.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+
+		helpOverlay = buildHelpOverlay();
+		helpOverlay.setVisible(false);
+		helpOverlay.setManaged(false);
+
+		root = new StackPane(body, helpOverlay);
 		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
 
-		// U toggles size units app-wide. Filter at root so it fires regardless of which
-		// descendant currently has focus (button, scroll viewport, etc).
+		// Esc toggles the help overlay; U toggles size units app-wide. Filter at root so
+		// shortcuts fire regardless of which descendant currently has focus (button, scroll
+		// viewport, etc). The same dispatch is also exposed via dispatchTopLevelKey so
+		// MainWindow can route shortcuts in here when focus has fled to the TabPane header.
 		root.setFocusTraversable(true);
-		root.addEventFilter(KeyEvent.KEY_PRESSED, e -> {
-			if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown())
-				return;
-			if (e.getCode() == KeyCode.U) {
-				SizeFormat.toggle();
-				for (Runnable r : sizeRefreshers)
-					r.run();
-				e.consume();
-			}
-		});
+		root.addEventFilter(KeyEvent.KEY_PRESSED, this::dispatchTopLevelKey);
 		root.sceneProperty().addListener((obs, oldScene, newScene) -> {
 			if (newScene != null)
 				root.requestFocus();
@@ -125,6 +126,108 @@ public final class PickerView {
 
 	public Region getRoot() {
 		return root;
+	}
+
+	/**
+	 * Top-level command dispatch. Shared between this view's own root filter and MainWindow's BorderPane handler so Esc/U keep working when
+	 * focus has drifted to the TabPane header (e.g. just after closing the last DiskView tab and the auto-created picker is selected).
+	 * While the help overlay is visible we swallow other keys so they don't trigger silently behind it.
+	 */
+	public void dispatchTopLevelKey(KeyEvent e) {
+		if (e.getCode() == KeyCode.ESCAPE) {
+			toggleHelp();
+			e.consume();
+			return;
+		}
+		// Modifier-held keys (Cmd-Q, etc.) belong to native handlers — get out of the way.
+		if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown())
+			return;
+		// Q quits unconditionally — must work even when the help overlay is up. Route
+		// through App.requestQuit so scanners are cancelled before the toolkit tears down.
+		if (e.getCode() == KeyCode.Q) {
+			se.hirt.diskspace.App.requestQuit();
+			e.consume();
+			return;
+		}
+		if (helpOverlay.isVisible()) {
+			e.consume();
+			return;
+		}
+		if (e.getCode() == KeyCode.U) {
+			SizeFormat.toggle();
+			for (Runnable r : sizeRefreshers)
+				r.run();
+			e.consume();
+		}
+	}
+
+	private void toggleHelp() {
+		boolean show = !helpOverlay.isVisible();
+		helpOverlay.setVisible(show);
+		helpOverlay.setManaged(show);
+		if (!show)
+			root.requestFocus();
+	}
+
+	private StackPane buildHelpOverlay() {
+		GridPane grid = new GridPane();
+		grid.setHgap(20);
+		grid.setVgap(8);
+
+		int row = 0;
+		addHelpRow(grid, row++, "Esc", "Show / hide this help");
+		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
+		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
+
+		Label sub = new Label("After picking a disk");
+		sub.setStyle(
+				"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 12px; -fx-font-weight: 600;" + "-fx-padding: 12 0 2 0;");
+		grid.add(sub, 0, row++, 2, 1);
+
+		addHelpRow(grid, row++, "←  ↑", "Go up one level");
+		addHelpRow(grid, row++, "→  ↓", "Go forward (replay an up step)");
+		addHelpRow(grid, row++, "E  F", "Open in system file explorer");
+		addHelpRow(grid, row++, "Del", "Stage / unstage selection for deletion");
+		addHelpRow(grid, row++, "R", "Re-scan the current disk");
+		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
+
+		Label title = new Label("Keyboard Shortcuts");
+		title.setStyle(
+				"-fx-text-fill: " + toCss(scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600;" + "-fx-padding: 0 0 14 0;");
+
+		Label hint = new Label("Press Esc to close");
+		hint.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
+
+		VBox card = new VBox(title, grid, hint);
+		card.setAlignment(Pos.TOP_LEFT);
+		card.setPadding(new Insets(24, 28, 20, 28));
+		card.setMaxWidth(460);
+		card.setMaxHeight(Region.USE_PREF_SIZE);
+		card.setStyle(
+				"-fx-background-color: " + toCss(scheme.surface()) + ";" + "-fx-background-radius: 12;"
+						+ "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);");
+
+		StackPane overlay = new StackPane(card);
+		overlay.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
+		// Backdrop click dismisses; card clicks report the card (or a descendant) as target,
+		// so this check naturally ignores them.
+		overlay.setOnMouseClicked(e -> {
+			if (e.getTarget() == overlay)
+				toggleHelp();
+		});
+		return overlay;
+	}
+
+	private void addHelpRow(GridPane grid, int row, String key, String desc) {
+		Label k = new Label(key);
+		k.setStyle("-fx-text-fill: " + toCss(scheme.accent()) + ";"
+				+ "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;"
+				+ "-fx-font-size: 13px; -fx-font-weight: 600;");
+		k.setMinWidth(64);
+		Label d = new Label(desc);
+		d.setStyle("-fx-text-fill: " + toCss(scheme.textPrimary()) + ";" + "-fx-font-size: 13px;");
+		grid.add(k, 0, row);
+		grid.add(d, 1, row);
 	}
 
 	private Region buildRow(Volume v) {
