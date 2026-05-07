@@ -29,6 +29,7 @@
 package se.hirt.diskspace;
 
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.image.Image;
 import javafx.stage.Stage;
@@ -42,11 +43,15 @@ import java.util.logging.SimpleFormatter;
 
 public final class App extends Application {
 
+	private static volatile MainWindow mainWindow;
+	private static volatile boolean shuttingDown;
+
 	@Override
 	public void start(Stage stage) {
 		ColorScheme scheme = ColorScheme.DARK;
 
 		MainWindow main = new MainWindow(scheme);
+		mainWindow = main;
 		Scene scene = new Scene(main.getRoot(), 1100, 700);
 		scene.setFill(scheme.background());
 		if (scheme.stylesheet() != null) {
@@ -59,7 +64,28 @@ public final class App extends Application {
 		stage.setTitle("DiskSpace");
 		stage.getIcons().addAll(loadAppIcons());
 		stage.setScene(scene);
+		stage.setOnCloseRequest(ev -> requestQuit());
 		stage.show();
+	}
+
+	/**
+	 * Centralized graceful quit. Cancels in-flight scans and stops per-view animation timers, then defers {@link Platform#exit()} to the
+	 * next pulse so the current event finishes before the toolkit starts tearing down. Avoids the JavaFX 21 macOS Glass shutdown race where
+	 * {@code Toolkit.checkFxUserThread} throws while {@code Window.hide} runs during destroy notifications.
+	 */
+	public static void requestQuit() {
+		if (shuttingDown)
+			return;
+		shuttingDown = true;
+		MainWindow w = mainWindow;
+		if (w != null) {
+			try {
+				w.shutdown();
+			} catch (RuntimeException ignored) {
+				// Swallow shutdown-path exceptions — we're tearing down anyway.
+			}
+		}
+		Platform.runLater(Platform::exit);
 	}
 
 	/**
@@ -79,7 +105,26 @@ public final class App extends Application {
 
 	public static void main(String[] args) {
 		configureLoggingFromSystemProperty();
+		installShutdownNoiseFilter();
 		launch(args);
+	}
+
+	/**
+	 * JavaFX 21 has a known Glass shutdown race on macOS where {@code Toolkit.checkFxUserThread} can throw an
+	 * {@code IllegalStateException} from a window-destroy notification while we're already exiting. The exception is harmless — the JVM
+	 * is on its way out — but the stack trace looks alarming in the console. Silence it once we've started shutting down.
+	 */
+	private static void installShutdownNoiseFilter() {
+		Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
+		Thread.setDefaultUncaughtExceptionHandler((t, ex) -> {
+			if (shuttingDown && ex instanceof IllegalStateException && ex.getMessage() != null && ex.getMessage().contains("Not on FX application thread")) {
+				return;
+			}
+			if (prev != null)
+				prev.uncaughtException(t, ex);
+			else
+				ex.printStackTrace();
+		});
 	}
 
 	/**
