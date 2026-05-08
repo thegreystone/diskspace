@@ -29,6 +29,10 @@
 package se.hirt.diskspace.ui;
 
 import javafx.animation.AnimationTimer;
+import javafx.animation.KeyFrame;
+import javafx.animation.KeyValue;
+import javafx.animation.Timeline;
+import javafx.util.Duration;
 import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
@@ -99,6 +103,15 @@ public final class DiskView {
 
 	private final Label rightHeader;
 	private final HBox breadcrumb;
+	/** Top-right badge in the canvas pane showing which scanner was used (MFT / Parallel(8) /
+	 *  Sequential / etc). Sits on the same horizontal band as the breadcrumb but pinned to the
+	 *  opposite corner so it doesn't fight breadcrumb labels for space. Hidden when no scan
+	 *  is in flight; pulsed via {@link #strategyPulse} while scanning. */
+	private final Label strategyBadge;
+	/** Opacity pulse on {@link #strategyBadge} while scanning — ramps 1.0 → 0.5 → 1.0 every
+	 *  ~1.2 s, autoreverse, indefinite. Played on scan start, stopped on completion / error /
+	 *  cancel; opacity is reset to 1.0 before hiding so the next show isn't mid-fade. */
+	private final Timeline strategyPulse;
 	private final TableView<Entry> table = new TableView<>();
 	private final ObservableList<Entry> tableItems = FXCollections.observableArrayList();
 	private DirectoryNode lastListedRoot;
@@ -199,8 +212,34 @@ public final class DiskView {
 		// Without this, HBox stretches to fill, and Pos.CENTER_LEFT plants the labels
 		// at the vertical centre of the canvas instead of pinned at the top.
 		breadcrumb.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
-		StackPane leftStack = new StackPane(canvasHolder, breadcrumb);
+
+		// Compute the strategy label up-front (Scanner.forVolume above already used the
+		// same PREFERENCE+capability check) so the badge text accurately reflects which
+		// scanner is actually running for this view, not whatever PREFERENCE later flips to.
+		strategyBadge = new Label(Scanner.strategyLabelFor(target));
+		strategyBadge.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";"
+						+ "-fx-font-size: 10px; -fx-font-weight: 600;"
+						+ "-fx-padding: 12 14 0 0;");
+		strategyBadge.setPickOnBounds(false);
+		strategyBadge.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+		// Hidden by default — onStart turns it on for the duration of the scan.
+		strategyBadge.setVisible(false);
+		Tooltip badgeTip = new Tooltip("Scanner used for this view: " + Scanner.strategyLabelFor(target));
+		badgeTip.setShowDelay(Duration.millis(300));
+		Tooltip.install(strategyBadge, badgeTip);
+
+		// Pulse: opacity drifts 1.0 → 0.5 → 1.0 over ~1.2 s. autoReverse with one
+		// 600 ms keyframe gives the round trip; INDEFINITE keeps it running until stopped.
+		strategyPulse = new Timeline(
+				new KeyFrame(Duration.ZERO, new KeyValue(strategyBadge.opacityProperty(), 1.0)),
+				new KeyFrame(Duration.millis(600), new KeyValue(strategyBadge.opacityProperty(), 0.5)));
+		strategyPulse.setAutoReverse(true);
+		strategyPulse.setCycleCount(Timeline.INDEFINITE);
+
+		StackPane leftStack = new StackPane(canvasHolder, breadcrumb, strategyBadge);
 		StackPane.setAlignment(breadcrumb, Pos.TOP_LEFT);
+		StackPane.setAlignment(strategyBadge, Pos.TOP_RIGHT);
 		leftStack.setStyle(bg(scheme.background()));
 
 		configureTable();
@@ -289,9 +328,21 @@ public final class DiskView {
 		} catch (RuntimeException ignored) {
 		}
 		try {
+			stopStrategyPulse();
+		} catch (RuntimeException ignored) {
+		}
+		try {
 			animTimer.stop();
 		} catch (RuntimeException ignored) {
 		}
+	}
+
+	/** Stops the strategy-badge pulse, snaps opacity back to 1.0 (so the badge isn't
+	 *  frozen mid-fade if it gets shown again), and hides the badge. Idempotent. */
+	private void stopStrategyPulse() {
+		strategyPulse.stop();
+		strategyBadge.setOpacity(1.0);
+		strategyBadge.setVisible(false);
 	}
 
 	/**
@@ -822,6 +873,7 @@ public final class DiskView {
 	private void rescan() {
 		scanner.cancel();
 		liveTicker.stop();
+		stopStrategyPulse();
 		scanRoot = null;
 		viewRoot = null;
 		hoverNode = null;
@@ -1039,6 +1091,8 @@ public final class DiskView {
 					rebuildBreadcrumb();
 					redraw();
 					liveTicker.start();
+					strategyBadge.setVisible(true);
+					strategyPulse.playFromStart();
 				});
 			}
 
@@ -1062,6 +1116,7 @@ public final class DiskView {
 				Platform.runLater(() -> {
 					scanning = false;
 					liveTicker.stop();
+					stopStrategyPulse();
 					// Drop colors that were memoized during the scan against stale child
 					// sort orders — a node briefly cached as rank-0 stays cached as rank-0
 					// until invalidated, even if siblings overtook it. Same for the
@@ -1079,6 +1134,7 @@ public final class DiskView {
 				Platform.runLater(() -> {
 					scanning = false;
 					liveTicker.stop();
+					stopStrategyPulse();
 					progressPath = "Scan failed: " + t.getMessage();
 					redraw();
 				});
@@ -1881,8 +1937,11 @@ public final class DiskView {
 			if (focus == null)
 				return;
 			if (scanning && focus == scanRoot && !hoveringHub && hoverNode == null) {
-				title = humanSize(progressBytes);
-				subtitle = progressFiles + " files";
+				// Scanner-driven overrides take precedence; null fields fall back to the
+				// bytes/files text that the parallel scanner is happy with.
+				Scanner.HubState hs = scanner.hubState();
+				title = hs.title() != null ? hs.title() : humanSize(progressBytes);
+				subtitle = hs.subtitle() != null ? hs.subtitle() : (progressFiles + " files");
 			} else {
 				title = (focus == scanRoot) ? target.displayName() : focus.name();
 				subtitle = humanSize(focus.totalBytes());
@@ -2212,18 +2271,27 @@ public final class DiskView {
 	private void drawHubProgress(GraphicsContext g, double cx, double cy) {
 		double r = HUB_RADIUS - 4;
 		double thickness = 2.5;
-		long usedBytes = target.totalBytes() - target.usableBytes();
 
 		g.setStroke(scheme.accent());
 		g.setLineWidth(thickness);
 		g.setLineCap(StrokeLineCap.ROUND);
 
-		if (usedBytes > 0 && progressBytes > 0) {
-			double frac = Math.min(1.0, progressBytes / (double) usedBytes);
-			// Draw a faint full track first.
+		// Scanner override wins; otherwise compute bytes/usedBytes ourselves (the parallel
+		// scanner relies on the fallback). Negative = "no override, use the default path."
+		Scanner.HubState hs = scanner.hubState();
+		double frac = hs.arcFraction();
+		if (frac < 0) {
+			long usedBytes = target.totalBytes() - target.usableBytes();
+			if (usedBytes > 0 && progressBytes > 0) {
+				frac = Math.min(1.0, progressBytes / (double) usedBytes);
+			}
+		}
+
+		if (frac >= 0) {
+			// Faint full track first.
 			g.setStroke(scheme.accent().deriveColor(0, 1, 1, 0.18));
 			g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90, 360, ArcType.OPEN);
-			// Then the filled portion clockwise from 12 o'clock.
+			// Filled portion clockwise from 12 o'clock.
 			g.setStroke(scheme.accent());
 			g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90, -360 * frac, ArcType.OPEN);
 		} else {

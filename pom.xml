@@ -51,6 +51,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         <surefire-plugin.version>3.5.2</surefire-plugin.version>
         <javafx-maven-plugin.version>0.0.8</javafx-maven-plugin.version>
         <gluonfx-maven-plugin.version>1.0.27</gluonfx-maven-plugin.version>
+        <jna.version>5.14.0</jna.version>
     </properties>
 
     <dependencies>
@@ -63,6 +64,19 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             <groupId>org.openjfx</groupId>
             <artifactId>javafx-graphics</artifactId>
             <version>${javafx.version}</version>
+        </dependency>
+
+        <!-- JNA: Win32 bindings for the MFT scanner. jna-platform brings Kernel32 etc.
+             Both JARs ship META-INF/native-image config so GraalVM picks them up. -->
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna</artifactId>
+            <version>${jna.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.java.dev.jna</groupId>
+            <artifactId>jna-platform</artifactId>
+            <version>${jna.version}</version>
         </dependency>
 
         <dependency>
@@ -88,13 +102,19 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 <version>${surefire-plugin.version}</version>
             </plugin>
 
-            <!-- Dev runner: `mvn javafx:run` launches the app on the JVM. -->
+            <!-- Dev runner: `mvn javafx:run` launches the app on the JVM.
+                 enable-native-access silences JEP 472's restricted-method warnings emitted by
+                 JNA when it loads jnidispatch via System.load. The native-image build path
+                 doesn't need this — it's a JVM-only check. -->
             <plugin>
                 <groupId>org.openjfx</groupId>
                 <artifactId>javafx-maven-plugin</artifactId>
                 <version>${javafx-maven-plugin.version}</version>
                 <configuration>
                     <mainClass>${main.class}</mainClass>
+                    <options>
+                        <option>--enable-native-access=ALL-UNNAMED,javafx.graphics</option>
+                    </options>
                 </configuration>
             </plugin>
         </plugins>
@@ -115,7 +135,10 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         <artifactId>javafx-maven-plugin</artifactId>
                         <configuration>
                             <mainClass>${main.class}</mainClass>
+                            <!-- Profile config replaces the base options wholesale, so repeat
+                                 the enable-native-access flag here too. -->
                             <options>
+                                <option>--enable-native-access=ALL-UNNAMED,javafx.graphics</option>
                                 <option>-Ddiskspace.log.level=FINE</option>
                             </options>
                         </configuration>

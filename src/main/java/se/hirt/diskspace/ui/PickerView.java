@@ -43,6 +43,8 @@ import javafx.stage.DirectoryChooser;
 import javafx.stage.Window;
 import javafx.util.Duration;
 import se.hirt.diskspace.model.Volume;
+import se.hirt.diskspace.scan.ScanStrategy;
+import se.hirt.diskspace.scan.Scanner;
 import se.hirt.diskspace.ui.theme.ColorScheme;
 
 import java.io.File;
@@ -57,6 +59,9 @@ public final class PickerView {
 	private final Consumer<Volume> onSelection;
 	private final List<Runnable> sizeRefreshers = new ArrayList<>();
 	private final StackPane helpOverlay;
+	/** Lifted to an instance field so {@link #dispatchTopLevelKey} can fire it on S. Constructed
+	 *  during {@link #PickerView} setup; never null after the constructor returns. */
+	private Runnable toggleStrategy;
 
 	public PickerView(ColorScheme scheme, Consumer<Volume> onSelection) {
 		this.scheme = scheme;
@@ -84,7 +89,31 @@ public final class PickerView {
 				onSelection.accept(Volume.from(picked.toPath()));
 			}
 		});
-		HBox chooseRow = new HBox(choose);
+
+		// Discreet scan-strategy indicator on the right of the bottom row. Click or press S
+		// to cycle through AUTO → MFT → PARALLEL → SEQUENTIAL. Tooltip explains the choice;
+		// row tooltips regenerate on hover so per-disk strategy text picks up the change
+		// automatically.
+		Label strategyLabel = new Label();
+		strategyLabel.setStyle(
+				"-fx-text-fill: " + toCss(scheme.textMuted()) + ";"
+						+ "-fx-font-size: 11px; -fx-cursor: hand; -fx-padding: 0 0 0 12;");
+		Runnable refreshStrategy = () -> strategyLabel.setText("Scan: " + Scanner.PREFERENCE.get().label() + "  ·  click or S to cycle");
+		refreshStrategy.run();
+		Tooltip strategyTip = new Tooltip();
+		strategyTip.setShowDelay(Duration.millis(300));
+		strategyTip.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace; -fx-font-size: 12px;");
+		strategyTip.setOnShowing(e -> strategyTip.setText(buildStrategyTooltip()));
+		Tooltip.install(strategyLabel, strategyTip);
+		this.toggleStrategy = () -> {
+			Scanner.PREFERENCE.updateAndGet(Scanner::nextAvailable);
+			refreshStrategy.run();
+		};
+		strategyLabel.setOnMouseClicked(e -> toggleStrategy.run());
+
+		Region spacer = new Region();
+		HBox.setHgrow(spacer, Priority.ALWAYS);
+		HBox chooseRow = new HBox(choose, spacer, strategyLabel);
 		chooseRow.setAlignment(Pos.CENTER_LEFT);
 		chooseRow.setPadding(new Insets(20, 0, 0, 0));
 
@@ -112,10 +141,11 @@ public final class PickerView {
 		root = new StackPane(body, helpOverlay);
 		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
 
-		// Esc toggles the help overlay; U toggles size units app-wide. Filter at root so
-		// shortcuts fire regardless of which descendant currently has focus (button, scroll
-		// viewport, etc). The same dispatch is also exposed via dispatchTopLevelKey so
-		// MainWindow can route shortcuts in here when focus has fled to the TabPane header.
+		// Esc toggles the help overlay; U toggles size units; S cycles the scan-strategy
+		// preference (AUTO → MFT → PARALLEL → SEQUENTIAL). Filter at root so shortcuts fire
+		// regardless of which descendant currently has focus (button, scroll viewport, etc).
+		// The same dispatch is also exposed via dispatchTopLevelKey so MainWindow can route
+		// shortcuts in here when focus has fled to the TabPane header.
 		root.setFocusTraversable(true);
 		root.addEventFilter(KeyEvent.KEY_PRESSED, this::dispatchTopLevelKey);
 		root.sceneProperty().addListener((obs, oldScene, newScene) -> {
@@ -158,6 +188,9 @@ public final class PickerView {
 			for (Runnable r : sizeRefreshers)
 				r.run();
 			e.consume();
+		} else if (e.getCode() == KeyCode.S) {
+			toggleStrategy.run();
+			e.consume();
 		}
 	}
 
@@ -177,6 +210,7 @@ public final class PickerView {
 		int row = 0;
 		addHelpRow(grid, row++, "Esc", "Show / hide this help");
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
+		addHelpRow(grid, row++, "S", "Cycle scan strategy (Auto / MFT / Parallel / Sequential)");
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label sub = new Label("After picking a disk");
@@ -299,9 +333,10 @@ public final class PickerView {
 				: v.storageProfile().shortLabel();
 		appendKeyValue(sb, "File system", fs == null || fs.isBlank() ? "—" : fs);
 		appendKeyValue(sb, "Storage", storage);
-		if (v.storageProfile() != null) {
-			appendWrappedKeyValue(sb, "Scan", v.storageProfile().tooltipDescription());
-		}
+		// Resolved strategy + description from Scanner — reflects the current preference
+		// (AUTO vs PARALLEL) and per-volume capability (e.g. NTFS+Windows+admin → MFT).
+		appendKeyValue(sb, "Scan", Scanner.strategyLabelFor(v));
+		appendIndentedWrap(sb, Scanner.strategyDescriptionFor(v));
 
 		long total = v.totalBytes();
 		long used = v.usedBytes();
@@ -325,6 +360,26 @@ public final class PickerView {
 		return sb.toString();
 	}
 
+	private static String buildStrategyTooltip() {
+		ScanStrategy s = Scanner.PREFERENCE.get();
+		StringBuilder sb = new StringBuilder();
+		sb.append("Scan strategy: ").append(s.label()).append("\n\n");
+		switch (s) {
+			case AUTO -> sb.append("Pick the fastest available scanner per disk.\n")
+					.append("NTFS on Windows with admin uses the MFT scanner; everything\n")
+					.append("else falls back to parallel walking sized to the profile.");
+			case MFT -> sb.append("Force the MFT scanner. Falls back to parallel walking\n")
+					.append("when the volume isn't NTFS or the process isn't elevated.");
+			case PARALLEL -> sb.append("Always use the parallel directory-walking scanner with\n")
+					.append("per-profile pool size (HDD=1, SSD=8, network=16). Skips MFT\n")
+					.append("even when available — useful for A/B comparison.");
+			case SEQUENTIAL -> sb.append("Force single-threaded directory walking. Mostly a\n")
+					.append("debug knob for measuring the speedup parallelism gives us.");
+		}
+		sb.append("\n\nClick or press S to cycle (Auto → MFT → Parallel → Sequential).");
+		return sb.toString();
+	}
+
 	private static void appendKeyValue(StringBuilder sb, String key, String value) {
 		sb.append(String.format("%-" + TOOLTIP_KEY_WIDTH + "s : %s%n", key, value));
 	}
@@ -341,6 +396,15 @@ public final class PickerView {
 		String indent = " ".repeat(TOOLTIP_KEY_WIDTH + 3); // " : " = 3 chars
 		for (int i = 1; i < lines.size(); i++) {
 			sb.append(indent).append(lines.get(i)).append('\n');
+		}
+	}
+
+	/** Word-wraps {@code value} and emits each line indented to the value column — used to
+	 *  attach a wrapped continuation paragraph to a previously-emitted key/value line. */
+	private static void appendIndentedWrap(StringBuilder sb, String value) {
+		String indent = " ".repeat(TOOLTIP_KEY_WIDTH + 3);
+		for (String line : wordWrap(value, TOOLTIP_WRAP_WIDTH)) {
+			sb.append(indent).append(line).append('\n');
 		}
 	}
 

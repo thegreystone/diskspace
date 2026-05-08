@@ -36,6 +36,12 @@ import java.nio.file.Path;
 
 public interface Scanner {
 
+	/** Process-lifetime preference for which scanner family to use. {@link ScanStrategy#AUTO}
+	 *  picks the fastest available implementation per volume; {@link ScanStrategy#PARALLEL}
+	 *  forces the FS-walking scanner. Toggleable from the picker UI (S key). */
+	java.util.concurrent.atomic.AtomicReference<ScanStrategy> PREFERENCE =
+			new java.util.concurrent.atomic.AtomicReference<>(ScanStrategy.AUTO);
+
 	/**
 	 * Starts scanning {@code root} on a background thread. The listener's {@code onStart} fires synchronously with the live, mutating tree
 	 * before the thread is started — UI code can begin observing the root immediately. Other callbacks fire on the scan thread; UI code is
@@ -46,12 +52,100 @@ public interface Scanner {
 	void cancel();
 
 	/**
-	 * Returns the scanner used for a volume, with parallelism sized to the storage profile. {@link ParallelDirectoryScanner} runs
-	 * sequentially when given parallelism 1, so a single implementation covers both spinning and solid-state media; the per-profile
-	 * pool size is the only knob that changes.
+	 * Optional per-frame overrides for what the {@code DiskView} hub displays during a scan.
+	 * Polled by the UI on every redraw, so implementations must be safe to call from the
+	 * JavaFX thread while the scan is in flight.
+	 *
+	 * <p>Any field can be left as a "no override" sentinel — {@code null} for the strings,
+	 * {@code -1} for {@code arcFraction} — and the hub falls back to its default rendering
+	 * (running {@code humanSize(bytes)} title, {@code "X files"} subtitle, and a
+	 * {@code bytes / usedBytes} progress arc) driven by {@link ScanListener#onProgress}.
+	 *
+	 * <p>The default — {@link #DEFAULT} — is no-overrides. {@link ParallelDirectoryScanner}
+	 * uses it; the bytes-driven hub is exactly right for an FS walk that's discovering
+	 * files in real time. {@link MftScanner} overrides during phase 1 (USN enumeration)
+	 * because no bytes are known yet, then defers to defaults during phase 2 (size lookup)
+	 * so the visible hub matches the parallel scanner once real bytes start flowing.
+	 */
+	record HubState(String title, String subtitle, double arcFraction) {
+		public static final HubState DEFAULT = new HubState(null, null, -1.0);
+	}
+
+	/** Returns the scanner's current hub overrides, or {@link HubState#DEFAULT} for "no
+	 *  override". Polled by the UI on every redraw, so it must be cheap and thread-safe. */
+	default HubState hubState() {
+		return HubState.DEFAULT;
+	}
+
+	/** Returns the next strategy in cycle order, skipping {@link ScanStrategy#MFT} when
+	 *  {@link MftScanner#isAvailable()} is false (non-Windows or native-image build) — on
+	 *  those platforms MFT is functionally identical to PARALLEL because every volume
+	 *  falls through to parallel walking, so cycling through it is just a dead step. */
+	static ScanStrategy nextAvailable(ScanStrategy current) {
+		ScanStrategy n = current.next();
+		if (n == ScanStrategy.MFT && !MftScanner.isAvailable()) {
+			n = n.next();
+		}
+		return n;
+	}
+
+	/**
+	 * Returns the scanner used for a volume, respecting {@link #PREFERENCE}:
+	 * <ul>
+	 *   <li>{@link ScanStrategy#AUTO}: pick the fastest available — MFT on NTFS/Windows/admin,
+	 *       else parallel sized per storage profile.</li>
+	 *   <li>{@link ScanStrategy#MFT}: force {@link MftScanner} if eligible; fall back to
+	 *       parallel(profile) otherwise.</li>
+	 *   <li>{@link ScanStrategy#PARALLEL}: always parallel walking, parallelism per storage
+	 *       profile (HDD=1, SSD=8, NETWORK=16).</li>
+	 *   <li>{@link ScanStrategy#SEQUENTIAL}: parallel walking with parallelism=1 (single
+	 *       thread).</li>
+	 * </ul>
 	 */
 	static Scanner forVolume(Volume volume) {
-		return new ParallelDirectoryScanner(parallelismFor(volume.storageProfile()));
+		ScanStrategy pref = PREFERENCE.get();
+		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && MftScanner.canScan(volume)) {
+			return new MftScanner();
+		}
+		int parallelism = pref == ScanStrategy.SEQUENTIAL ? 1 : parallelismFor(volume.storageProfile());
+		return new ParallelDirectoryScanner(parallelism);
+	}
+
+	/** Returns the strategy label that {@link #forVolume(Volume)} would use for {@code volume}
+	 *  under the current {@link #PREFERENCE}. Used by the picker UI to render per-row tooltips
+	 *  and the global indicator. */
+	static String strategyLabelFor(Volume volume) {
+		ScanStrategy pref = PREFERENCE.get();
+		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && MftScanner.canScan(volume)) {
+			return "MFT";
+		}
+		int p = pref == ScanStrategy.SEQUENTIAL ? 1 : parallelismFor(volume.storageProfile());
+		return p == 1 ? "Sequential" : "Parallel (" + p + ")";
+	}
+
+	/** Longer prose explanation of why {@link #strategyLabelFor(Volume)} chose what it did,
+	 *  for the picker's row tooltip. Always reflects the strategy that would actually run,
+	 *  not a generic profile claim — so toggling {@link #PREFERENCE} changes this text. */
+	static String strategyDescriptionFor(Volume volume) {
+		ScanStrategy pref = PREFERENCE.get();
+		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && MftScanner.canScan(volume)) {
+			return "Reads the NTFS Master File Table via FSCTL_ENUM_USN_DATA, then bulk-enumerates "
+					+ "child sizes per directory. Requires admin / SeBackupPrivilege.";
+		}
+		// User asked for MFT but volume isn't eligible — call out the fallback.
+		if (pref == ScanStrategy.MFT) {
+			int p = parallelismFor(volume.storageProfile());
+			return p == 1
+					? "MFT not available for this volume — falling back to single-threaded directory walking."
+					: "MFT not available for this volume — falling back to parallel walking ("
+							+ p + " readers, sized to the storage profile).";
+		}
+		int p = pref == ScanStrategy.SEQUENTIAL ? 1 : parallelismFor(volume.storageProfile());
+		return switch (p) {
+			case 1 -> "Single-threaded directory walking. Right for spinning media; useful as a debug baseline elsewhere.";
+			case 16 -> "Latency-bound network filesystem — many in-flight requests hide round-trip time.";
+			default -> "SSD metadata throughput peaks around 4–8 concurrent readers; the ForkJoinPool is sized to match.";
+		};
 	}
 
 	/**

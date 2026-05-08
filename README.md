@@ -86,6 +86,7 @@ mvn javafx:run
 | `E` / `F` | Open the hovered sector (or the current view) in your system file explorer.                        |
 | `Del`     | Stage selected rows (or the current section) for deletion. Press again on a staged row to unstage. |
 | `R`       | Re-scan the current disk from scratch.                                                             |
+| `S`       | (picker only) Cycle scan strategy: Auto → MFT → Parallel → Sequential.                             |
 | `U`       | Toggle size units between decimal (GB, default) and binary (GiB).                                  |
 | `V`       | Toggle visualization between sunburst (default) and heatmap (squarified treemap).                  |
 | `Esc`     | Show / hide the keyboard-shortcut overlay (renders on top of the live view).                       |
