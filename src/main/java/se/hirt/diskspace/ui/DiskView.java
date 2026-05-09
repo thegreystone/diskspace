@@ -195,6 +195,16 @@ public final class DiskView {
 	private final java.util.Map<DirectoryNode, java.util.IdentityHashMap<DirectoryNode, Integer>> rankCache = new java.util.IdentityHashMap<>();
 
 	/**
+	 * Persistent rank map for parents whose children list is sort-stable (post-{@link DirectoryNode#sortBySizeRecursive}, no subsequent
+	 * mutation). Survives across renders — once computed for a parent, lookups are O(1) forever until that parent's children change.
+	 * Cleared on scan start; lazy-evicted in {@link #sortedRank} when a parent transitions back to unstable.
+	 * <p>JFR follow-up to the {@link #rankCache} fix: the per-render cache eliminated the in-render re-sort cost, but the renderer was
+	 * still rebuilding the map for every visible parent on every render. For finalised subtrees (the steady state after a scan completes)
+	 * the map can be reused indefinitely.
+	 */
+	private final java.util.Map<DirectoryNode, java.util.IdentityHashMap<DirectoryNode, Integer>> stableRankCache = new java.util.IdentityHashMap<>();
+
+	/**
 	 * Palette index claimed by each top-level family (immediate child of scanRoot). Allocated lazily with collision avoidance so two
 	 * top-level siblings can't end up on the same color even when their names hash to the same bucket.
 	 */
@@ -950,6 +960,7 @@ public final class DiskView {
 		colorCache.clear();
 		topLevelPaletteIdx.clear();
 		finalizedTopLevels.clear();
+		stableRankCache.clear();
 		currentFiles = List.of();
 		tableItems.clear();
 		sectors.clear();
@@ -1700,29 +1711,40 @@ public final class DiskView {
 	}
 
 	/**
-	 * Sort comparator that puts {@link #hiddenNode} last and otherwise sorts by size desc. Used wherever scanRoot's children are ordered so
-	 * Hidden never moves position as the scan progresses or as users navigate.
-	 * <p>{@code sizes} must contain a frozen snapshot of {@code totalBytes()} for every node passed to the comparator. Reading the live
-	 * {@link DirectoryNode#totalBytes()} inside the comparator would cause TimSort to throw
-	 * {@code "Comparison method violates its general contract"} during a parallel scan: the merge passes invoke the comparator multiple
-	 * times for the same pair, and concurrent writers can shift the values between calls so transitivity breaks.
+	 * Single-pass snapshot pairing a node with its {@code totalBytes()} captured at the moment of capture. Replaces the older
+	 * {@code IdentityHashMap<DirectoryNode, Long>} pattern that JFR flagged as the #1 render-CPU hotspot: TimSort calls the comparator O(N
+	 * log N) times per render, the old pattern did two map lookups + two unboxings per comparison plus N {@code Long.valueOf} boxings up
+	 * front. With this record, comparisons read primitive {@code long} fields directly.
+	 * <p>The snapshot is still required: reading {@link DirectoryNode#totalBytes()} inside the comparator would cause TimSort to throw
+	 * "Comparison method violates its general contract" during a parallel scan, because concurrent writers can shift values between the
+	 * comparator's repeated calls on the same pair and break transitivity.
 	 */
-	private Comparator<DirectoryNode> hiddenLastSizeDesc(java.util.Map<DirectoryNode, Long> sizes) {
-		return (a, b) -> {
-			boolean aHidden = (a == hiddenNode);
-			boolean bHidden = (b == hiddenNode);
-			if (aHidden != bHidden)
-				return aHidden ? 1 : -1;
-			return Long.compare(sizes.get(b), sizes.get(a));
-		};
+	private record SizedNode(DirectoryNode node, long size) {
 	}
 
-	/** Frozen-size snapshot of {@code nodes}. See {@link #hiddenLastSizeDesc} for the why. */
-	private static java.util.IdentityHashMap<DirectoryNode, Long> snapshotSizes(java.util.Collection<DirectoryNode> nodes) {
-		java.util.IdentityHashMap<DirectoryNode, Long> m = new java.util.IdentityHashMap<>(nodes.size());
+	/**
+	 * Sort comparator that puts {@link #hiddenNode} last and otherwise sorts by size desc. Used wherever scanRoot's children are ordered so
+	 * Hidden never moves position as the scan progresses or as users navigate.
+	 * <p>Held as a field (not a per-call factory) so the renderer reuses one instance across every {@code layoutChildrenInto} call instead
+	 * of allocating a fresh capturing lambda on each parent. The method reference reads {@link #hiddenNode} at call time, so reassignments
+	 * of the {@code hiddenNode} field (between scans, via the picker) are still seen correctly.
+	 */
+	private final Comparator<SizedNode> hiddenLastSizeDesc = this::compareHiddenLastSizeDesc;
+
+	private int compareHiddenLastSizeDesc(SizedNode a, SizedNode b) {
+		boolean aHidden = (a.node == hiddenNode);
+		boolean bHidden = (b.node == hiddenNode);
+		if (aHidden != bHidden)
+			return aHidden ? 1 : -1;
+		return Long.compare(b.size, a.size);
+	}
+
+	/** Frozen-size snapshot of {@code nodes}. See {@link SizedNode} for the why. */
+	private static List<SizedNode> snapshotSized(java.util.Collection<DirectoryNode> nodes) {
+		List<SizedNode> out = new ArrayList<>(nodes.size());
 		for (DirectoryNode n : nodes)
-			m.put(n, n.totalBytes());
-		return m;
+			out.add(new SizedNode(n, n.totalBytes()));
+		return out;
 	}
 
 	private int depthFromScanRoot(DirectoryNode node) {
@@ -1740,15 +1762,34 @@ public final class DiskView {
 		DirectoryNode parent = node.parent();
 		if (parent == null)
 			return 0;
+
+		// Fast path: parent's children are already sorted by size desc and stable
+		// (post-scan, no mutations since). The sorted-children indices ARE the ranks;
+		// build the lookup map once and reuse across renders.
+		if (parent.isSortStableByTotalBytes()) {
+			java.util.IdentityHashMap<DirectoryNode, Integer> ranks = stableRankCache.get(parent);
+			if (ranks == null) {
+				List<DirectoryNode> kids = parent.children();
+				ranks = new java.util.IdentityHashMap<>(kids.size());
+				for (int i = 0; i < kids.size(); i++) {
+					ranks.put(kids.get(i), i);
+				}
+				stableRankCache.put(parent, ranks);
+			}
+			Integer r = ranks.get(node);
+			return r != null ? r : 0;
+		}
+
+		// Unstable (mid-scan, or post-scan but a mutation happened): evict any stale
+		// long-term entry and fall back to per-render snapshot+sort.
+		stableRankCache.remove(parent);
 		java.util.IdentityHashMap<DirectoryNode, Integer> ranks = rankCache.get(parent);
 		if (ranks == null) {
-			List<DirectoryNode> sorted = new ArrayList<>(parent.children());
-			// Snapshot sizes so the comparator is consistent under concurrent writers.
-			java.util.IdentityHashMap<DirectoryNode, Long> sizes = snapshotSizes(sorted);
-			sorted.sort((a, b) -> Long.compare(sizes.get(b), sizes.get(a)));
+			List<SizedNode> sorted = snapshotSized(parent.children());
+			sorted.sort((a, b) -> Long.compare(b.size, a.size));
 			ranks = new java.util.IdentityHashMap<>(sorted.size());
 			for (int i = 0; i < sorted.size(); i++) {
-				ranks.put(sorted.get(i), i);
+				ranks.put(sorted.get(i).node, i);
 			}
 			rankCache.put(parent, ranks);
 		}
@@ -1773,52 +1814,76 @@ public final class DiskView {
 		if (rootForView == null)
 			return out;
 
+		// Compute per-render ring widths from the current canvas size, so the recursion
+		// can do depth-aware pixel-arc culling (a sweep of N° at the inner ring is
+		// fewer pixels of arc than the same N° at an outer ring; the angle threshold
+		// alone over-culls deep rings and under-culls shallow ones).
+		double w = canvas.getWidth();
+		double h = canvas.getHeight();
+		double maxR = Math.max(40, Math.min(w, h) * 0.46);
+		double normalW = (maxR - HUB_RADIUS) / (NORMAL_RINGS + THIN_RINGS * THIN_RING_FACTOR);
+		if (normalW < 6)
+			normalW = 6;
+		double thinW = normalW * THIN_RING_FACTOR;
+
 		// When viewing the scan root, ring 1 is the root's children (no anchor ring).
 		// When drilled into a sector, ring 1 is that sector at 360° anchoring the view,
 		// and ring 2 onward shows its descendants.
 		boolean rootHasRing = rootForView != scanRoot;
 		if (rootHasRing) {
 			out.put(rootForView, new Layout(1, 90.0, 360.0, getNodeColor(rootForView)));
-			layoutChildrenInto(rootForView, 2, 90.0, 360.0, out);
+			layoutChildrenInto(rootForView, 2, 90.0, 360.0, out, normalW, thinW);
 		} else {
 			double usedSweep = target.totalBytes() > 0 ? target.usedFraction() * 360.0 : 360.0;
 			double startAngle = 90.0 - usedSweep / 2.0;
 			double scannedSweep =
 					target.usedBytes() > 0 ? Math.min(usedSweep, usedSweep * rootForView.totalBytes() / (double) target.usedBytes())
 							: usedSweep;
-			layoutChildrenInto(rootForView, 1, startAngle, scannedSweep, out);
+			layoutChildrenInto(rootForView, 1, startAngle, scannedSweep, out, normalW, thinW);
 		}
 		return out;
 	}
 
-	private void layoutChildrenInto(DirectoryNode parent, int depth, double startDeg, double sweepDeg, Map<DirectoryNode, Layout> out) {
+	/**
+	 * Recursive sunburst layout. Two culling thresholds compose:
+	 * <ul>
+	 *   <li>{@link #MIN_VISIBLE_SWEEP_DEG} — a fixed angle floor, cheapest check; cuts most slivers.</li>
+	 *   <li>Pixel-arc check — at the outer radius of this depth's ring, we require {@code >= 1 px} of arc length. Sectors below that
+	 *       can't render visibly even at high DPI, and crucially we save the recursive descent into their subtrees.</li>
+	 * </ul>
+	 * Both checks let the sweep "consume" the angle (via {@code a += childSweep}) so non-culled siblings keep their proportional
+	 * positions; we just skip the {@link Layout} allocation and the recursion for invisible sectors.
+	 */
+	private void layoutChildrenInto(
+			DirectoryNode parent, int depth, double startDeg, double sweepDeg, Map<DirectoryNode, Layout> out,
+			double normalW, double thinW) {
 		if (depth > MAX_DEPTH)
 			return;
 		long total = parent.totalBytes();
 		if (total <= 0)
 			return;
 
-		List<DirectoryNode> ordered = new ArrayList<>(parent.children());
-		// Snapshot child sizes before sorting so the comparator stays consistent under
-		// the parallel scanner's concurrent writers, and so the layout loop's frac
-		// values match the order we just sorted by (no late drift between sort and
-		// render that could cause sectors to render out of size order).
-		java.util.IdentityHashMap<DirectoryNode, Long> sizes = snapshotSizes(ordered);
+		// Snapshot child sizes alongside the nodes so the comparator can read primitive long
+		// fields (no boxing, no map lookup per comparison). See SizedNode for context.
+		List<SizedNode> ordered = snapshotSized(parent.children());
 		// Hidden always lands at the end of scanRoot's children regardless of size — it's
 		// less actionable than real folders and a stable position is more useful than a
 		// size-correct one.
-		ordered.sort(hiddenLastSizeDesc(sizes));
+		ordered.sort(hiddenLastSizeDesc);
+
+		double outerR = ringInnerR(depth + 1, normalW, thinW);
+		double minSweepFromPixels = Math.toDegrees(1.0 / outerR);
 
 		double a = startDeg;
-		for (DirectoryNode child : ordered) {
-			double frac = sizes.get(child) / (double) total;
+		for (SizedNode s : ordered) {
+			double frac = s.size / (double) total;
 			double childSweep = sweepDeg * frac;
-			if (childSweep < MIN_VISIBLE_SWEEP_DEG) {
+			if (childSweep < MIN_VISIBLE_SWEEP_DEG || childSweep < minSweepFromPixels) {
 				a += childSweep;
 				continue;
 			}
-			out.put(child, new Layout(depth, a, childSweep, getNodeColor(child)));
-			layoutChildrenInto(child, depth + 1, a, childSweep, out);
+			out.put(s.node, new Layout(depth, a, childSweep, getNodeColor(s.node)));
+			layoutChildrenInto(s.node, depth + 1, a, childSweep, out, normalW, thinW);
 			a += childSweep;
 		}
 	}

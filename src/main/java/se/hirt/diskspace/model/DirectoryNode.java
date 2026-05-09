@@ -38,8 +38,13 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Live, thread-safe size tree. The scanner mutates from a background thread; the JavaFX thread reads. {@link #addFile} propagates each
- * file's size up to every ancestor's {@link #totalBytes}, so reads at any time give an accurate running total of everything scanned so far.
- * Children are appended via a copy-on-write list during the scan and replaced with a sorted snapshot on completion.
+ * file's size up to every ancestor's {@link #totalBytes}, so reads at any time give an accurate running total of everything scanned so
+ * far.
+ * <p>Children are appended to a plain {@link ArrayList} guarded by {@link #childrenLock} and reads return a snapshot under the same lock.
+ * The earlier {@link CopyOnWriteArrayList} per-add cost was {@code O(K)} (array copy on every {@code add}); for parents with many children
+ * (~5K+ on volumes like {@code C:\Windows\WinSxS}) this dominated phase 1 allocation. Plain ArrayList add is amortised {@code O(1)}, and
+ * the snapshot copy on read costs the FX thread {@code O(K)} per {@link #children()} call instead of {@code O(K)} per add — net win since
+ * scans add far more often than the FX thread renders.
  */
 public final class DirectoryNode {
 
@@ -75,11 +80,23 @@ public final class DirectoryNode {
 	 */
 	private volatile boolean fileSector;
 
-	/** Volatile so post-scan replacement with a sorted list publishes safely to readers. */
-	private volatile List<DirectoryNode> children = new CopyOnWriteArrayList<>();
+	/**
+	 * Mutable child list. All access — read or write — must hold {@link #childrenLock}. Reads expose a fresh snapshot to callers (see
+	 * {@link #children()}) so no caller can hold an iterator across a concurrent {@link #addChild} call.
+	 */
+	private final List<DirectoryNode> children = new ArrayList<>();
+	private final Object childrenLock = new Object();
 
 	/** Scan state: QUEUED until the scanner enters this dir, SCANNING while inside, DONE when exited. */
 	private volatile ScanState state = ScanState.QUEUED;
+
+	/**
+	 * True iff {@link #children} is currently sorted by {@link #totalBytes()} descending and {@code totalBytes()} for those children is
+	 * stable (no concurrent writers). Set at the end of {@link #sortBySizeRecursive} once size workers have drained; cleared on any
+	 * subsequent {@link #addChild} or {@link #removeChild}. Lets the renderer skip per-render snapshot+sort and reuse a pre-computed rank
+	 * map indefinitely.
+	 */
+	private volatile boolean sortStableByTotalBytes;
 
 	public DirectoryNode(DirectoryNode parent, String name, Path path) {
 		this.parent = parent;
@@ -99,8 +116,15 @@ public final class DirectoryNode {
 		return path;
 	}
 
+	/**
+	 * Returns a stable snapshot of the current children. Each call allocates and the FX thread typically calls this once per render-pass
+	 * per parent, so the cost is bounded; in exchange callers get an iterator that can never throw
+	 * {@link java.util.ConcurrentModificationException} regardless of what the scanner thread is doing.
+	 */
 	public List<DirectoryNode> children() {
-		return children;
+		synchronized (childrenLock) {
+			return new ArrayList<>(children);
+		}
 	}
 
 	public long ownBytes() {
@@ -157,8 +181,20 @@ public final class DirectoryNode {
 
 	public DirectoryNode addChild(String name, Path path) {
 		DirectoryNode child = new DirectoryNode(this, name, path);
-		children.add(child);
+		synchronized (childrenLock) {
+			children.add(child);
+			sortStableByTotalBytes = false;
+		}
 		return child;
+	}
+
+	/**
+	 * Returns true iff {@link #children()} is in size-descending order and the children's sizes are stable
+	 * (post-{@link #sortBySizeRecursive}, pre any new mutation). Renderers can use this to skip per-render snapshot+sort and reuse a cached
+	 * rank map.
+	 */
+	public boolean isSortStableByTotalBytes() {
+		return sortStableByTotalBytes;
 	}
 
 	/**
@@ -196,7 +232,13 @@ public final class DirectoryNode {
 			return;
 		long bytes = child.totalBytes();
 		int count = child.totalFileCount();
-		if (!children.remove(child))
+		boolean removed;
+		synchronized (childrenLock) {
+			removed = children.remove(child);
+			if (removed)
+				sortStableByTotalBytes = false;
+		}
+		if (!removed)
 			return;
 		for (DirectoryNode n = this; n != null; n = n.parent) {
 			n.totalBytes.addAndGet(-bytes);
@@ -204,15 +246,23 @@ public final class DirectoryNode {
 		}
 	}
 
-	/** After scan completion: sort children by size desc, recursively. */
+	/**
+	 * After scan completion: sort children by size desc, recursively. Snapshots the child list before recursing so the per-node lock is
+	 * never held across a recursive call (avoids depth-proportional lock-holding on deep trees), then sorts in place under the lock.
+	 */
 	public void sortBySizeRecursive() {
-		for (DirectoryNode c : children) {
+		List<DirectoryNode> snap;
+		synchronized (childrenLock) {
+			snap = new ArrayList<>(children);
+		}
+		for (DirectoryNode c : snap) {
 			c.sortBySizeRecursive();
 		}
-		if (children.size() > 1) {
-			List<DirectoryNode> sorted = new ArrayList<>(children);
-			sorted.sort(Comparator.comparingLong(DirectoryNode::totalBytes).reversed());
-			children = new CopyOnWriteArrayList<>(sorted);
+		synchronized (childrenLock) {
+			if (children.size() > 1) {
+				children.sort(Comparator.comparingLong(DirectoryNode::totalBytes).reversed());
+			}
+			sortStableByTotalBytes = true;
 		}
 	}
 }

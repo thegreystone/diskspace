@@ -60,3 +60,6 @@ $RECYCLE.BIN/
 .env
 .env.local
 *.local
+
+# Claude Code agent session state
+.claude/
