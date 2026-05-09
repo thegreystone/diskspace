@@ -59,8 +59,10 @@ public final class PickerView {
 	private final Consumer<Volume> onSelection;
 	private final List<Runnable> sizeRefreshers = new ArrayList<>();
 	private final StackPane helpOverlay;
-	/** Lifted to an instance field so {@link #dispatchTopLevelKey} can fire it on S. Constructed
-	 *  during {@link #PickerView} setup; never null after the constructor returns. */
+	/**
+	 * Lifted to an instance field so {@link #dispatchTopLevelKey} can fire it on S. Constructed during {@link #PickerView} setup; never
+	 * null after the constructor returns.
+	 */
 	private Runnable toggleStrategy;
 
 	public PickerView(ColorScheme scheme, Consumer<Volume> onSelection) {
@@ -96,8 +98,7 @@ public final class PickerView {
 		// automatically.
 		Label strategyLabel = new Label();
 		strategyLabel.setStyle(
-				"-fx-text-fill: " + toCss(scheme.textMuted()) + ";"
-						+ "-fx-font-size: 11px; -fx-cursor: hand; -fx-padding: 0 0 0 12;");
+				"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-cursor: hand; -fx-padding: 0 0 0 12;");
 		Runnable refreshStrategy = () -> strategyLabel.setText("Scan: " + Scanner.PREFERENCE.get().label() + "  ·  click or S to cycle");
 		refreshStrategy.run();
 		Tooltip strategyTip = new Tooltip();
@@ -214,8 +215,8 @@ public final class PickerView {
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label sub = new Label("After picking a disk");
-		sub.setStyle(
-				"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 12px; -fx-font-weight: 600;" + "-fx-padding: 12 0 2 0;");
+		sub.setStyle("-fx-text-fill: " + toCss(
+				scheme.textMuted()) + ";" + "-fx-font-size: 12px; -fx-font-weight: 600;" + "-fx-padding: 12 0 2 0;");
 		grid.add(sub, 0, row++, 2, 1);
 
 		addHelpRow(grid, row++, "←  ↑", "Go up one level");
@@ -226,8 +227,8 @@ public final class PickerView {
 		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
 
 		Label title = new Label("Keyboard Shortcuts");
-		title.setStyle(
-				"-fx-text-fill: " + toCss(scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600;" + "-fx-padding: 0 0 14 0;");
+		title.setStyle("-fx-text-fill: " + toCss(
+				scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600;" + "-fx-padding: 0 0 14 0;");
 
 		Label hint = new Label("Press Esc to close");
 		hint.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
@@ -237,9 +238,8 @@ public final class PickerView {
 		card.setPadding(new Insets(24, 28, 20, 28));
 		card.setMaxWidth(460);
 		card.setMaxHeight(Region.USE_PREF_SIZE);
-		card.setStyle(
-				"-fx-background-color: " + toCss(scheme.surface()) + ";" + "-fx-background-radius: 12;"
-						+ "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);");
+		card.setStyle("-fx-background-color: " + toCss(
+				scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);");
 
 		StackPane overlay = new StackPane(card);
 		overlay.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
@@ -254,9 +254,8 @@ public final class PickerView {
 
 	private void addHelpRow(GridPane grid, int row, String key, String desc) {
 		Label k = new Label(key);
-		k.setStyle("-fx-text-fill: " + toCss(scheme.accent()) + ";"
-				+ "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;"
-				+ "-fx-font-size: 13px; -fx-font-weight: 600;");
+		k.setStyle("-fx-text-fill: " + toCss(
+				scheme.accent()) + ";" + "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;" + "-fx-font-size: 13px; -fx-font-weight: 600;");
 		k.setMinWidth(64);
 		Label d = new Label(desc);
 		d.setStyle("-fx-text-fill: " + toCss(scheme.textPrimary()) + ";" + "-fx-font-size: 13px;");
@@ -317,9 +316,10 @@ public final class PickerView {
 
 	/** Width keys are padded to in the top key/value block. Longest = "File system". */
 	private static final int TOOLTIP_KEY_WIDTH = 11;
-	/** Word-wrap target for value text in the tooltip. Tuned for the monospace 12px font
-	 *  so the rendered width stays comfortably narrow without orphaning short trailing
-	 *  words on their own line. */
+	/**
+	 * Word-wrap target for value text in the tooltip. Tuned for the monospace 12px font so the rendered width stays comfortably narrow
+	 * without orphaning short trailing words on their own line.
+	 */
 	private static final int TOOLTIP_WRAP_WIDTH = 50;
 
 	private static String buildVolumeTooltip(Volume v) {
@@ -328,9 +328,8 @@ public final class PickerView {
 		sb.append(v.root()).append("\n\n");
 
 		String fs = v.fsType();
-		String storage = v.storageProfile() == null || v.storageProfile().shortLabel().isEmpty()
-				? "Unknown"
-				: v.storageProfile().shortLabel();
+		String storage =
+				v.storageProfile() == null || v.storageProfile().shortLabel().isEmpty() ? "Unknown" : v.storageProfile().shortLabel();
 		appendKeyValue(sb, "File system", fs == null || fs.isBlank() ? "—" : fs);
 		appendKeyValue(sb, "Storage", storage);
 		// Resolved strategy + description from Scanner — reflects the current preference
@@ -365,16 +364,16 @@ public final class PickerView {
 		StringBuilder sb = new StringBuilder();
 		sb.append("Scan strategy: ").append(s.label()).append("\n\n");
 		switch (s) {
-			case AUTO -> sb.append("Pick the fastest available scanner per disk.\n")
-					.append("NTFS on Windows with admin uses the MFT scanner; everything\n")
-					.append("else falls back to parallel walking sized to the profile.");
-			case MFT -> sb.append("Force the MFT scanner. Falls back to parallel walking\n")
-					.append("when the volume isn't NTFS or the process isn't elevated.");
-			case PARALLEL -> sb.append("Always use the parallel directory-walking scanner with\n")
-					.append("per-profile pool size (HDD=1, SSD=8, network=16). Skips MFT\n")
-					.append("even when available — useful for A/B comparison.");
-			case SEQUENTIAL -> sb.append("Force single-threaded directory walking. Mostly a\n")
-					.append("debug knob for measuring the speedup parallelism gives us.");
+		case AUTO -> sb.append("Pick the fastest available scanner per disk.\n")
+				.append("NTFS on Windows with admin uses the MFT scanner; everything\n")
+				.append("else falls back to parallel walking sized to the profile.");
+		case MFT -> sb.append("Force the MFT scanner. Falls back to parallel walking\n")
+				.append("when the volume isn't NTFS or the process isn't elevated.");
+		case PARALLEL -> sb.append("Always use the parallel directory-walking scanner with\n")
+				.append("per-profile pool size (HDD=1, SSD=8, network=16). Skips MFT\n")
+				.append("even when available — useful for A/B comparison.");
+		case SEQUENTIAL -> sb.append("Force single-threaded directory walking. Mostly a\n")
+				.append("debug knob for measuring the speedup parallelism gives us.");
 		}
 		sb.append("\n\nClick or press S to cycle (Auto → MFT → Parallel → Sequential).");
 		return sb.toString();
@@ -384,8 +383,10 @@ public final class PickerView {
 		sb.append(String.format("%-" + TOOLTIP_KEY_WIDTH + "s : %s%n", key, value));
 	}
 
-	/** Word-wraps {@code value} to {@link #TOOLTIP_WRAP_WIDTH}, indenting continuation
-	 *  lines to align under the first value character (i.e. {@code keyWidth + " : ".length}). */
+	/**
+	 * Word-wraps {@code value} to {@link #TOOLTIP_WRAP_WIDTH}, indenting continuation lines to align under the first value character (i.e.
+	 * {@code keyWidth + " : ".length}).
+	 */
 	private static void appendWrappedKeyValue(StringBuilder sb, String key, String value) {
 		List<String> lines = wordWrap(value, TOOLTIP_WRAP_WIDTH);
 		if (lines.isEmpty()) {
@@ -399,8 +400,10 @@ public final class PickerView {
 		}
 	}
 
-	/** Word-wraps {@code value} and emits each line indented to the value column — used to
-	 *  attach a wrapped continuation paragraph to a previously-emitted key/value line. */
+	/**
+	 * Word-wraps {@code value} and emits each line indented to the value column — used to attach a wrapped continuation paragraph to a
+	 * previously-emitted key/value line.
+	 */
 	private static void appendIndentedWrap(StringBuilder sb, String value) {
 		String indent = " ".repeat(TOOLTIP_KEY_WIDTH + 3);
 		for (String line : wordWrap(value, TOOLTIP_WRAP_WIDTH)) {
@@ -408,8 +411,10 @@ public final class PickerView {
 		}
 	}
 
-	/** Greedy word-wrap. Long single tokens (e.g. URLs) overflow the target width rather
-	 *  than getting hyphenated — this is fine for our short, prose-only descriptions. */
+	/**
+	 * Greedy word-wrap. Long single tokens (e.g. URLs) overflow the target width rather than getting hyphenated — this is fine for our
+	 * short, prose-only descriptions.
+	 */
 	private static List<String> wordWrap(String text, int width) {
 		List<String> lines = new ArrayList<>();
 		StringBuilder current = new StringBuilder();
@@ -424,7 +429,8 @@ public final class PickerView {
 				current.append(word);
 			}
 		}
-		if (current.length() > 0) lines.add(current.toString());
+		if (current.length() > 0)
+			lines.add(current.toString());
 		return lines;
 	}
 

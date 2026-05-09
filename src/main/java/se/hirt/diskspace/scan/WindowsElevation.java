@@ -28,130 +28,128 @@
  */
 package se.hirt.diskspace.scan;
 
+import org.graalvm.nativeimage.ImageInfo;
+import org.graalvm.nativeimage.StackValue;
+import org.graalvm.nativeimage.UnmanagedMemory;
+import org.graalvm.nativeimage.c.type.CCharPointer;
+import org.graalvm.nativeimage.c.type.CIntPointer;
+import org.graalvm.nativeimage.c.type.WordPointer;
+import org.graalvm.word.WordFactory;
+import se.hirt.diskspace.scan.Win32.HANDLE;
+
 import java.util.List;
 import java.util.logging.Logger;
 
-import com.sun.jna.Structure;
-import com.sun.jna.platform.win32.Advapi32;
-import com.sun.jna.platform.win32.Kernel32;
-import com.sun.jna.platform.win32.Shell32;
-import com.sun.jna.platform.win32.WinDef.INT_PTR;
-import com.sun.jna.platform.win32.WinNT;
-import com.sun.jna.platform.win32.WinNT.HANDLE;
-import com.sun.jna.platform.win32.WinNT.HANDLEByReference;
-import com.sun.jna.ptr.IntByReference;
-
 /**
- * Windows-only helpers for detecting and requesting administrator elevation. Wraps the
- * standard {@code OpenProcessToken} / {@code GetTokenInformation} dance to detect elevation,
- * and {@code ShellExecuteW} with the {@code "runas"} verb to relaunch the current process
- * elevated. Intended to be invoked at app startup so users who want MFT-class scanning can
- * grant the privilege at the natural moment.
- *
- * <p>Calls into JNA — same caveat as {@link MftScanner}: not safe to invoke from a GraalVM
- * native-image build (Substrate VM JNI loader rejects JNA's {@code jnidispatch.dll}). Guard
- * with {@link #isAvailable()} before use.
+ * Windows-only helpers for detecting and requesting administrator elevation. Wraps {@code OpenProcessToken} /
+ * {@code GetTokenInformation(TokenElevation)} for the detect side and {@code ShellExecuteW} with the {@code "runas"} verb for the relaunch
+ * side.
+ * <p><b>Native-image only.</b> {@link #isAvailable()} returns false in JVM dev mode, so the
+ * caller (typically {@code App.maybeOfferElevation}) just won't surface the prompt there. Migrating off JNA means the Win32 calls are
+ * direct {@code @CFunction} invocations linked by native-image — no JNI shim, no extra DLL.
  */
 public final class WindowsElevation {
 
 	private static final Logger LOG = Logger.getLogger(WindowsElevation.class.getName());
 
-	/** {@code TokenInformationClass.TokenElevation} = 20. */
+	private WindowsElevation() {
+	}
+
+	// ── Win32 constants ───────────────────────────────────────────────────
+	/** {@code TOKEN_QUERY = 0x0008}. */
+	private static final int TOKEN_QUERY = 0x0008;
+	/** {@code TokenInformationClass.TokenElevation = 20}. */
 	private static final int TOKEN_ELEVATION = 20;
-	/** {@code SW_SHOWNORMAL} for {@code ShellExecuteW}. */
+	/** {@code SW_SHOWNORMAL = 1} for {@code ShellExecuteW}. */
 	private static final int SW_SHOWNORMAL = 1;
 
-	private WindowsElevation() {}
-
-	/** True iff we're on Windows and JNA is loadable (i.e. not a native-image build). */
+	/**
+	 * True iff we're on Windows AND running as a built native-image (not JVM dev mode). The {@code @CFunction} bindings only resolve in
+	 * native-image builds; calling them from a regular JVM throws {@code UnsatisfiedLinkError}, so this guard is mandatory.
+	 */
 	public static boolean isAvailable() {
-		if (!System.getProperty("os.name", "").toLowerCase().contains("win")) return false;
-		if (System.getProperty("org.graalvm.nativeimage.imagecode") != null) return false;
-		return true;
+		if (!System.getProperty("os.name", "").toLowerCase().contains("win"))
+			return false;
+		return ImageInfo.inImageRuntimeCode();
 	}
 
 	/**
-	 * Returns true iff the current process token is elevated (i.e. running as administrator
-	 * via UAC). Returns false on any error or when not on Windows.
+	 * Returns true iff the current process token is elevated (i.e. running as administrator via UAC). Returns false on any error or when
+	 * {@link #isAvailable()} is false.
 	 */
 	public static boolean isElevated() {
-		if (!isAvailable()) return false;
-		HANDLEByReference tokenRef = new HANDLEByReference();
-		boolean opened = Advapi32.INSTANCE.OpenProcessToken(
-				Kernel32.INSTANCE.GetCurrentProcess(),
-				WinNT.TOKEN_QUERY,
-				tokenRef);
-		if (!opened) return false;
-		HANDLE token = tokenRef.getValue();
+		if (!isAvailable())
+			return false;
+		WordPointer tokenRef = StackValue.get(WordPointer.class);
+		int opened = Win32.OpenProcessToken(Win32.GetCurrentProcess(), TOKEN_QUERY, tokenRef);
+		if (opened == 0)
+			return false;
+		HANDLE token = (HANDLE) tokenRef.read();
 		try {
-			TokenElevation elev = new TokenElevation();
-			IntByReference returnedLen = new IntByReference();
-			boolean ok = Advapi32.INSTANCE.GetTokenInformation(
-					token, TOKEN_ELEVATION, elev, elev.size(), returnedLen);
-			if (!ok) return false;
-			elev.read();
-			return elev.TokenIsElevated != 0;
+			// TOKEN_ELEVATION is a single DWORD, nonzero == elevated.
+			CIntPointer elev = StackValue.get(CIntPointer.class);
+			elev.write(0);
+			CIntPointer returnedLen = StackValue.get(CIntPointer.class);
+			int ok = Win32.GetTokenInformation(token, TOKEN_ELEVATION, elev, 4, returnedLen);
+			if (ok == 0)
+				return false;
+			return elev.read() != 0;
 		} finally {
-			Kernel32.INSTANCE.CloseHandle(token);
-		}
-	}
-
-	/** {@code TOKEN_ELEVATION}: single DWORD, nonzero == elevated. */
-	public static class TokenElevation extends Structure {
-		public int TokenIsElevated;
-
-		@Override
-		protected List<String> getFieldOrder() {
-			return List.of("TokenIsElevated");
+			Win32.CloseHandle(token);
 		}
 	}
 
 	/**
-	 * Spawns a new copy of the current process via {@code ShellExecuteW} with the {@code "runas"}
-	 * verb — Windows shows the UAC prompt and, on consent, launches the new process elevated.
-	 * Returns true if the spawn was initiated successfully (the user may still decline UAC,
+	 * Spawns a new copy of the current process via {@code ShellExecuteW} with the {@code "runas"} verb. Windows shows the UAC prompt and,
+	 * on consent, launches the new process elevated. Returns true if the spawn was initiated successfully (the user may still decline UAC,
 	 * which produces a successful return here but no elevated process).
-	 *
-	 * <p>The caller should {@code Platform.exit()} the current (un-elevated) process after a
+	 * <p>Do {@code Platform.exit()} the current (un-elevated) process after a
 	 * successful return so the user isn't left with two windows.
-	 *
-	 * <p>Both the executable path and the original argv are read via {@link ProcessHandle},
-	 * so this works for the native {@code DiskSpace.exe} (relaunches the .exe) and for
-	 * {@code mvn javafx:run} (relaunches the {@code java.exe} with the same classpath args).
 	 */
 	public static boolean relaunchElevated() {
-		if (!isAvailable()) return false;
+		if (!isAvailable())
+			return false;
 		ProcessHandle.Info info = ProcessHandle.current().info();
 		String cmd = info.command().orElse(null);
 		if (cmd == null || cmd.isBlank()) {
 			LOG.warning("relaunchElevated: ProcessHandle.command() unavailable; cannot self-relaunch");
 			return false;
 		}
-		String params = info.arguments()
-				.map(args -> joinArgs(List.of(args)))
-				.orElse("");
+		String params = info.arguments().map(args -> joinArgs(List.of(args))).orElse("");
 		LOG.fine(() -> "relaunchElevated: ShellExecute runas cmd=" + cmd + " params=" + params);
-		// ShellExecute's return is encoded as INT_PTR but is really an integer status code:
-		// values 0..32 are SE_ERR_* error codes; > 32 means a launched-app HINSTANCE handle.
-		INT_PTR result = Shell32.INSTANCE.ShellExecute(
-				null, "runas", cmd, params.isEmpty() ? null : params, null, SW_SHOWNORMAL);
-		long status = result == null ? 0 : result.longValue();
-		boolean spawned = status > 32;
-		if (!spawned) {
-			LOG.warning("relaunchElevated: ShellExecute returned " + status
-					+ " (likely user declined UAC, path not found, or runas not allowed)");
+
+		CCharPointer verb = Win32.allocWideString("runas");
+		CCharPointer file = Win32.allocWideString(cmd);
+		CCharPointer pars = params.isEmpty() ? WordFactory.nullPointer() : Win32.allocWideString(params);
+		try {
+			// ShellExecute's return is encoded as HINSTANCE but is really an integer status
+			// code: 0..32 are SE_ERR_* error codes; > 32 means a launched-app HINSTANCE.
+			long status = Win32.ShellExecuteW(Win32.nullHandle(), verb, file, pars, WordFactory.nullPointer(), SW_SHOWNORMAL);
+			boolean spawned = status > 32;
+			if (!spawned) {
+				LOG.warning(
+						"relaunchElevated: ShellExecute returned " + status + " (likely user declined UAC, path not found, or runas not allowed)");
+			}
+			return spawned;
+		} finally {
+			UnmanagedMemory.free(verb);
+			UnmanagedMemory.free(file);
+			if (pars.isNonNull())
+				UnmanagedMemory.free(pars);
 		}
-		return spawned;
 	}
 
-	/** Quoting that's just-good-enough for re-passing argv through {@code ShellExecute}'s
-	 *  {@code lpParameters} — wraps anything containing whitespace or quotes in double quotes
-	 *  with internal quotes escaped. Skips empty args. */
+	/**
+	 * Quoting that's just-good-enough for re-passing argv through {@code ShellExecute}'s {@code lpParameters}. Wraps anything containing
+	 * whitespace or quotes in double quotes with internal quotes escaped. Skips empty args.
+	 */
 	private static String joinArgs(List<String> args) {
 		StringBuilder sb = new StringBuilder();
 		for (String a : args) {
-			if (a == null || a.isEmpty()) continue;
-			if (sb.length() > 0) sb.append(' ');
+			if (a == null || a.isEmpty())
+				continue;
+			if (sb.length() > 0)
+				sb.append(' ');
 			boolean needsQuote = a.indexOf(' ') >= 0 || a.indexOf('\t') >= 0 || a.indexOf('"') >= 0;
 			if (needsQuote) {
 				sb.append('"').append(a.replace("\"", "\\\"")).append('"');

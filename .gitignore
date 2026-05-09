@@ -8,6 +8,9 @@ out/
 *.class
 dependency-reduced-pom.xml
 
+# Profiling output
+*.jfr
+
 # Inno Setup output (installer build artifacts + staged binary)
 installer/Output/
 installer/diskspace.exe

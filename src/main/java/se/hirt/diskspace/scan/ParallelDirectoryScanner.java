@@ -73,9 +73,10 @@ public final class ParallelDirectoryScanner implements Scanner {
 	private volatile Thread coordinator;
 
 	/**
-	 * @param parallelism size of the per-scan ForkJoinPool. {@code 1} runs sequentially (right for spinning disks where the kernel can do
-	 *     readahead and concurrent threads only cost seeks); higher values exploit metadata-throughput parallelism on SSD/NVMe and hide
-	 *     RTT on network filesystems. See {@link Scanner#forVolume} for the mapping by storage profile.
+	 * @param parallelism
+	 * 		size of the per-scan ForkJoinPool. {@code 1} runs sequentially (right for spinning disks where the kernel can do readahead and
+	 * 		concurrent threads only cost seeks); higher values exploit metadata-throughput parallelism on SSD/NVMe and hide RTT on network
+	 * 		filesystems. See {@link Scanner#forVolume} for the mapping by storage profile.
 	 */
 	public ParallelDirectoryScanner(int parallelism) {
 		if (parallelism < 1)
@@ -264,23 +265,29 @@ public final class ParallelDirectoryScanner implements Scanner {
 	}
 
 	/**
+	 * {@code true} iff the default filesystem supports the {@code unix} attribute view (i.e. Linux/macOS). Detected once at class load —
+	 * the previous per-file try/catch on {@link UnsupportedOperationException} cost ~243 exceptions/sec on Windows during a scan (caught
+	 * silently and ignored, but {@code fillInStackTrace} dominated allocation and CPU profiles in JFR). One probe replaces millions of
+	 * throws.
+	 */
+	private static final boolean UNIX_VIEW_SUPPORTED = FileSystems.getDefault().supportedFileAttributeViews().contains("unix");
+
+	/**
 	 * Reads size, fileKey, and type bits in one syscall. On macOS/Linux this also pulls {@code unix:blocks} so the size we record is
 	 * physical-on-disk (blocks × 512) rather than logical, matching the sequential scanner's {@code physicalSize} behaviour. On Windows the
 	 * unix view is unsupported and we fall back to {@link BasicFileAttributes}.
 	 */
 	private static EntryStat readStat(Path p) throws IOException {
-		try {
+		if (UNIX_VIEW_SUPPORTED) {
 			Map<String, Object> a = Files.readAttributes(p, "unix:size,blocks,fileKey,isRegularFile,isDirectory",
 					LinkOption.NOFOLLOW_LINKS);
 			Long blocks = (Long) a.get("blocks");
 			long logicalSize = (Long) a.get("size");
 			long size = blocks != null ? blocks * 512L : logicalSize;
 			return new EntryStat(size, a.get("fileKey"), (Boolean) a.get("isRegularFile"), (Boolean) a.get("isDirectory"));
-		} catch (UnsupportedOperationException | IllegalArgumentException e) {
-			// Windows / no unix view — basic stat is the most we can get.
-			BasicFileAttributes a = Files.readAttributes(p, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-			return new EntryStat(a.size(), a.fileKey(), a.isRegularFile(), a.isDirectory());
 		}
+		BasicFileAttributes a = Files.readAttributes(p, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+		return new EntryStat(a.size(), a.fileKey(), a.isRegularFile(), a.isDirectory());
 	}
 
 	private static String displayName(Path p) {

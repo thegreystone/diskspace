@@ -50,13 +50,15 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.logging.ConsoleHandler;
-import java.util.logging.FileHandler;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-import java.util.logging.SimpleFormatter;
+import java.util.logging.*;
 
 public final class App extends Application {
+
+	/**
+	 * Captured as the first <clinit> action of this class, so for native-image binaries it represents process entry, and for JVM runs the
+	 * JVM-startup-to-class-load delta is the only thing in front of it. Used as the t=0 baseline in startup-timing log lines.
+	 */
+	private static final long MAIN_START_NANOS = System.nanoTime();
 
 	private static volatile MainWindow mainWindow;
 	private static volatile boolean shuttingDown;
@@ -89,22 +91,21 @@ public final class App extends Application {
 	}
 
 	/**
-	 * If we're on Windows and not already elevated, ask the user once per launch whether
-	 * they'd like to restart as administrator. Yes → {@code ShellExecute("runas")} relaunches
-	 * the current command line elevated and we exit. No → continue with the parallel scanner.
-	 *
+	 * If we're on Windows and not already elevated, ask the user once per launch whether they'd like to restart as administrator. Yes →
+	 * {@code ShellExecute("runas")} relaunches the current command line elevated and we exit. No → continue with the parallel scanner.
 	 * <p>Skipped silently when {@link WindowsElevation#isAvailable()} is false (non-Windows,
-	 * or a native-image build where JNA isn't loadable). Skipped when
-	 * {@code -Ddiskspace.skipElevationPrompt=true} is set (handy for unattended runs).
+	 * or a native-image build where JNA isn't loadable). Skipped when {@code -Ddiskspace.skipElevationPrompt=true} is set (handy for
+	 * unattended runs).
 	 */
 	private void maybeOfferElevation() {
-		if (!WindowsElevation.isAvailable()) return;
-		if (WindowsElevation.isElevated()) return;
-		if (Boolean.getBoolean("diskspace.skipElevationPrompt")) return;
+		if (!WindowsElevation.isAvailable())
+			return;
+		if (WindowsElevation.isElevated())
+			return;
+		if (Boolean.getBoolean("diskspace.skipElevationPrompt"))
+			return;
 		Alert alert = new Alert(AlertType.CONFIRMATION,
-				"DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as "
-						+ "administrator. Without elevation it falls back to the directory-walking "
-						+ "scanner.\n\nRestart as administrator now?",
+				"DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as " + "administrator. Without elevation it falls back to the directory-walking " + "scanner.\n\nRestart as administrator now?",
 				ButtonType.YES, ButtonType.NO);
 		alert.setHeaderText("Run as administrator for faster scanning?");
 		alert.setTitle("DiskSpace");
@@ -115,8 +116,7 @@ public final class App extends Application {
 				} else {
 					// User declined UAC, or the spawn failed for some other reason. Stay open.
 					Alert err = new Alert(AlertType.WARNING,
-							"Could not restart as administrator. Continuing without elevation.\n"
-									+ "You can launch DiskSpace yourself from an elevated shell to enable MFT scanning.",
+							"Could not restart as administrator. Continuing without elevation.\n" + "You can launch DiskSpace yourself from an elevated shell to enable MFT scanning.",
 							ButtonType.OK);
 					err.setHeaderText("Elevation declined");
 					err.setTitle("DiskSpace");
@@ -161,20 +161,97 @@ public final class App extends Application {
 		return icons;
 	}
 
-	/** Resolved at app startup so crash logs and the default log file have a known-writable
-	 *  destination. See {@link #resolveTempDir()} for the fallback chain. */
+	/**
+	 * Resolved at app startup so crash logs and the default log file have a known-writable destination. See {@link #resolveTempDir()} for
+	 * the fallback chain.
+	 */
 	private static final Path TEMP_DIR = resolveTempDir();
 
 	public static void main(String[] args) {
+		applyDebugFlagIfPresent(args);
 		installCrashHandler();
 		configureLoggingFromSystemProperty();
+		Logger.getLogger("se.hirt.diskspace").info(() -> String.format(
+				"DiskSpace main entered (%d ms since process start)", (System.nanoTime() - MAIN_START_NANOS) / 1_000_000));
 		installShutdownNoiseFilter();
+		maybeStartJfrRecording();
 		launch(args);
 	}
 
 	/**
-	 * Walks a list of candidate temp directories, returning the first one that exists, is a
-	 * directory, and lets us create + delete a probe file. Order:
+	 * Recognises {@code -debug} (or {@code --debug}) as a one-flag shorthand for the two properties our diagnostic flow normally needs:
+	 * <ul>
+	 *   <li>{@code diskspace.log.level=FINE} — turns on FINE logging to {@code <TEMP>/diskspace.log}</li>
+	 *   <li>{@code diskspace.jfr.file=…} — auto-starts a JFR recording, dumped on exit</li>
+	 * </ul>
+	 * <p>Either property already set by the user wins (we don't clobber explicit choices).
+	 * The flag itself is left in {@code args} so {@code launch(args)} sees it; JavaFX
+	 * ignores unknown CLI arguments.
+	 * <p>Use:
+	 * <pre>
+	 *   DiskSpace.exe -debug                    (native binary)
+	 *   mvn javafx:run -Dexec.args="-debug"     (JVM dev)
+	 * </pre>
+	 */
+	private static void applyDebugFlagIfPresent(String[] args) {
+		boolean debug = false;
+		for (String a : args) {
+			if ("-debug".equals(a) || "--debug".equals(a)) {
+				debug = true;
+				break;
+			}
+		}
+		if (!debug)
+			return;
+		if (System.getProperty("diskspace.log.level") == null) {
+			System.setProperty("diskspace.log.level", "FINE");
+		}
+		if (System.getProperty("diskspace.jfr.file") == null) {
+			boolean inNativeImage = "runtime".equals(System.getProperty("org.graalvm.nativeimage.imagecode"));
+			System.setProperty("diskspace.jfr.file", inNativeImage ? "diskspace-native.jfr" : "diskspace.jfr");
+		}
+	}
+
+	/**
+	 * Starts a JFR recording programmatically when {@code -Ddiskspace.jfr.file=PATH} is set on the command line — typically from the
+	 * {@code -debug} shorthand wired up in {@link #applyDebugFlagIfPresent(String[])}, but also usable directly.
+	 * <p>We drive the JFR API instead of {@code -XX:StartFlightRecording=...} because
+	 * Substrate VM (GraalVM 21 LTS) doesn't honour that command-line flag in native-image mode — both the {@code -XX:} runtime form and the
+	 * {@code -R:} build-time baked-in form are silently no-ops.
+	 * <p>On HotSpot the API path works as expected. On Gluon Substrate native images the
+	 * API is also broken right now: {@code new Recording().start()} throws "Flight Recorder is not supported on this VM" even when
+	 * {@code --enable-monitoring=jfr} was passed at build time (our {@code native-jfr} profile). Tracked at
+	 * <a href="https://github.com/gluonhq/substrate/issues/1354">gluonhq/substrate#1354</a>;
+	 * minimal reproducer at
+	 * <a href="https://github.com/thegreystone/jfr-gluonfx-repro">thegreystone/jfr-gluonfx-repro</a>.
+	 * The catch block below swallows that exception, so once Gluon picks up the upstream fix this code path will Just Work in native
+	 * binaries too.
+	 * <p>If JFR isn't compiled into the binary (default {@code native} build), the
+	 * {@code Recording} call throws and we swallow it — JFR is strictly opt-in. Dump-on-exit is enabled so the file appears when the user
+	 * closes the app normally.
+	 */
+	private static void maybeStartJfrRecording() {
+		String filename = System.getProperty("diskspace.jfr.file");
+		if (filename == null)
+			return;
+		try {
+			jdk.jfr.Recording r = new jdk.jfr.Recording();
+			r.setName("diskspace");
+			r.setDestination(java.nio.file.Paths.get(filename).toAbsolutePath());
+			r.setDumpOnExit(true);
+			r.start();
+			Logger.getLogger("se.hirt.diskspace").info(() -> "JFR recording started -> " + r.getDestination());
+		} catch (Throwable t) {
+			// JFR not compiled into this binary (default native build does not include
+			// --enable-monitoring=jfr) or the runtime rejected the request. Either way,
+			// skip silently — JFR is opt-in.
+			Logger.getLogger("se.hirt.diskspace").fine(() -> "JFR auto-start skipped: " + t);
+		}
+	}
+
+	/**
+	 * Walks a list of candidate temp directories, returning the first one that exists, is a directory, and lets us create + delete a probe
+	 * file. Order:
 	 * <ol>
 	 *   <li>{@code java.io.tmpdir} — Java's already-resolved value for the platform.</li>
 	 *   <li>Env vars {@code TEMP}, {@code TMP}, {@code TMPDIR}.</li>
@@ -192,19 +269,23 @@ public final class App extends Application {
 		candidates.add(System.getenv("TMP"));
 		candidates.add(System.getenv("TMPDIR"));
 		String localAppData = System.getenv("LOCALAPPDATA");
-		if (localAppData != null) candidates.add(localAppData + "\\Temp");
+		if (localAppData != null)
+			candidates.add(localAppData + "\\Temp");
 		String userProfile = System.getenv("USERPROFILE");
-		if (userProfile != null) candidates.add(userProfile + "\\AppData\\Local\\Temp");
+		if (userProfile != null)
+			candidates.add(userProfile + "\\AppData\\Local\\Temp");
 		candidates.add("C:\\Windows\\Temp");
 		candidates.add("/tmp");
 		candidates.add("/var/tmp");
 		candidates.add(".");
 
 		for (String c : candidates) {
-			if (c == null || c.isBlank()) continue;
+			if (c == null || c.isBlank())
+				continue;
 			try {
 				Path p = Paths.get(c);
-				if (!Files.isDirectory(p)) continue;
+				if (!Files.isDirectory(p))
+					continue;
 				Path probe = Files.createTempFile(p, "diskspace-tmp-", ".probe");
 				Files.deleteIfExists(probe);
 				return p.toAbsolutePath();
@@ -216,11 +297,9 @@ public final class App extends Application {
 	}
 
 	/**
-	 * Installs an uncaught-exception handler that always writes a stack trace to
-	 * {@code <TEMP_DIR>/diskspace-crash.log}. This is the safety net for native-image builds
-	 * where the binary is a Windows GUI-subsystem .exe with no attached console — without it,
-	 * a crash on startup or a swallowed exception deep in a scan thread leaves the user
-	 * staring at a frozen UI with nothing to share.
+	 * Installs an uncaught-exception handler that always writes a stack trace to {@code <TEMP_DIR>/diskspace-crash.log}. This is the safety
+	 * net for native-image builds where the binary is a Windows GUI-subsystem .exe with no attached console — without it, a crash on
+	 * startup or a swallowed exception deep in a scan thread leaves the user staring at a frozen UI with nothing to share.
 	 */
 	private static void installCrashHandler() {
 		Thread.setDefaultUncaughtExceptionHandler((thread, ex) -> {
@@ -231,8 +310,7 @@ public final class App extends Application {
 					pw.println("=== " + Instant.now() + " thread=" + thread.getName() + " ===");
 					ex.printStackTrace(pw);
 				}
-				Files.writeString(p, sw.toString(),
-						StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+				Files.writeString(p, sw.toString(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
 			} catch (IOException ignore) {
 				// best-effort — there's nowhere else to put it
 			}
@@ -240,17 +318,17 @@ public final class App extends Application {
 	}
 
 	/**
-	 * JavaFX 21 has a known Glass shutdown race on macOS where {@code Toolkit.checkFxUserThread} can throw an
-	 * {@code IllegalStateException} from a window-destroy notification while we're already exiting. The exception is harmless — the JVM
-	 * is on its way out — but the stack trace looks alarming in the console. Silence it once we've started shutting down.
-	 *
+	 * JavaFX 21 has a known Glass shutdown race on macOS where {@code Toolkit.checkFxUserThread} can throw an {@code IllegalStateException}
+	 * from a window-destroy notification while we're already exiting. The exception is harmless — the JVM is on its way out — but the stack
+	 * trace looks alarming in the console. Silence it once we've started shutting down.
 	 * <p>Wraps whatever handler {@link #installCrashHandler()} installed previously, so genuine crashes still land in
 	 * {@code <TEMP_DIR>/diskspace-crash.log} — only the macOS shutdown noise is dropped.
 	 */
 	private static void installShutdownNoiseFilter() {
 		Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
 		Thread.setDefaultUncaughtExceptionHandler((t, ex) -> {
-			if (shuttingDown && ex instanceof IllegalStateException && ex.getMessage() != null && ex.getMessage().contains("Not on FX application thread")) {
+			if (shuttingDown && ex instanceof IllegalStateException && ex.getMessage() != null && ex.getMessage()
+					.contains("Not on FX application thread")) {
 				return;
 			}
 			if (prev != null)
@@ -261,9 +339,8 @@ public final class App extends Application {
 	}
 
 	/**
-	 * When {@code -Ddiskspace.log.level=FINE} (or any valid {@link Level}) is passed, route
-	 * logs from {@code se.hirt.diskspace.*} to handlers at that level. Two handlers are
-	 * installed:
+	 * When {@code -Ddiskspace.log.level=FINE} (or any valid {@link Level}) is passed, route logs from {@code se.hirt.diskspace.*} to
+	 * handlers at that level. Two handlers are installed:
 	 * <ul>
 	 *   <li>A {@link ConsoleHandler} — visible during {@code mvn javafx:run}; silently dropped
 	 *       for native-image GUI-subsystem builds where stdout has nowhere to go.</li>

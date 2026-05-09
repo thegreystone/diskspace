@@ -57,8 +57,10 @@ public enum StorageProfile {
 		};
 	}
 
-	/** Scan-strategy explanation for tooltip display. Stays focused on how DiskSpace walks
-	 *  this profile — the storage type itself is already shown as its own key/value line. */
+	/**
+	 * Scan-strategy explanation for tooltip display. Stays focused on how DiskSpace walks this profile — the storage type itself is already
+	 * shown as its own key/value line.
+	 */
 	public String tooltipDescription() {
 		return switch (this) {
 			case SSD -> "Parallel (8 readers) — SSD metadata throughput peaks around 4–8 concurrent readers.";
