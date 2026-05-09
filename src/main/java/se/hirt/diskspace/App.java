@@ -171,8 +171,8 @@ public final class App extends Application {
 		applyDebugFlagIfPresent(args);
 		installCrashHandler();
 		configureLoggingFromSystemProperty();
-		Logger.getLogger("se.hirt.diskspace").info(() -> String.format(
-				"DiskSpace main entered (%d ms since process start)", (System.nanoTime() - MAIN_START_NANOS) / 1_000_000));
+		Logger.getLogger("se.hirt.diskspace").info(() -> String.format("DiskSpace main entered (%d ms since process start)",
+				(System.nanoTime() - MAIN_START_NANOS) / 1_000_000));
 		installShutdownNoiseFilter();
 		maybeStartJfrRecording();
 		launch(args);

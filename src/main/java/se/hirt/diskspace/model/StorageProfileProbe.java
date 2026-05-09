@@ -28,6 +28,9 @@
  */
 package se.hirt.diskspace.model;
 
+import org.graalvm.nativeimage.ImageInfo;
+import se.hirt.diskspace.scan.Win32StorageProbe;
+
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -283,6 +286,22 @@ public final class StorageProfileProbe {
 	 * line: {@code result: X=…} sets the per-drive classification, {@code diag: X …} lines are logged at FINE for troubleshooting.
 	 */
 	private static Map<Path, StorageProfile> probeWindowsBatch(List<Volume> volumes) {
+		// Native-image fast path: 3 ioctls per drive (~5-10ms each) vs. ~2.4s for one
+		// PowerShell process doing the WMI/CIM round-trip. About 25× faster on a typical
+		// machine, no admin needed, and the same SSD/HDD/NETWORK classification as the
+		// PowerShell path produces. JVM dev mode falls through to PowerShell because
+		// @CFunction bindings only resolve in native-image builds.
+		if (ImageInfo.inImageRuntimeCode()) {
+			long startNanos = System.nanoTime();
+			Map<Path, StorageProfile> results = Win32StorageProbe.probeAll(volumes);
+			for (Map.Entry<Path, StorageProfile> e : results.entrySet()) {
+				CACHE.put(e.getKey().toAbsolutePath().toString(), e.getValue());
+			}
+			long ms = (System.nanoTime() - startNanos) / 1_000_000L;
+			LOG.fine(() -> "  windows native: classified " + results.size() + " drives in " + ms + "ms");
+			return results;
+		}
+
 		Map<Path, StorageProfile> results = new LinkedHashMap<>();
 		Map<String, Path> driveToPath = new LinkedHashMap<>();
 		for (Volume v : volumes) {

@@ -10,6 +10,7 @@ dependency-reduced-pom.xml
 
 # Profiling output
 *.jfr
+stdout.txt
 
 # Inno Setup output (installer build artifacts + staged binary)
 installer/Output/

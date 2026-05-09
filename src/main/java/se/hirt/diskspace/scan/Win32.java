@@ -103,6 +103,14 @@ public final class Win32 {
 	@CFunction(value = "GetLastError", transition = Transition.NO_TRANSITION)
 	public static native int GetLastError();
 
+	/**
+	 * Returns one of {@code DRIVE_UNKNOWN(0)}, {@code DRIVE_NO_ROOT_DIR(1)}, {@code DRIVE_REMOVABLE(2)}, {@code DRIVE_FIXED(3)},
+	 * {@code DRIVE_REMOTE(4)}, {@code DRIVE_CDROM(5)}, or {@code DRIVE_RAMDISK(6)}. Used by storage classification to pick out network
+	 * drives without any volume open.
+	 */
+	@CFunction(value = "GetDriveTypeW", transition = Transition.NO_TRANSITION)
+	public static native int GetDriveTypeW(CCharPointer lpRootPathName);
+
 	// ── advapi32 ──────────────────────────────────────────────────────────
 
 	@CFunction(value = "OpenProcessToken", transition = Transition.NO_TRANSITION)
