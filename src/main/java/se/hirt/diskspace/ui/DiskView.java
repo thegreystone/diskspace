@@ -2055,7 +2055,8 @@ public final class DiskView {
 				base = base.deriveColor(0, 1.20, 0.85, 1.0);
 				alpha = Math.min(1.0, alpha + 0.10);
 			}
-			Color fill = base.deriveColor(0, 1, 1, alpha);
+			// See drawTreemapCell for why we avoid deriveColor for alpha-only mods.
+			Color fill = (alpha >= 1.0) ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
 			drawAnnularSector(g, cx, cy, r1, r2, l.startDeg(), l.sweepDeg(), fill);
 			sectors.add(new SectorRect(node, (int) l.depth(), l.startDeg(), l.sweepDeg(), r1, r2, false));
 		}
@@ -2153,7 +2154,8 @@ public final class DiskView {
 			double alpha = (fe.node.isDone() ? 1.0 : 0.45) * fe.alphaScale;
 			if (alpha <= 0.001)
 				continue;
-			Color fill = base.deriveColor(0, 1, 1, alpha);
+			// See drawTreemapCell for why we avoid deriveColor for alpha-only mods.
+			Color fill = (alpha >= 1.0) ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
 			drawAnnularSector(g, cx, cy, r1, r2, fe.start, fe.sweep, fill);
 		}
 	}
@@ -2431,7 +2433,13 @@ public final class DiskView {
 		double alpha = (item.node() == null || item.node().isDone()) ? 1.0 : 0.45;
 		if (hovered)
 			alpha = Math.min(1.0, alpha + 0.10);
-		Color fill = base.deriveColor(0, 1, 1, alpha);
+		// Avoid Color.deriveColor() here: it always does RGB→HSB→RGB even when hue/sat/bright
+		// are no-ops (the 0,1,1 args), allocating a fresh Color per cell. JFR flagged this as
+		// the dominant per-cell cost on million-cell heatmap renders. Two cheap fast paths:
+		//   - alpha == 1.0 (post-scan, common case): base is already opaque, reuse it as-is.
+		//   - alpha < 1.0: direct constructor does the same thing as deriveColor's alpha-only
+		//     path without the HSB roundtrip.
+		Color fill = (alpha >= 1.0) ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
 
 		g.setFill(fill);
 		g.fillRect(x, y, w, h);
