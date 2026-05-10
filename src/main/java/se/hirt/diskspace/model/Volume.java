@@ -35,7 +35,7 @@ import java.util.List;
 import java.util.Map;
 
 public record Volume(String displayName, String deviceName, Path root, long totalBytes, long usableBytes,
-					 long usedBytes, String fsType, StorageProfile storageProfile) {
+                     long usedBytes, String fsType, StorageProfile storageProfile) {
 
 	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(Volume.class.getName());
 
@@ -126,8 +126,16 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 			long total = store.getTotalSpace();
 			long usable = store.getUsableSpace();
 			long used = computeUsedBytes(target, total, usable);
-			StorageProfile profile = StorageProfileProbe.probe(target, store.type());
-			return new Volume(displayName, deviceName, target, total, usable, used, store.type(), profile);
+			// Build with UNKNOWN, then route through enrichWithStorageProfiles so the
+			// native fast path used by enumerate() (Capabilities.STORAGE_PROBE on
+			// native-image builds) classifies us. Without this we'd fall through to
+			// the per-volume StorageProfileProbe.probe(...) which still shells out to
+			// diskutil / PowerShell even in native builds. MacStorageProbe in turn
+			// uses the BSD device name straight from FileStore, so this works for
+			// both volume mount points and arbitrary subdirectories.
+			Volume v = new Volume(displayName, deviceName, target, total, usable, used, store.type(),
+					StorageProfile.UNKNOWN);
+			return enrichWithStorageProfiles(java.util.List.of(v)).get(0);
 		} catch (Exception e) {
 			return new Volume(target.toString(), target.toString(), target, 0L, 0L, 0L, "", StorageProfile.UNKNOWN);
 		}
@@ -170,8 +178,8 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 			return false;
 		return switch (type.toLowerCase()) {
 			case "proc", "sysfs", "tmpfs", "devtmpfs", "cgroup", "cgroup2", "devpts", "securityfs", "pstore", "autofs",
-				 "overlay", "squashfs", "fuse.gvfsd-fuse", "fuse.portal", "tracefs", "debugfs", "configfs", "bpf",
-				 "binfmt_misc", "mqueue", "hugetlbfs", "rpc_pipefs", "fusectl" -> true;
+			     "overlay", "squashfs", "fuse.gvfsd-fuse", "fuse.portal", "tracefs", "debugfs", "configfs", "bpf",
+			     "binfmt_misc", "mqueue", "hugetlbfs", "rpc_pipefs", "fusectl" -> true;
 			default -> false;
 		};
 	}

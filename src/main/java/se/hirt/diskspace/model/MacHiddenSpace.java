@@ -63,7 +63,7 @@ public final class MacHiddenSpace {
 	 * 		metadata, purgeable caches, and snapshot delta blocks.
 	 */
 	public record HiddenSpace(long otherVolumesBytes, int otherVolumesCount, int localSnapshotCount,
-							  long residualBytes) {
+	                          long residualBytes) {
 
 		public long totalBytes() {
 			return Math.max(0L, otherVolumesBytes + residualBytes);

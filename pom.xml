@@ -180,7 +180,74 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                      (the DirectoryNode tree for ~4 M files is well under 1 GB)
                                      and keeps worst-case Serial pauses bounded. -->
                                 <arg>-R:MaxHeapSize=4g</arg>
+                                <!-- Quarantine the build-host JVM from other Java processes on
+                                     the box. Without this, when a JMX/RMI client is running
+                                     (e.g. JDK Mission Control, IntelliJ's RemoteMavenServer with
+                                     -Dsun.rmi.server.exceptionTrace=true), it discovers the
+                                     build JVM via hsperfdata and probes its attach socket. That
+                                     triggers the platform management agent to load, whose static
+                                     init drags in javax.management.remote.rmi → sun.rmi.* helper
+                                     types. Substrate has those on its initialize-at-run-time list
+                                     and aborts the build with "Classes that should be initialized
+                                     at run time got initialized during image building".
+                                       -J-XX:-UsePerfData       — skip writing hsperfdata, so
+                                                                  monitoring tools don't see us.
+                                       -J-XX:+DisableAttachMechanism — refuse incoming attach
+                                                                  requests, so even tools that
+                                                                  guess our PID can't trigger
+                                                                  agent load.
+                                     Both flags target the host JVM only (the -J prefix); the
+                                     produced binary is unaffected. -->
+                                <arg>-J-XX:-UsePerfData</arg>
+                                <arg>-J-XX:+DisableAttachMechanism</arg>
                             </nativeImageArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          Mac-auto-activated. Adds the DiskArbitration framework to the gluonfx link step
+          so MacStorageProbe's @CFunction bindings to DASessionCreate / DADiskCopyDescription /
+          DADiskCreateFromVolumePath resolve at link time.
+
+          Note: must use <linkerArgs> (passed to the final clang/gcc link command), not
+          <nativeImageArgs> (passed only to native-image, which writes a relocatable .o
+          and doesn't invoke the system linker itself). Substrate's hardcoded macOS link
+          line includes Foundation / AppKit / ApplicationServices / OpenGL / QuartzCore /
+          Security / Accelerate but not DiskArbitration; this entry appends one more
+          framework to that list. CoreFoundation is already linked transitively via
+          Foundation, so no -framework CoreFoundation needed here.
+
+          Profile activates on every Mac Maven invocation but is inert outside
+          `gluonfx:build` / `gluonfx:link` — the linker args only flow to those goals.
+        -->
+        <profile>
+            <id>native-mac</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                </os>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.gluonhq</groupId>
+                        <artifactId>gluonfx-maven-plugin</artifactId>
+                        <version>${gluonfx-maven-plugin.version}</version>
+                        <configuration>
+                            <linkerArgs>
+                                <!-- DiskArbitration: DASessionCreate / DADiskCreateFromVolumePath /
+                                     DADiskCopyDescription / DADiskGetBSDName.
+                                     IOKit: IOBSDNameMatching / IOServiceGetMatchingService /
+                                     IORegistryEntrySearchCFProperty / IOObjectRelease — used for the
+                                     parent-chain walk that resolves Medium Type ("Solid State" vs
+                                     "Rotational") for APFS volumes whose own DA description doesn't
+                                     surface DAMediaSolidState. -->
+                                <arg>-Wl,-framework,DiskArbitration</arg>
+                                <arg>-Wl,-framework,IOKit</arg>
+                            </linkerArgs>
                         </configuration>
                     </plugin>
                 </plugins>

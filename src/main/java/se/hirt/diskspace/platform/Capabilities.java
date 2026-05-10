@@ -121,11 +121,20 @@ public final class Capabilities {
 	static {
 		// Inline Platform.includedIn so Substrate folds it during analysis. Do NOT extract to a static-final flag;
 		// see the class javadoc for why that breaks dead-stripping. inImageRuntimeCode FIRST so a plain JVM doesn't
-		// trigger ImageSingletons.lookup (which throws when not running inside Substrate).
+		// trigger ImageSingletons.lookup (which throws when not running inside Substrate). Each branch references
+		// exactly one platform-gated capabilities class — substrate dead-strips the others, so MacCapabilities's
+		// imports of the @Platforms(DARWIN) Darwin/MacStorageProbe classes never resolve on a Windows build (and
+		// vice versa for WindowsCapabilities's Win32* imports on a Mac build).
 		if (ImageInfo.inImageRuntimeCode() && Platform.includedIn(Platform.WINDOWS.class)) {
 			ELEVATION = WindowsCapabilities.elevation();
 			STORAGE_PROBE = WindowsCapabilities.storageProbe();
 			MFT_PROVIDER = WindowsCapabilities.mftScannerProvider();
+		} else if (ImageInfo.inImageRuntimeCode() && Platform.includedIn(Platform.DARWIN.class)) {
+			// Mac has no UAC-style elevation and no MFT equivalent (yet); only the storage
+			// probe is wired up, replacing the diskutil shellout in StorageProfileProbe.
+			ELEVATION = Elevation.NOOP;
+			STORAGE_PROBE = MacCapabilities.storageProbe();
+			MFT_PROVIDER = null;
 		} else {
 			ELEVATION = Elevation.NOOP;
 			STORAGE_PROBE = StorageProbe.NOOP;
