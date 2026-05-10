@@ -1218,6 +1218,10 @@ public final class DiskView {
 			public void onComplete(DirectoryNode result) {
 				logScanSummary(result);
 				injectFileChildrenInto(result);
+				// addChild() flips sortStableByTotalBytes back to false on every parent we injected
+				// into. Re-sort once so the synthetic sectors land in size-order alongside real
+				// children AND the renderer's stable-rank fast path engages on post-scan renders.
+				result.sortBySizeRecursive();
 				// Hidden was injected at scan start; nothing more to do for it here.
 				Platform.runLater(() -> {
 					scanning = false;
@@ -1303,8 +1307,18 @@ public final class DiskView {
 		}
 
 		// Combine current child directories with the cached file list, sort by size desc.
+		// Synthetic file-sector nodes (large files ≥ 1 GB, "Smaller files" aggregate) are skipped:
+		// they exist solely to give the sunburst / heatmap / Voronoi visualizations grey leaves
+		// for big files, but {@code listFiles(viewRoot.path())} already returns those same files
+		// as real file rows. Including them here would double-represent every large file in the
+		// table — and worse, the delete-completion path (line 887ff) treats any directory-style
+		// row as a real directory, so staging a synthetic node would route through
+		// {@code parent.removeChild} (which adjusts file counts) instead of
+		// {@code parent.removeFile}, leaving the actual file row stale in the table.
 		List<Entry> entries = new ArrayList<>(viewRoot.children().size() + currentFiles.size());
 		for (DirectoryNode c : viewRoot.children()) {
+			if (c.isFileSector())
+				continue;
 			entries.add(Entry.forDir(c));
 		}
 		entries.addAll(currentFiles);
@@ -1382,21 +1396,22 @@ public final class DiskView {
 		for (DirectoryNode c : realChildren) {
 			injectFileChildrenInto(c);
 		}
+		// addChild adds under the children-list lock and returns the new node so we can stamp
+		// synthetic flags on it. (The previous code constructed the node manually and called
+		// dir.children().add(...) — but children() returns a defensive snapshot now, so that
+		// add went into a throw-away list and the synthetics never appeared.)
 		for (DirectoryNode.FileRecord f : dir.largeFiles()) {
-			DirectoryNode fileNode = new DirectoryNode(dir, f.name(),
-					dir.path() != null ? dir.path().resolve(f.name()) : null);
+			DirectoryNode fileNode = dir.addChild(f.name(), dir.path() != null ? dir.path().resolve(f.name()) : null);
 			fileNode.addSyntheticBytes(f.size());
 			fileNode.markDone();
 			fileNode.markFileSector();
-			dir.children().add(fileNode);
 		}
 		long smaller = dir.smallerFilesBytes();
 		if (smaller >= FILE_SECTOR_THRESHOLD) {
-			DirectoryNode smallNode = new DirectoryNode(dir, "Smaller files", null);
+			DirectoryNode smallNode = dir.addChild("Smaller files", null);
 			smallNode.addSyntheticBytes(smaller);
 			smallNode.markDone();
 			smallNode.markFileSector();
-			dir.children().add(smallNode);
 		}
 	}
 
@@ -1415,33 +1430,31 @@ public final class DiskView {
 		if (hiddenNode != null)
 			return;  // already injected (e.g. at scan start)
 
-		DirectoryNode hidden = new DirectoryNode(scanRootNode, "Hidden", null);
+		// Use addChild() throughout so each synthetic node attaches to the parent's actual children
+		// list under lock. (children() returns a defensive snapshot, so .children().add(...) silently
+		// dropped the node into a throw-away list — same bug as injectFileChildrenInto.)
+		DirectoryNode hidden = scanRootNode.addChild("Hidden", null);
 		hidden.markDone();
 		hiddenNode = hidden;
 
-		DirectoryNode otherVols = new DirectoryNode(hidden, "Other volumes", null);
+		DirectoryNode otherVols = hidden.addChild("Other volumes", null);
 		otherVols.addSyntheticBytes(h.otherVolumesBytes());
 		otherVols.markDone();
-		hidden.children().add(otherVols);
 
-		DirectoryNode snapshots = new DirectoryNode(hidden, "Snapshots", null);
+		DirectoryNode snapshots = hidden.addChild("Snapshots", null);
 		snapshots.markDone();
-		hidden.children().add(snapshots);
 
-		DirectoryNode other = new DirectoryNode(hidden, "Other", null);
+		DirectoryNode other = hidden.addChild("Other", null);
 		other.addSyntheticBytes(h.residualBytes());
 		other.markDone();
-		hidden.children().add(other);
 
 		if (lastPermDeniedCount > 0) {
-			DirectoryNode notAccess = new DirectoryNode(hidden, "Not accessible", null);
+			DirectoryNode notAccess = hidden.addChild("Not accessible", null);
 			notAccess.markDone();
-			hidden.children().add(notAccess);
 		}
 
 		long hiddenTotal = h.totalBytes();
 		hidden.addSyntheticBytes(hiddenTotal);
-		scanRootNode.children().add(hidden);
 		scanRootNode.addSyntheticBytes(hiddenTotal);
 	}
 
