@@ -35,7 +35,7 @@ import java.util.List;
 import java.util.Map;
 
 public record Volume(String displayName, String deviceName, Path root, long totalBytes, long usableBytes,
-                     long usedBytes, String fsType, StorageProfile storageProfile) {
+					 long usedBytes, String fsType, StorageProfile storageProfile) {
 
 	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(Volume.class.getName());
 
@@ -170,8 +170,8 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 			return false;
 		return switch (type.toLowerCase()) {
 			case "proc", "sysfs", "tmpfs", "devtmpfs", "cgroup", "cgroup2", "devpts", "securityfs", "pstore", "autofs",
-			     "overlay", "squashfs", "fuse.gvfsd-fuse", "fuse.portal", "tracefs", "debugfs", "configfs", "bpf",
-			     "binfmt_misc", "mqueue", "hugetlbfs", "rpc_pipefs", "fusectl" -> true;
+				 "overlay", "squashfs", "fuse.gvfsd-fuse", "fuse.portal", "tracefs", "debugfs", "configfs", "bpf",
+				 "binfmt_misc", "mqueue", "hugetlbfs", "rpc_pipefs", "fusectl" -> true;
 			default -> false;
 		};
 	}

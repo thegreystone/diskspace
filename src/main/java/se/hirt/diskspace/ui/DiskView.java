@@ -1896,16 +1896,40 @@ public final class DiskView {
 		if (total <= 0)
 			return;
 
-		// Snapshot child sizes alongside the nodes so the comparator can read primitive long
-		// fields (no boxing, no map lookup per comparison). See SizedNode for context.
+		double outerR = ringInnerR(depth + 1, normalW, thinW);
+		double minSweepFromPixels = Math.toDegrees(1.0 / outerR);
+
+		// Fast path: parent's children are sort-stable (post-{@link DirectoryNode#sortBySizeRecursive},
+		// no subsequent mutation) AND the parent isn't scanRoot (whose children may include hiddenNode,
+		// which we always pin last regardless of size). For everyone else, parent.children() is already
+		// in size-desc order — skip the snapshot+sort and iterate directly, reading totalBytes() inline.
+		// This kills the per-render TimSort that JFR flagged as the dominant render-CPU cost on large
+		// trees (1.38M-node SUNBURST snapshots).
+		if (parent != scanRoot && parent.isSortStableByTotalBytes()) {
+			double a = startDeg;
+			for (DirectoryNode child : parent.children()) {
+				long size = child.totalBytes();
+				double frac = size / (double) total;
+				double childSweep = sweepDeg * frac;
+				if (childSweep < MIN_VISIBLE_SWEEP_DEG || childSweep < minSweepFromPixels) {
+					a += childSweep;
+					continue;
+				}
+				out.put(child, new Layout(depth, a, childSweep, getNodeColor(child)));
+				layoutChildrenInto(child, depth + 1, a, childSweep, out, normalW, thinW);
+				a += childSweep;
+			}
+			return;
+		}
+
+		// Slow path (mid-scan, OR scanRoot which needs Hidden pinned last): snapshot child sizes
+		// alongside the nodes so the comparator can read primitive long fields (no boxing, no map
+		// lookup per comparison). See SizedNode for context.
 		List<SizedNode> ordered = snapshotSized(parent.children());
 		// Hidden always lands at the end of scanRoot's children regardless of size — it's
 		// less actionable than real folders and a stable position is more useful than a
 		// size-correct one.
 		ordered.sort(hiddenLastSizeDesc);
-
-		double outerR = ringInnerR(depth + 1, normalW, thinW);
-		double minSweepFromPixels = Math.toDegrees(1.0 / outerR);
 
 		double a = startDeg;
 		for (SizedNode s : ordered) {
@@ -2845,7 +2869,7 @@ public final class DiskView {
 	}
 
 	private record SectorRect(DirectoryNode node, int depth, double startDeg, double sweepDeg, double r1, double r2,
-	                          boolean unaccounted) {
+							  boolean unaccounted) {
 	}
 
 	/**
@@ -2853,7 +2877,7 @@ public final class DiskView {
 	 * entry at scan root.
 	 */
 	private record RectHit(DirectoryNode node, double x, double y, double w, double h, boolean unaccounted,
-	                       boolean freeSpace) {
+						   boolean freeSpace) {
 		boolean contains(double mx, double my) {
 			return mx >= x && mx <= x + w && my >= y && my <= y + h;
 		}
@@ -2870,7 +2894,7 @@ public final class DiskView {
 	}
 
 	private record FrameEntry(DirectoryNode node, double depth, double start, double sweep, double alphaScale,
-	                          Color color) {
+							  Color color) {
 	}
 
 	/**
@@ -2879,7 +2903,7 @@ public final class DiskView {
 	 * re-walking.
 	 */
 	private record StagedItem(boolean isDirectory, java.nio.file.Path path, long sizeAtStaging, DirectoryNode dirNode,
-	                          DirectoryNode parentNode) {
+							  DirectoryNode parentNode) {
 		long currentSize() {
 			return isDirectory && dirNode != null ? dirNode.totalBytes() : sizeAtStaging;
 		}
