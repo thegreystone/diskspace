@@ -18,7 +18,8 @@ toggle.
 
 ### Option A: Native Binary (recommended)
 
-Download the binary for your platform from the [Releases page](https://github.com/thegreystone/diskspace/releases/latest):
+Download the binary for your platform from
+the [Releases page](https://github.com/thegreystone/diskspace/releases/latest):
 
 | Platform                                | File                                           |
 |-----------------------------------------|------------------------------------------------|

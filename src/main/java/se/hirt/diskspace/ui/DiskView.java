@@ -70,7 +70,7 @@ import java.util.*;
 
 public final class DiskView {
 
-	public enum RenderMode {SUNBURST, HEATMAP}
+	public enum RenderMode {SUNBURST, HEATMAP, VORONOI}
 
 	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(DiskView.class.getName());
 
@@ -1584,7 +1584,11 @@ public final class DiskView {
 
 	private void toggleRenderMode() {
 		endVizEvent();
-		currentMode = (currentMode == RenderMode.SUNBURST) ? RenderMode.HEATMAP : RenderMode.SUNBURST;
+		currentMode = switch (currentMode) {
+			case SUNBURST -> RenderMode.HEATMAP;
+			case HEATMAP -> RenderMode.VORONOI;
+			case VORONOI -> RenderMode.SUNBURST;
+		};
 		startVizEvent();
 		hoverNode = null;
 		hoveringHub = false;
@@ -2007,6 +2011,16 @@ public final class DiskView {
 			} catch (RuntimeException ex) {
 				LOG.log(java.util.logging.Level.WARNING, "Heatmap render failed", ex);
 				drawCenterText(g, w / 2, h / 2, "Heatmap render error — see logs");
+			}
+			return;
+		}
+
+		if (currentMode == RenderMode.VORONOI) {
+			try {
+				drawVoronoi(g, w, h);
+			} catch (RuntimeException ex) {
+				LOG.log(java.util.logging.Level.WARNING, "Voronoi render failed", ex);
+				drawCenterText(g, w / 2, h / 2, "Voronoi render error — see logs");
 			}
 			return;
 		}
@@ -2594,6 +2608,178 @@ public final class DiskView {
 		g.fillText(text, cx, cy);
 	}
 
+	// ---- voronoi (circular weighted treemap) ----------------------------
+
+	private static final double VORONOI_TOP_INSET = 36.0;
+	private static final int VORONOI_DISK_SIDES = 64;
+
+	/**
+	 * One Voronoi cell paired with the model entity it represents (a {@link DirectoryNode}, the synthetic free-space
+	 * slot, or the synthetic unaccounted-bytes slot). Used both for rendering and for hit-testing on hover/click.
+	 */
+	private record VoronoiHit(DirectoryNode node, List<VoronoiLayout.Pt> polygon, boolean unaccounted,
+							  boolean freeSpace) {
+	}
+
+	/**
+	 * Last computed cells. Re-used across redraws (hover, animation ticks) until {@link #invalidateVoronoiCache} is
+	 * called.
+	 */
+	private List<VoronoiHit> voronoiHits = List.of();
+	/** Invalidation key components. Layout is recomputed when any of these changes. */
+	private DirectoryNode lastVoronoiViewRoot;
+	private double lastVoronoiW, lastVoronoiH;
+	private long lastVoronoiTotalBytes;
+
+	private void drawVoronoi(GraphicsContext g, double w, double h) {
+		if (viewRoot == null)
+			return;
+
+		double cx = w / 2.0;
+		double cy = (h + VORONOI_TOP_INSET) / 2.0;
+		double radius = Math.min(w / 2.0, (h - VORONOI_TOP_INSET) / 2.0) - 12;
+		if (radius < 40) {
+			drawCenterText(g, w / 2.0, h / 2.0, "Window too small for Voronoi");
+			return;
+		}
+
+		List<TreemapItem> items = buildTopLevelTreemapItems();
+		long totalBytes = 0;
+		for (TreemapItem it : items)
+			totalBytes += Math.max(0, it.bytes());
+		if (items.isEmpty() || totalBytes <= 0) {
+			drawCenterText(g, w / 2.0, cy, scanning ? "Scanning…" : "Empty");
+			return;
+		}
+
+		// Recompute layout only when the inputs that actually drive it change. During hover the
+		// cells are reused untouched; only the highlighted cell's overlay redraws.
+		if (viewRoot != lastVoronoiViewRoot || w != lastVoronoiW || h != lastVoronoiH || viewRoot.totalBytes() != lastVoronoiTotalBytes) {
+			voronoiHits = computeVoronoiLayout(items, cx, cy, radius);
+			lastVoronoiViewRoot = viewRoot;
+			lastVoronoiW = w;
+			lastVoronoiH = h;
+			lastVoronoiTotalBytes = viewRoot.totalBytes();
+		}
+
+		// Background disk circle (subtle outline so the user can see the canvas affordance even
+		// before any cells settle, e.g. on a freshly-resized window before re-layout completes).
+		g.setStroke(scheme.background().brighter());
+		g.setLineWidth(1.0);
+		g.strokeOval(cx - radius, cy - radius, 2 * radius, 2 * radius);
+
+		// Pass 1: fills + strokes
+		for (VoronoiHit hit : voronoiHits) {
+			drawVoronoiCellFill(g, hit);
+		}
+		// Pass 2: hover overlay
+		if (hoverNode != null) {
+			for (VoronoiHit hit : voronoiHits) {
+				if (hit.node == hoverNode) {
+					drawVoronoiCellHover(g, hit);
+					break;
+				}
+			}
+		}
+		// Pass 3: labels (drawn last so they sit on top of hover overlay too)
+		for (VoronoiHit hit : voronoiHits) {
+			drawVoronoiCellLabel(g, hit);
+		}
+	}
+
+	private List<VoronoiHit> computeVoronoiLayout(List<TreemapItem> items, double cx, double cy, double radius) {
+		double[] weights = new double[items.size()];
+		for (int i = 0; i < items.size(); i++) {
+			weights[i] = Math.max(1.0, items.get(i).bytes());
+		}
+		List<VoronoiLayout.Pt> bounds = VoronoiLayout.approximateDisk(cx, cy, radius, VORONOI_DISK_SIDES);
+		List<VoronoiLayout.Cell> cells = VoronoiLayout.compute(bounds, weights);
+		List<VoronoiHit> hits = new ArrayList<>(cells.size());
+		for (int i = 0; i < cells.size(); i++) {
+			TreemapItem item = items.get(i);
+			hits.add(new VoronoiHit(item.node(), cells.get(i).polygon(), item.unaccounted(), item.freeSpace()));
+		}
+		return hits;
+	}
+
+	private void invalidateVoronoiCache() {
+		lastVoronoiViewRoot = null;
+	}
+
+	private void drawVoronoiCellFill(GraphicsContext g, VoronoiHit hit) {
+		List<VoronoiLayout.Pt> poly = hit.polygon;
+		if (poly.size() < 3)
+			return;
+		double[] xs = new double[poly.size()];
+		double[] ys = new double[poly.size()];
+		for (int j = 0; j < poly.size(); j++) {
+			xs[j] = poly.get(j).x();
+			ys[j] = poly.get(j).y();
+		}
+		Color base;
+		if (hit.freeSpace) {
+			base = scheme.capacityTrack();
+		} else if (hit.unaccounted) {
+			base = scheme.surface().brighter();
+		} else if (hit.node != null) {
+			base = getNodeColor(hit.node);
+		} else {
+			base = scheme.surface();
+		}
+		double alpha = (hit.node == null || hit.node.isDone()) ? 1.0 : 0.45;
+		Color fill = (alpha >= 1.0) ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
+		g.setFill(fill);
+		g.fillPolygon(xs, ys, poly.size());
+		g.setStroke(scheme.background());
+		g.setLineWidth(2.0);
+		g.strokePolygon(xs, ys, poly.size());
+	}
+
+	private void drawVoronoiCellHover(GraphicsContext g, VoronoiHit hit) {
+		List<VoronoiLayout.Pt> poly = hit.polygon;
+		if (poly.size() < 3)
+			return;
+		double[] xs = new double[poly.size()];
+		double[] ys = new double[poly.size()];
+		for (int j = 0; j < poly.size(); j++) {
+			xs[j] = poly.get(j).x();
+			ys[j] = poly.get(j).y();
+		}
+		g.setStroke(scheme.accent());
+		g.setLineWidth(4.0);
+		g.strokePolygon(xs, ys, poly.size());
+	}
+
+	private void drawVoronoiCellLabel(GraphicsContext g, VoronoiHit hit) {
+		List<VoronoiLayout.Pt> poly = hit.polygon;
+		if (poly.size() < 3)
+			return;
+		if (VoronoiLayout.polygonArea(poly) < 1500)
+			return;
+		String name;
+		if (hit.freeSpace)
+			name = "Free";
+		else if (hit.unaccounted)
+			name = "Other";
+		else if (hit.node != null)
+			name = hit.node.name();
+		else
+			return;
+
+		VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
+		g.setFont(Font.font("Segoe UI", FontWeight.BOLD, 14));
+		g.setTextAlign(TextAlignment.CENTER);
+		g.setTextBaseline(VPos.CENTER);
+		// Drop-shadow ish: dark stroke under white text so labels stay readable over any cell color.
+		g.setStroke(Color.rgb(0, 0, 0, 0.85));
+		g.setLineWidth(3);
+		g.strokeText(name, c.x(), c.y());
+		g.setFill(Color.WHITE);
+		g.fillText(name, c.x(), c.y());
+		g.setTextAlign(TextAlignment.LEFT);
+		g.setTextBaseline(VPos.BASELINE);
+	}
+
 	// ---- interaction -----------------------------------------------------
 
 	private void handleMouseMove(double mx, double my) {
@@ -2620,6 +2806,19 @@ public final class DiskView {
 					} else if (r.freeSpace()) {
 						hoveringFreeSpace = true;
 					} else if (r.unaccounted()) {
+						hoveringUnaccounted = true;
+					}
+					break;
+				}
+			}
+		} else if (currentMode == RenderMode.VORONOI) {
+			for (VoronoiHit hit : voronoiHits) {
+				if (VoronoiLayout.contains(hit.polygon, mx, my)) {
+					if (hit.node != null) {
+						hoverNode = hit.node;
+					} else if (hit.freeSpace) {
+						hoveringFreeSpace = true;
+					} else if (hit.unaccounted) {
 						hoveringUnaccounted = true;
 					}
 					break;
@@ -2668,6 +2867,16 @@ public final class DiskView {
 				RectHit r = rects.get(i);
 				if (r.contains(mx, my) && r.node() != null) {
 					select(r.node());
+					return;
+				}
+			}
+			return;
+		}
+
+		if (currentMode == RenderMode.VORONOI) {
+			for (VoronoiHit hit : voronoiHits) {
+				if (VoronoiLayout.contains(hit.polygon, mx, my) && hit.node != null) {
+					select(hit.node);
 					return;
 				}
 			}
