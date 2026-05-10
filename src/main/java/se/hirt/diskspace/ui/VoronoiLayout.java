@@ -48,7 +48,6 @@ import java.util.List;
  * <p><b>Performance:</b> {@code O(N²)} per Bowyer-Watson rebuild. For typical disk-treemap inputs (≤ 50 cells per level) one full layout
  * costs ~10–30 ms on the FX thread. The caller is expected to cache results across renders that don't change the input — see
  * {@code DiskView}'s use site for the per-{@code (viewRoot, canvas-size)} cache.
- * <p><b>Origin:</b> extracted from {@code spike/voronoi/WeightedVoronoiSpike.java} after the spike validated the math.
  */
 public final class VoronoiLayout {
 
