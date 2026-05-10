@@ -41,14 +41,18 @@ import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.geometry.VPos;
+import javafx.scene.Cursor;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.*;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.ArcType;
+import javafx.scene.shape.Rectangle;
 import javafx.scene.shape.StrokeLineCap;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
@@ -104,6 +108,9 @@ public final class DiskView {
 	private final Volume target;
 
 	private final Label rightHeader;
+	private final Label rightHeaderInfo;
+	private final Rectangle headerFlash;
+	private Path currentHeaderPath;
 	private final HBox breadcrumb;
 	/**
 	 * Top-right badge in the canvas pane showing which scanner was used (MFT / Parallel(8) / Sequential / etc). Sits on
@@ -307,11 +314,50 @@ public final class DiskView {
 		rightSplit.getItems().add(table);
 		stagedItems.addListener((ListChangeListener<StagedItem>) c -> updateStagingVisibility());
 
-		rightHeader = new Label("  " + target.displayName() + "  —  scanning…");
+		rightHeader = new Label("  " + target.displayName());
 		rightHeader.setStyle(
-				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 12 8 12;");
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 0 8 12;");
+		// Keep the size/file-count tail visible when the path is long; ellipsize the head instead.
+		rightHeader.setTextOverrun(OverrunStyle.LEADING_ELLIPSIS);
+		rightHeader.setMaxWidth(Double.MAX_VALUE);
+		rightHeader.setCursor(Cursor.HAND);
+		Tooltip.install(rightHeader, new Tooltip("Click to copy path"));
+		rightHeader.setOnMouseClicked(e -> {
+			if (e.getButton() == MouseButton.PRIMARY)
+				copyHeaderPath();
+		});
+
+		rightHeaderInfo = new Label("  —  scanning…");
+		rightHeaderInfo.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 12 8 0;");
+
+		// Flash overlay sits behind the path label and pulses on copy. Mouse-transparent so it
+		// doesn't intercept the click that triggered it.
+		headerFlash = new Rectangle();
+		headerFlash.setFill(scheme.accent());
+		headerFlash.setOpacity(0);
+		headerFlash.setMouseTransparent(true);
+		headerFlash.setArcWidth(4);
+		headerFlash.setArcHeight(4);
+		headerFlash.widthProperty().bind(rightHeader.widthProperty());
+		headerFlash.heightProperty().bind(rightHeader.heightProperty());
+
+		StackPane pathStack = new StackPane(headerFlash, rightHeader);
+		StackPane.setAlignment(rightHeader, Pos.CENTER_LEFT);
+		StackPane.setAlignment(headerFlash, Pos.CENTER_LEFT);
+		// Allow the stack (and the leading-ellipsized label inside) to shrink below its preferred width.
+		pathStack.setMinWidth(0);
+
+		// BorderPane gives `rightHeaderInfo` its preferred width unconditionally and lets `pathStack`
+		// fill the rest. The info label is therefore exactly content-sized, never squeezed when the
+		// path is long, never stretched when the path is short.
+		BorderPane headerBar = new BorderPane();
+		headerBar.setCenter(pathStack);
+		headerBar.setRight(rightHeaderInfo);
+		BorderPane.setAlignment(rightHeaderInfo, Pos.CENTER_RIGHT);
+
 		BorderPane right = new BorderPane(rightSplit);
-		right.setTop(rightHeader);
+		right.setTop(headerBar);
 		right.setStyle(bg(scheme.background()));
 
 		root = new SplitPane(leftStack, right);
@@ -740,6 +786,8 @@ public final class DiskView {
 	// ---- deletion --------------------------------------------------------
 
 	private static boolean canMoveToTrash() {
+		// TODO(awt-free): replace AWT Desktop probe with per-platform checks (Finder/osascript on macOS,
+		// gio trash on Linux, SHFileOperation on Windows) so we don't initialize AWT on macOS at all.
 		try {
 			return java.awt.Desktop.isDesktopSupported() && java.awt.Desktop.getDesktop()
 					.isSupported(java.awt.Desktop.Action.MOVE_TO_TRASH);
@@ -807,6 +855,7 @@ public final class DiskView {
 					continue;
 				}
 				if (trash) {
+					// TODO(awt-free): swap Desktop.moveToTrash for a per-platform implementation to avoid AWT init.
 					boolean ok = java.awt.Desktop.getDesktop().moveToTrash(si.path().toFile());
 					if (!ok)
 						throw new java.io.IOException("moveToTrash returned false");
@@ -1286,6 +1335,9 @@ public final class DiskView {
 		if (viewRoot == null) {
 			tableItems.clear();
 			rightHeader.setText("");
+			rightHeaderInfo.setText("");
+			currentHeaderPath = null;
+			rightHeader.setCursor(Cursor.DEFAULT);
 			return;
 		}
 		// Synthetic Hidden nodes have no on-disk path; show the name instead and skip the
@@ -1297,7 +1349,10 @@ public final class DiskView {
 		if (viewRoot == scanRoot && lastPermDeniedCount > 0) {
 			headerRight += "   ·   " + lastPermDeniedCount + " inaccessible";
 		}
-		rightHeader.setText("  " + headerLeft + "  —  " + humanSize(viewRoot.totalBytes()) + headerRight);
+		rightHeader.setText("  " + headerLeft);
+		rightHeaderInfo.setText("  —  " + humanSize(viewRoot.totalBytes()) + headerRight);
+		currentHeaderPath = viewRoot.path();
+		rightHeader.setCursor(currentHeaderPath != null ? Cursor.HAND : Cursor.DEFAULT);
 
 		// Re-list immediate files only when the viewRoot itself changes; files of a fixed
 		// directory don't move during a scan.
@@ -1350,6 +1405,18 @@ public final class DiskView {
 			// onComplete running would otherwise stay rendered as "<scanning>" forever.
 			table.refresh();
 		}
+	}
+
+	private void copyHeaderPath() {
+		if (currentHeaderPath == null)
+			return;
+		ClipboardContent content = new ClipboardContent();
+		content.putString(currentHeaderPath.toString());
+		Clipboard.getSystemClipboard().setContent(content);
+		Timeline flash = new Timeline(new KeyFrame(Duration.ZERO, new KeyValue(headerFlash.opacityProperty(), 0.0)),
+				new KeyFrame(Duration.millis(90), new KeyValue(headerFlash.opacityProperty(), 0.45)),
+				new KeyFrame(Duration.millis(550), new KeyValue(headerFlash.opacityProperty(), 0.0)));
+		flash.play();
 	}
 
 	private static List<Entry> listFiles(Path dir) {
@@ -2833,6 +2900,7 @@ public final class DiskView {
 				// contend for the AppKit main thread. Shell out to `open` instead.
 				new ProcessBuilder("open", target.path().toString()).start();
 			} else {
+				// TODO(awt-free): use xdg-open on Linux / explorer on Windows so AWT isn't pulled in.
 				java.awt.Desktop.getDesktop().open(target.path().toFile());
 			}
 		} catch (Exception ignored) {
