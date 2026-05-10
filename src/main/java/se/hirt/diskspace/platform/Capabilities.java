@@ -43,8 +43,8 @@ import java.util.Map;
  * Cross-platform registry for the platform-specific bits the rest of the codebase consumes generically: UAC elevation,
  * the native bulk storage classifier, and the optional MFT-style fast scanner. Each Windows-only implementation is
  * loaded only on a Windows native-image binary; otherwise the field holds either a "not available" no-op singleton (for
- * the interface-typed slots) or {@code null} (for {@link #MFT_PROVIDER}, which the scanner registry treats as "no
- * native MFT here, use the parallel fallback"). Cross-platform code never references the underlying
+ * the interface-typed slots) or {@code null} (for {@link #NATIVE_SCANNER_PROVIDER}, which the scanner registry treats
+ * as "no platform-native scanner here, use the parallel fallback"). Cross-platform code never references the underlying
  * {@code WindowsElevation} / {@code Win32StorageProbe} / {@code MftScanner} classes directly; those are annotated
  * {@code @Platforms(WINDOWS)} and a direct cross-platform reference is a build-time error.
  * <h3>One platform check, in one place</h3>
@@ -110,35 +110,35 @@ public final class Capabilities {
 	public static final StorageProbe STORAGE_PROBE;
 
 	/**
-	 * MFT-style fast scanner provider, or {@code null} when no native fast path is available on this binary
-	 * ({@code mvn javafx:run}, non-Windows native-image, future Linux/macOS builds without an NTFS-3G or APFS
-	 * provider). {@link se.hirt.diskspace.scan.ScannerProviders} treats null as "skip this entry"; never construct a
-	 * sentinel non-null instance, because that would force the {@link ScannerProvider}'s implementation type to be
-	 * reachable on platforms where it doesn't belong.
+	 * Platform-native fast scanner provider, or {@code null} when no native fast path is available on this binary
+	 * ({@code mvn javafx:run}, or a platform we haven't ported a scanner to yet). On Windows native-image this is the
+	 * MFT scanner ({@code FSCTL_ENUM_USN_DATA} + bulk dir info); on macOS native-image it's the bulk scanner
+	 * ({@code getattrlistbulk(2)}). {@link se.hirt.diskspace.scan.ScannerProviders} treats null as "skip this entry";
+	 * never construct a sentinel non-null instance, because that would force the {@link ScannerProvider}'s
+	 * implementation type to be reachable on platforms where it doesn't belong.
 	 */
-	public static final ScannerProvider MFT_PROVIDER;
+	public static final ScannerProvider NATIVE_SCANNER_PROVIDER;
 
 	static {
 		// Inline Platform.includedIn so Substrate folds it during analysis. Do NOT extract to a static-final flag;
 		// see the class javadoc for why that breaks dead-stripping. inImageRuntimeCode FIRST so a plain JVM doesn't
 		// trigger ImageSingletons.lookup (which throws when not running inside Substrate). Each branch references
 		// exactly one platform-gated capabilities class — substrate dead-strips the others, so MacCapabilities's
-		// imports of the @Platforms(DARWIN) Darwin/MacStorageProbe classes never resolve on a Windows build (and
-		// vice versa for WindowsCapabilities's Win32* imports on a Mac build).
+		// imports of the @Platforms(DARWIN) Darwin/MacStorageProbe/MacBulkScanner classes never resolve on a Windows
+		// build (and vice versa for WindowsCapabilities's Win32*/MftScanner imports on a Mac build).
 		if (ImageInfo.inImageRuntimeCode() && Platform.includedIn(Platform.WINDOWS.class)) {
 			ELEVATION = WindowsCapabilities.elevation();
 			STORAGE_PROBE = WindowsCapabilities.storageProbe();
-			MFT_PROVIDER = WindowsCapabilities.mftScannerProvider();
+			NATIVE_SCANNER_PROVIDER = WindowsCapabilities.mftScannerProvider();
 		} else if (ImageInfo.inImageRuntimeCode() && Platform.includedIn(Platform.DARWIN.class)) {
-			// Mac has no UAC-style elevation and no MFT equivalent (yet); only the storage
-			// probe is wired up, replacing the diskutil shellout in StorageProfileProbe.
+			// Mac has no UAC-style elevation; the native scanner is getattrlistbulk(2)-based.
 			ELEVATION = Elevation.NOOP;
 			STORAGE_PROBE = MacCapabilities.storageProbe();
-			MFT_PROVIDER = null;
+			NATIVE_SCANNER_PROVIDER = MacCapabilities.bulkScannerProvider();
 		} else {
 			ELEVATION = Elevation.NOOP;
 			STORAGE_PROBE = StorageProbe.NOOP;
-			MFT_PROVIDER = null;
+			NATIVE_SCANNER_PROVIDER = null;
 		}
 	}
 }

@@ -41,9 +41,9 @@ import java.util.List;
  * should cycle through.
  * <h3>Registration</h3>
  * The list is built once at class init. Today: the MFT provider is registered first when
- * {@link Capabilities#MFT_PROVIDER} is non-null, then the always-available {@link ParallelScannerProvider}. Adding a
- * Linux NTFS-3G fast path or an APFS catalog-tree provider means one more conditional registration here — no caller
- * changes.
+ * {@link Capabilities#NATIVE_SCANNER_PROVIDER} is non-null (MFT scanner on Windows, getattrlistbulk-based scanner on
+ * macOS), then the always-available {@link ParallelScannerProvider}. Adding a Linux NTFS-3G fast path or a per-FS
+ * provider for some other platform means one more conditional registration here — no caller changes.
  * <h3>Selection semantics</h3>
  * {@link #providerFor} first looks for a provider that {@linkplain ScannerProvider#matchesPreference primarily matches}
  * the user's preference and {@linkplain ScannerProvider#canScan can scan} the volume. If none is eligible (e.g. user
@@ -60,16 +60,18 @@ public final class ScannerProviders {
 
 	private static List<ScannerProvider> build() {
 		List<ScannerProvider> list = new ArrayList<>();
-		// Capabilities.MFT_PROVIDER is non-null only on a Windows native-image binary; the field
-		// is populated by Capabilities's static initializer, which is the one place in the code
-		// base that does the Platform.includedIn check. Critically: WindowsCapabilities is NOT
-		// referenced from this file. An earlier draft did exactly that, behind a Capabilities.IS_WINDOWS_NATIVE
-		// flag, and Substrate's analyzer reached the @Platforms(WINDOWS)-gated WindowsCapabilities
-		// class on macOS / Linux because static-field reads don't fold the same way as inline
-		// Platform.includedIn calls. Reading a nullable interface-typed field, by contrast, lets
-		// the analyzer dead-strip the implementation type cleanly.
-		if (Capabilities.MFT_PROVIDER != null) {
-			list.add(Capabilities.MFT_PROVIDER);
+		// Capabilities.NATIVE_SCANNER_PROVIDER is non-null only on a platform whose Capabilities
+		// branch populates it (Windows → MFT, macOS → bulk). The field is populated by
+		// Capabilities's static initializer, which is the one place in the code base that does
+		// the Platform.includedIn check. Critically: WindowsCapabilities / MacCapabilities are
+		// NOT referenced from this file. An earlier draft did exactly that, behind a
+		// Capabilities.IS_WINDOWS_NATIVE flag, and Substrate's analyzer reached the
+		// @Platforms(WINDOWS)-gated WindowsCapabilities class on macOS / Linux because static-field
+		// reads don't fold the same way as inline Platform.includedIn calls. Reading a nullable
+		// interface-typed field, by contrast, lets the analyzer dead-strip the implementation
+		// type cleanly.
+		if (Capabilities.NATIVE_SCANNER_PROVIDER != null) {
+			list.add(Capabilities.NATIVE_SCANNER_PROVIDER);
 		}
 		list.add(new ParallelScannerProvider());
 		return List.copyOf(list);

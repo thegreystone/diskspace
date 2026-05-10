@@ -32,22 +32,32 @@ package se.hirt.diskspace.scan;
  * User preference for scan strategy. {@link Scanner#forVolume(se.hirt.diskspace.model.Volume)} resolves the actual
  * scanner to instantiate based on this preference and the volume's capabilities.
  * <p>S in the picker cycles through these values in declared order
- * ({@link #AUTO} → {@link #MFT} → {@link #PARALLEL} → {@link #SEQUENTIAL} → {@link #AUTO}).
+ * ({@link #AUTO} → {@link #BULK} → {@link #MFT} → {@link #PARALLEL} → {@link #SEQUENTIAL} → {@link #AUTO}),
+ * skipping any whose primary provider isn't registered on the current platform — so on macOS the cycle reads
+ * AUTO → BULK → PARALLEL → SEQUENTIAL (MFT skipped) and on Windows it reads AUTO → MFT → PARALLEL → SEQUENTIAL
+ * (BULK skipped).
  */
 public enum ScanStrategy {
 	/**
 	 * Pick the fastest implementation available for each volume. NTFS on Windows with admin privilege gets the MFT
-	 * scanner; everything else gets parallel walking sized to the storage profile.
+	 * scanner; local volumes on macOS get the getattrlistbulk-based bulk scanner; everything else gets parallel
+	 * walking sized to the storage profile.
 	 */
 	AUTO,
+	/**
+	 * Force the macOS bulk scanner ({@code getattrlistbulk(2)} per directory). Falls back to PARALLEL if the volume
+	 * isn't eligible (non-Mac, JVM dev mode, or a network mount where {@code getattrlistbulk}'s per-syscall
+	 * amortisation loses to the parallel walker's latency-hiding fan-out).
+	 */
+	BULK,
 	/**
 	 * Force the MFT scanner. Falls back to PARALLEL if the volume isn't eligible (non-NTFS, non-Windows, no
 	 * privilege).
 	 */
 	MFT,
 	/**
-	 * Force parallel directory walking with the per-profile pool size (HDD=1, SSD=8, NETWORK=16). Skips MFT even when
-	 * available — useful for A/B comparison.
+	 * Force parallel directory walking with the per-profile pool size (HDD=1, SSD=8, NETWORK=16). Skips MFT / BULK
+	 * even when available — useful for A/B comparison.
 	 */
 	PARALLEL,
 	/**
@@ -61,6 +71,7 @@ public enum ScanStrategy {
 	public String label() {
 		return switch (this) {
 			case AUTO -> "Auto";
+			case BULK -> "Bulk";
 			case MFT -> "MFT";
 			case PARALLEL -> "Parallel";
 			case SEQUENTIAL -> "Sequential";
