@@ -29,6 +29,8 @@
 package se.hirt.diskspace.scan;
 
 import org.graalvm.nativeimage.ImageInfo;
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CIntPointer;
@@ -66,7 +68,12 @@ import java.util.logging.Logger;
  * <p><b>Native-image only.</b> All Win32 calls go through {@link Win32}'s {@code @CFunction}
  * bindings, which resolve only when running as a built native-image. {@link #isAvailable()} returns false in JVM dev mode so
  * {@code Scanner.forVolume(...)} falls back to {@link ParallelDirectoryScanner} there.
+ * <p>The class is gated with {@code @Platforms(WINDOWS)} so it does not exist on non-Windows
+ * native-images at all; cross-platform code reaches it only via {@code platform.Capabilities.MFT}, whose static initializer dead-strips the
+ * reference on non-matching platforms. Direct imports from cross-platform code are therefore a build-time error rather than a silent
+ * native-image regression.
  */
+@Platforms(Platform.WINDOWS.class)
 public final class MftScanner implements Scanner {
 
 	private static final Logger LOG = Logger.getLogger(MftScanner.class.getName());

@@ -29,6 +29,8 @@
 package se.hirt.diskspace.scan;
 
 import org.graalvm.nativeimage.ImageInfo;
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.UnmanagedMemory;
 import org.graalvm.nativeimage.c.type.CCharPointer;
@@ -45,9 +47,13 @@ import java.util.logging.Logger;
  * {@code GetTokenInformation(TokenElevation)} for the detect side and {@code ShellExecuteW} with the {@code "runas"} verb for the relaunch
  * side.
  * <p><b>Native-image only.</b> {@link #isAvailable()} returns false in JVM dev mode, so the
- * caller (typically {@code App.maybeOfferElevation}) just won't surface the prompt there. Migrating off JNA means the Win32 calls are
- * direct {@code @CFunction} invocations linked by native-image — no JNI shim, no extra DLL.
+ * caller (typically {@code App.maybeOfferElevation}) just won't surface the prompt there. The Win32 calls are direct {@code @CFunction}
+ * invocations linked by native-image — no JNI shim, no extra DLL.
+ * <p>The class is gated with {@code @Platforms(WINDOWS)} so it does not exist on non-Windows
+ * native-images at all; cross-platform code reaches it only via {@code platform.Capabilities.ELEVATION}. Direct imports from cross-platform
+ * code are a build-time error rather than a silent native-image regression.
  */
+@Platforms(Platform.WINDOWS.class)
 public final class WindowsElevation {
 
 	private static final Logger LOG = Logger.getLogger(WindowsElevation.class.getName());

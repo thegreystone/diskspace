@@ -28,8 +28,7 @@
  */
 package se.hirt.diskspace.model;
 
-import org.graalvm.nativeimage.ImageInfo;
-import se.hirt.diskspace.scan.Win32StorageProbe;
+import se.hirt.diskspace.platform.Capabilities;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -289,11 +288,12 @@ public final class StorageProfileProbe {
 		// Native-image fast path: 3 ioctls per drive (~5-10ms each) vs. ~2.4s for one
 		// PowerShell process doing the WMI/CIM round-trip. About 25× faster on a typical
 		// machine, no admin needed, and the same SSD/HDD/NETWORK classification as the
-		// PowerShell path produces. JVM dev mode falls through to PowerShell because
-		// @CFunction bindings only resolve in native-image builds.
-		if (ImageInfo.inImageRuntimeCode()) {
+		// PowerShell path produces. JVM dev mode falls through to PowerShell because the
+		// @CFunction bindings only resolve in native-image builds — Capabilities.STORAGE_PROBE
+		// reports unavailable there.
+		if (Capabilities.STORAGE_PROBE.isAvailable()) {
 			long startNanos = System.nanoTime();
-			Map<Path, StorageProfile> results = Win32StorageProbe.probeAll(volumes);
+			Map<Path, StorageProfile> results = Capabilities.STORAGE_PROBE.probeAll(volumes);
 			for (Map.Entry<Path, StorageProfile> e : results.entrySet()) {
 				CACHE.put(e.getKey().toAbsolutePath().toString(), e.getValue());
 			}

@@ -36,7 +36,7 @@ import javafx.scene.control.Alert.AlertType;
 import javafx.scene.control.ButtonType;
 import javafx.scene.image.Image;
 import javafx.stage.Stage;
-import se.hirt.diskspace.scan.WindowsElevation;
+import se.hirt.diskspace.platform.Capabilities;
 import se.hirt.diskspace.ui.MainWindow;
 import se.hirt.diskspace.ui.theme.ColorScheme;
 
@@ -93,14 +93,15 @@ public final class App extends Application {
 	/**
 	 * If we're on Windows and not already elevated, ask the user once per launch whether they'd like to restart as administrator. Yes →
 	 * {@code ShellExecute("runas")} relaunches the current command line elevated and we exit. No → continue with the parallel scanner.
-	 * <p>Skipped silently when {@link WindowsElevation#isAvailable()} is false (non-Windows,
-	 * or a native-image build where JNA isn't loadable). Skipped when {@code -Ddiskspace.skipElevationPrompt=true} is set (handy for
-	 * unattended runs).
+	 * <p>Skipped silently when {@link Capabilities#ELEVATION} reports unavailable
+	 * (non-Windows native-image, or JVM dev mode where the {@code @CFunction} bindings aren't linked). Skipped when
+	 * {@code -Ddiskspace.skipElevationPrompt=true} is set (handy for unattended runs).
 	 */
 	private void maybeOfferElevation() {
-		if (!WindowsElevation.isAvailable())
+		Capabilities.Elevation elev = Capabilities.ELEVATION;
+		if (!elev.isAvailable())
 			return;
-		if (WindowsElevation.isElevated())
+		if (elev.isElevated())
 			return;
 		if (Boolean.getBoolean("diskspace.skipElevationPrompt"))
 			return;
@@ -111,7 +112,7 @@ public final class App extends Application {
 		alert.setTitle("DiskSpace");
 		alert.showAndWait().ifPresent(choice -> {
 			if (choice == ButtonType.YES) {
-				if (WindowsElevation.relaunchElevated()) {
+				if (elev.relaunchElevated()) {
 					requestQuit();
 				} else {
 					// User declined UAC, or the spawn failed for some other reason. Stay open.

@@ -31,6 +31,7 @@ package se.hirt.diskspace.scan;
 import se.hirt.diskspace.model.DirectoryNode;
 import se.hirt.diskspace.model.StorageProfile;
 import se.hirt.diskspace.model.Volume;
+import se.hirt.diskspace.platform.Capabilities;
 
 import java.nio.file.Path;
 
@@ -76,13 +77,13 @@ public interface Scanner {
 	}
 
 	/**
-	 * Returns the next strategy in cycle order, skipping {@link ScanStrategy#MFT} when {@link MftScanner#isAvailable()} is false
-	 * (non-Windows or native-image build) — on those platforms MFT is functionally identical to PARALLEL because every volume falls through
-	 * to parallel walking, so cycling through it is just a dead step.
+	 * Returns the next strategy in cycle order, skipping {@link ScanStrategy#MFT} when {@link Capabilities#MFT} reports unavailable
+	 * (non-Windows or JVM dev mode) — on those platforms MFT is functionally identical to PARALLEL because every volume falls through to
+	 * parallel walking, so cycling through it is just a dead step.
 	 */
 	static ScanStrategy nextAvailable(ScanStrategy current) {
 		ScanStrategy n = current.next();
-		if (n == ScanStrategy.MFT && !MftScanner.isAvailable()) {
+		if (n == ScanStrategy.MFT && !Capabilities.MFT.isAvailable()) {
 			n = n.next();
 		}
 		return n;
@@ -103,8 +104,8 @@ public interface Scanner {
 	 */
 	static Scanner forVolume(Volume volume) {
 		ScanStrategy pref = PREFERENCE.get();
-		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && MftScanner.canScan(volume)) {
-			return new MftScanner();
+		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && Capabilities.MFT.canScan(volume)) {
+			return Capabilities.MFT.createScanner();
 		}
 		int parallelism = pref == ScanStrategy.SEQUENTIAL ? 1 : parallelismFor(volume.storageProfile());
 		return new ParallelDirectoryScanner(parallelism);
@@ -116,7 +117,7 @@ public interface Scanner {
 	 */
 	static String strategyLabelFor(Volume volume) {
 		ScanStrategy pref = PREFERENCE.get();
-		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && MftScanner.canScan(volume)) {
+		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && Capabilities.MFT.canScan(volume)) {
 			return "MFT";
 		}
 		int p = pref == ScanStrategy.SEQUENTIAL ? 1 : parallelismFor(volume.storageProfile());
@@ -129,7 +130,7 @@ public interface Scanner {
 	 */
 	static String strategyDescriptionFor(Volume volume) {
 		ScanStrategy pref = PREFERENCE.get();
-		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && MftScanner.canScan(volume)) {
+		if ((pref == ScanStrategy.AUTO || pref == ScanStrategy.MFT) && Capabilities.MFT.canScan(volume)) {
 			return "Reads the NTFS Master File Table via FSCTL_ENUM_USN_DATA, then bulk-enumerates " + "child sizes per directory. Requires admin / SeBackupPrivilege.";
 		}
 		// User asked for MFT but volume isn't eligible — call out the fallback.
