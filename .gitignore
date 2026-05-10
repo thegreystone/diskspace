@@ -8,6 +8,10 @@ out/
 *.class
 dependency-reduced-pom.xml
 
+# Profiling output
+*.jfr
+stdout.txt
+
 # Inno Setup output (installer build artifacts + staged binary)
 installer/Output/
 installer/diskspace.exe
@@ -56,3 +60,6 @@ $RECYCLE.BIN/
 .env
 .env.local
 *.local
+
+# Claude Code agent session state
+.claude/

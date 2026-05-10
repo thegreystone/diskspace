@@ -29,6 +29,9 @@
 package se.hirt.diskspace.ui;
 
 import javafx.animation.AnimationTimer;
+import javafx.animation.KeyFrame;
+import javafx.animation.KeyValue;
+import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
@@ -50,6 +53,7 @@ import javafx.scene.shape.StrokeLineCap;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.scene.text.TextAlignment;
+import javafx.util.Duration;
 import se.hirt.diskspace.model.DirectoryNode;
 import se.hirt.diskspace.model.MacHiddenSpace;
 import se.hirt.diskspace.model.Volume;
@@ -71,15 +75,17 @@ public final class DiskView {
 	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(DiskView.class.getName());
 
 	/**
-	 * Session-only "don't ask again" flag for the FDA prompt. Deliberately not persisted: an occasional user who clicks "skip" today and
-	 * upgrades macOS in six months would otherwise get silently incomplete scans, with no way to recover the prompt short of editing
-	 * preferences. Forgetting on quit means the worst case is one extra dialog per launch — fine for an "occasionally used" tool.
+	 * Session-only "don't ask again" flag for the FDA prompt. Deliberately not persisted: an occasional user who clicks
+	 * "skip" today and upgrades macOS in six months would otherwise get silently incomplete scans, with no way to
+	 * recover the prompt short of editing preferences. Forgetting on quit means the worst case is one extra dialog per
+	 * launch — fine for an "occasionally used" tool.
 	 */
 	private static volatile boolean fdaPromptSkippedThisSession = false;
 
 	/**
-	 * First {@value} rings render at full thickness ({@code normalW}); after that, up to {@link #THIN_RINGS} additional rings are squeezed
-	 * in at {@link #THIN_RING_FACTOR} of the normal width so deep file structure stays visible without dominating the layout.
+	 * First {@value} rings render at full thickness ({@code normalW}); after that, up to {@link #THIN_RINGS} additional
+	 * rings are squeezed in at {@link #THIN_RING_FACTOR} of the normal width so deep file structure stays visible
+	 * without dominating the layout.
 	 */
 	private static final int NORMAL_RINGS = 5;
 	private static final int THIN_RINGS = 4;
@@ -99,6 +105,18 @@ public final class DiskView {
 
 	private final Label rightHeader;
 	private final HBox breadcrumb;
+	/**
+	 * Top-right badge in the canvas pane showing which scanner was used (MFT / Parallel(8) / Sequential / etc). Sits on
+	 * the same horizontal band as the breadcrumb but pinned to the opposite corner so it doesn't fight breadcrumb
+	 * labels for space. Hidden when no scan is in flight; pulsed via {@link #strategyPulse} while scanning.
+	 */
+	private final Label strategyBadge;
+	/**
+	 * Opacity pulse on {@link #strategyBadge} while scanning — ramps 1.0 → 0.5 → 1.0 every ~1.2 s, autoreverse,
+	 * indefinite. Played on scan start, stopped on completion / error / cancel; opacity is reset to 1.0 before hiding
+	 * so the next show isn't mid-fade.
+	 */
+	private final Timeline strategyPulse;
 	private final TableView<Entry> table = new TableView<>();
 	private final ObservableList<Entry> tableItems = FXCollections.observableArrayList();
 	private DirectoryNode lastListedRoot;
@@ -117,6 +135,34 @@ public final class DiskView {
 	private final List<SectorRect> sectors = new ArrayList<>();
 	private final List<RectHit> rects = new ArrayList<>();
 	private RenderMode currentMode = RenderMode.SUNBURST;
+	/**
+	 * JFR event spanning the duration the user spends in a single visualization mode. Begun in the constructor,
+	 * committed + replaced on every {@link #toggleRenderMode}, finally committed in {@link #shutdown}. Lets JMC's flame
+	 * graph filter samples to "while sunburst was on screen" or "while heatmap was on screen".
+	 */
+	private VisualizationEvent currentVizEvent;
+	/**
+	 * Per-{@link #currentVizEvent} repaint counter. Incremented inside {@link #redraw()}, reset by
+	 * {@link #startVizEvent()}, captured by {@link #endVizEvent()}.
+	 */
+	private int vizEventRenderCount;
+	/**
+	 * Correlation ID stamped on every JFR event from this scan run ({@link ScanEvent}, {@link RenderEvent},
+	 * {@link VisualizationEvent}, {@link UserActionEvent}). Generated fresh in {@link #startScan()} and
+	 * {@link #rescan()}. {@code 0} = no scan yet.
+	 */
+	private long currentScanId;
+	/**
+	 * Trigger label for the next {@link #redraw()}. {@link #redrawWith(String)} sets it for the call sites that know
+	 * "why" they're redrawing; falls back to {@code "auto"} when {@code redraw()} is called directly. Read + reset
+	 * inside {@code redraw()}.
+	 */
+	private String pendingRedrawTrigger = "auto";
+	/**
+	 * In-flight {@link ScanEvent}, begun in {@link #doStartScan()} and committed by {@code onComplete} /
+	 * {@code onError}.
+	 */
+	private ScanEvent currentScanEvent;
 	private DirectoryNode scanRoot;
 	private DirectoryNode viewRoot;
 	private DirectoryNode hoverNode;
@@ -131,29 +177,55 @@ public final class DiskView {
 	private long lastPermDeniedCount;
 	private volatile MacHiddenSpace.HiddenSpace cachedHidden;
 	/**
-	 * The synthetic "Hidden" node attached as a child of scanRoot. Held so layout and table sorters can pin it to the end regardless of
-	 * size. Null until injected.
+	 * The synthetic "Hidden" node attached as a child of scanRoot. Held so layout and table sorters can pin it to the
+	 * end regardless of size. Null until injected.
 	 */
 	private volatile DirectoryNode hiddenNode;
 
 	/**
-	 * Memoized sunburst color per node. Family root (immediate child of scanRoot) gets a palette pick by name; deeper descendants inherit
-	 * the parent's color, lightened and hue-shifted by sibling rank + depth so the largest-child trunk reads as one ribbon while side
-	 * branches fade outward. Cleared on every (re)scan.
+	 * Memoized sunburst color per node. Family root (immediate child of scanRoot) gets a palette pick by name; deeper
+	 * descendants inherit the parent's color, lightened and hue-shifted by sibling rank + depth so the largest-child
+	 * trunk reads as one ribbon while side branches fade outward. Cleared on every (re)scan.
 	 */
 	private final java.util.Map<DirectoryNode, Color> colorCache = new java.util.IdentityHashMap<>();
 
 	/**
-	 * Palette index claimed by each top-level family (immediate child of scanRoot). Allocated lazily with collision avoidance so two
-	 * top-level siblings can't end up on the same color even when their names hash to the same bucket.
+	 * Per-render cache of {@code parent → (child → rank)}. {@link #sortedRank(DirectoryNode)} fills the inner map by
+	 * sorting {@code parent.children()} by size once; subsequent calls for siblings of the same parent become O(1)
+	 * lookups instead of an O(K log K) sort each.
+	 * <p>Without this, drawHeatmap pegs the FX thread to 100% on TimSort during a scan: each
+	 * cell calls getNodeColor → sortedRank, which builds and sorts a fresh ArrayList every time. With K children per
+	 * parent that's K calls × K log K work = K² log K per parent; jstack caught the FX thread spending 122 s of CPU in
+	 * TimSort that way.
+	 * <p>Cleared at the top of {@link #redraw()} so successive renders see a fresh snapshot.
+	 */
+	private final java.util.Map<DirectoryNode, java.util.IdentityHashMap<DirectoryNode, Integer>> rankCache = new java.util.IdentityHashMap<>();
+
+	/**
+	 * Persistent rank map for parents whose children list is sort-stable
+	 * (post-{@link DirectoryNode#sortBySizeRecursive}, no subsequent mutation). Survives across renders — once computed
+	 * for a parent, lookups are O(1) forever until that parent's children change. Cleared on scan start; lazy-evicted
+	 * in {@link #sortedRank} when a parent transitions back to unstable.
+	 * <p>JFR follow-up to the {@link #rankCache} fix: the per-render cache eliminated the in-render re-sort cost, but
+	 * the renderer was still rebuilding the map for every visible parent on every render. For finalised subtrees (the
+	 * steady state after a scan completes) the map can be reused indefinitely.
+	 */
+	private final java.util.Map<DirectoryNode, java.util.IdentityHashMap<DirectoryNode, Integer>> stableRankCache = new java.util.IdentityHashMap<>();
+
+	/**
+	 * Palette index claimed by each top-level family (immediate child of scanRoot). Allocated lazily with collision
+	 * avoidance so two top-level siblings can't end up on the same color even when their names hash to the same
+	 * bucket.
 	 */
 	private final java.util.Map<DirectoryNode, Integer> topLevelPaletteIdx = new java.util.IdentityHashMap<>();
 
 	/**
-	 * Top-level folders whose scan has completed and whose descendant colors have been invalidated against final ranks. Walked on every
-	 * live tick so colors stabilize per-folder as each finishes, instead of all flipping at the end of the scan.
+	 * Top-level folders whose scan has completed and whose descendant colors have been invalidated against final ranks.
+	 * Walked on every live tick so colors stabilize per-folder as each finishes, instead of all flipping at the end of
+	 * the scan.
 	 */
-	private final java.util.Set<DirectoryNode> finalizedTopLevels = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+	private final java.util.Set<DirectoryNode> finalizedTopLevels = java.util.Collections.newSetFromMap(
+			new java.util.IdentityHashMap<>());
 
 	private final Scanner scanner;
 	private final AnimationTimer liveTicker;
@@ -179,8 +251,8 @@ public final class DiskView {
 		canvasHolder.setStyle(bg(scheme.background()));
 		canvas.widthProperty().bind(canvasHolder.widthProperty());
 		canvas.heightProperty().bind(canvasHolder.heightProperty());
-		canvas.widthProperty().addListener((o, a, b) -> redraw());
-		canvas.heightProperty().addListener((o, a, b) -> redraw());
+		canvas.widthProperty().addListener((o, a, b) -> redrawWith("resize"));
+		canvas.heightProperty().addListener((o, a, b) -> redrawWith("resize"));
 		canvas.setOnMouseMoved(e -> handleMouseMove(e.getX(), e.getY()));
 		canvas.setOnMouseExited(e -> {
 			hoverNode = null;
@@ -199,8 +271,31 @@ public final class DiskView {
 		// Without this, HBox stretches to fill, and Pos.CENTER_LEFT plants the labels
 		// at the vertical centre of the canvas instead of pinned at the top.
 		breadcrumb.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
-		StackPane leftStack = new StackPane(canvasHolder, breadcrumb);
+
+		// Compute the strategy label up-front (Scanner.forVolume above already used the
+		// same PREFERENCE+capability check) so the badge text accurately reflects which
+		// scanner is actually running for this view, not whatever PREFERENCE later flips to.
+		strategyBadge = new Label(Scanner.strategyLabelFor(target));
+		strategyBadge.setStyle("-fx-text-fill: " + css(
+				scheme.textMuted()) + ";" + "-fx-font-size: 10px; -fx-font-weight: 600;" + "-fx-padding: 12 14 0 0;");
+		strategyBadge.setPickOnBounds(false);
+		strategyBadge.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
+		// Hidden by default — onStart turns it on for the duration of the scan.
+		strategyBadge.setVisible(false);
+		Tooltip badgeTip = new Tooltip("Scanner used for this view: " + Scanner.strategyLabelFor(target));
+		badgeTip.setShowDelay(Duration.millis(300));
+		Tooltip.install(strategyBadge, badgeTip);
+
+		// Pulse: opacity drifts 1.0 → 0.5 → 1.0 over ~1.2 s. autoReverse with one
+		// 600 ms keyframe gives the round trip; INDEFINITE keeps it running until stopped.
+		strategyPulse = new Timeline(new KeyFrame(Duration.ZERO, new KeyValue(strategyBadge.opacityProperty(), 1.0)),
+				new KeyFrame(Duration.millis(600), new KeyValue(strategyBadge.opacityProperty(), 0.5)));
+		strategyPulse.setAutoReverse(true);
+		strategyPulse.setCycleCount(Timeline.INDEFINITE);
+
+		StackPane leftStack = new StackPane(canvasHolder, breadcrumb, strategyBadge);
 		StackPane.setAlignment(breadcrumb, Pos.TOP_LEFT);
+		StackPane.setAlignment(strategyBadge, Pos.TOP_RIGHT);
 		leftStack.setStyle(bg(scheme.background()));
 
 		configureTable();
@@ -213,7 +308,8 @@ public final class DiskView {
 		stagedItems.addListener((ListChangeListener<StagedItem>) c -> updateStagingVisibility());
 
 		rightHeader = new Label("  " + target.displayName() + "  —  scanning…");
-		rightHeader.setStyle("-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 12 8 12;");
+		rightHeader.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 12 8 12;");
 		BorderPane right = new BorderPane(rightSplit);
 		right.setTop(rightHeader);
 		right.setStyle(bg(scheme.background()));
@@ -236,7 +332,7 @@ public final class DiskView {
 					updateStagingFooter();
 				}
 				if (!animating)
-					redraw();
+					redrawWith("scan-update");
 			}
 		};
 
@@ -268,6 +364,7 @@ public final class DiskView {
 		this.outerRoot = new StackPane(root, helpOverlay);
 		outerRoot.setStyle(bg(scheme.background()));
 
+		startVizEvent();
 		startScan();
 	}
 
@@ -276,8 +373,8 @@ public final class DiskView {
 	}
 
 	/**
-	 * Cancel the running scan and stop animation timers. Called during app quit so the scanner's {@link Platform#runLater} callbacks don't
-	 * fire into a half-torn-down toolkit.
+	 * Cancel the running scan and stop animation timers. Called during app quit so the scanner's
+	 * {@link Platform#runLater} callbacks don't fire into a half-torn-down toolkit.
 	 */
 	public void shutdown() {
 		try {
@@ -289,20 +386,45 @@ public final class DiskView {
 		} catch (RuntimeException ignored) {
 		}
 		try {
+			stopStrategyPulse();
+		} catch (RuntimeException ignored) {
+		}
+		try {
 			animTimer.stop();
+		} catch (RuntimeException ignored) {
+		}
+		try {
+			endVizEvent();
+		} catch (RuntimeException ignored) {
+		}
+		try {
+			// If a scan was in flight when the user closed the tab / quit, mark it cancelled
+			// rather than leaving a dangling in-flight Scan event.
+			commitScanEvent(scanRoot, "cancelled");
 		} catch (RuntimeException ignored) {
 		}
 	}
 
 	/**
-	 * Top-level command dispatch. Invoked both by this view's own key handler and by MainWindow's BorderPane-level handler so single-key
-	 * shortcuts fire whether focus is inside the view or on the TabPane / picker. Plain modifier-free keys only — chords belong to focused
-	 * controls.
+	 * Stops the strategy-badge pulse, snaps opacity back to 1.0 (so the badge isn't frozen mid-fade if it gets shown
+	 * again), and hides the badge. Idempotent.
+	 */
+	private void stopStrategyPulse() {
+		strategyPulse.stop();
+		strategyBadge.setOpacity(1.0);
+		strategyBadge.setVisible(false);
+	}
+
+	/**
+	 * Top-level command dispatch. Invoked both by this view's own key handler and by MainWindow's BorderPane-level
+	 * handler so single-key shortcuts fire whether focus is inside the view or on the TabPane / picker. Plain
+	 * modifier-free keys only — chords belong to focused controls.
 	 */
 	public void dispatchTopLevelKey(KeyEvent e) {
 		// Esc toggles the help overlay even with modifiers off-path; check it first so
 		// users always have a way out.
 		if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
+			emitUserAction("Esc", "toggle-help");
 			toggleHelp();
 			e.consume();
 			return;
@@ -313,6 +435,7 @@ public final class DiskView {
 		// Q quits unconditionally — must work even when the help overlay is up. Route
 		// through App.requestQuit so scanners are cancelled before the toolkit tears down.
 		if (e.getCode() == javafx.scene.input.KeyCode.Q) {
+			emitUserAction("Q", "quit");
 			se.hirt.diskspace.App.requestQuit();
 			e.consume();
 			return;
@@ -325,6 +448,7 @@ public final class DiskView {
 		}
 		switch (e.getCode()) {
 		case E, F -> {
+			emitUserAction(e.getCode().name(), "open-in-explorer");
 			openInExplorer();
 			e.consume();
 		}
@@ -334,6 +458,7 @@ public final class DiskView {
 			// scanRoot we no-op, but unconsumed arrow keys bubble to the TabPane
 			// and would step to the "+" tab, opening a new picker.
 			if (viewRoot != null && viewRoot != scanRoot && viewRoot.parent() != null) {
+				emitUserAction(e.getCode().name(), "drill-out");
 				forwardStack.push(viewRoot);
 				select(viewRoot.parent(), false);
 			}
@@ -344,27 +469,33 @@ public final class DiskView {
 			// Right pairs with Left; Down pairs with Up — both bound here.
 			// Always consume so an empty-stack press doesn't fall through to the TabPane.
 			if (!forwardStack.isEmpty()) {
+				emitUserAction(e.getCode().name(), "drill-in-forward");
 				DirectoryNode next = forwardStack.pop();
 				select(next, false);
 			}
 			e.consume();
 		}
 		case DELETE -> {
+			emitUserAction("Del", "stage-delete");
 			handleDeleteKey();
 			e.consume();
 		}
 		case R -> {
 			// Full rescan. Useful after external changes (e.g. something deleted outside diskspace).
-			if (!deleting)
+			if (!deleting) {
+				emitUserAction("R", "rescan");
 				rescan();
+			}
 			e.consume();
 		}
 		case U -> {
+			emitUserAction("U", "toggle-units");
 			SizeFormat.toggle();
 			refreshAfterUnitChange();
 			e.consume();
 		}
 		case V -> {
+			emitUserAction("V", "toggle-mode");
 			toggleRenderMode();
 			e.consume();
 		}
@@ -375,9 +506,10 @@ public final class DiskView {
 	private void configureTable() {
 		table.setItems(tableItems);
 		table.setPlaceholder(new Label(""));
-		table.setStyle("-fx-background-color: " + css(scheme.background()) + ";" + "-fx-control-inner-background: " + css(
-				scheme.background()) + ";" + "-fx-text-fill: " + css(
-				scheme.textPrimary()) + ";" + "-fx-table-cell-border-color: transparent;");
+		table.setStyle(
+				"-fx-background-color: " + css(scheme.background()) + ";" + "-fx-control-inner-background: " + css(
+						scheme.background()) + ";" + "-fx-text-fill: " + css(
+						scheme.textPrimary()) + ";" + "-fx-table-cell-border-color: transparent;");
 
 		TableColumn<Entry, String> nameCol = new TableColumn<>("Name");
 		nameCol.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().name()));
@@ -519,9 +651,10 @@ public final class DiskView {
 	private void configureStagingTable() {
 		stagingTable.setItems(stagedItems);
 		stagingTable.setPlaceholder(new Label(""));
-		stagingTable.setStyle("-fx-background-color: " + css(scheme.background()) + ";" + "-fx-control-inner-background: " + css(
-				scheme.background()) + ";" + "-fx-text-fill: " + css(
-				scheme.textPrimary()) + ";" + "-fx-table-cell-border-color: transparent;");
+		stagingTable.setStyle(
+				"-fx-background-color: " + css(scheme.background()) + ";" + "-fx-control-inner-background: " + css(
+						scheme.background()) + ";" + "-fx-text-fill: " + css(
+						scheme.textPrimary()) + ";" + "-fx-table-cell-border-color: transparent;");
 		stagingTable.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
 
 		TableColumn<StagedItem, String> nameCol = new TableColumn<>("Path");
@@ -634,10 +767,12 @@ public final class DiskView {
 
 		Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
 		alert.setTitle(trash ? "Move to Trash" : "Delete permanently");
-		alert.setHeaderText((trash ? "Move " : "Permanently delete ") + stagedItems.size() + " item" + (stagedItems.size() == 1 ? ""
-				: "s") + " (" + humanSize(total) + ")?");
+		alert.setHeaderText(
+				(trash ? "Move " : "Permanently delete ") + stagedItems.size() + " item" + (stagedItems.size() == 1 ? ""
+						: "s") + " (" + humanSize(total) + ")?");
 		alert.setContentText(body.toString());
-		ButtonType go = new ButtonType(trash ? "Move to Trash" : "Delete", javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
+		ButtonType go = new ButtonType(trash ? "Move to Trash" : "Delete",
+				javafx.scene.control.ButtonBar.ButtonData.OK_DONE);
 		alert.getButtonTypes().setAll(go, ButtonType.CANCEL);
 
 		var result = alert.showAndWait();
@@ -690,14 +825,16 @@ public final class DiskView {
 		if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
 			Files.walkFileTree(path, new java.nio.file.SimpleFileVisitor<Path>() {
 				@Override
-				public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs)
-						throws java.io.IOException {
+				public java.nio.file.FileVisitResult visitFile(
+						Path file,
+						java.nio.file.attribute.BasicFileAttributes attrs) throws java.io.IOException {
 					Files.delete(file);
 					return java.nio.file.FileVisitResult.CONTINUE;
 				}
 
 				@Override
-				public java.nio.file.FileVisitResult postVisitDirectory(Path dir, java.io.IOException exc) throws java.io.IOException {
+				public java.nio.file.FileVisitResult postVisitDirectory(Path dir, java.io.IOException exc)
+						throws java.io.IOException {
 					Files.delete(dir);
 					return java.nio.file.FileVisitResult.CONTINUE;
 				}
@@ -822,6 +959,7 @@ public final class DiskView {
 	private void rescan() {
 		scanner.cancel();
 		liveTicker.stop();
+		stopStrategyPulse();
 		scanRoot = null;
 		viewRoot = null;
 		hoverNode = null;
@@ -840,11 +978,12 @@ public final class DiskView {
 		colorCache.clear();
 		topLevelPaletteIdx.clear();
 		finalizedTopLevels.clear();
+		stableRankCache.clear();
 		currentFiles = List.of();
 		tableItems.clear();
 		sectors.clear();
 		rebuildBreadcrumb();
-		redraw();
+		redrawWith("rescan");
 		startScan();
 	}
 
@@ -889,7 +1028,8 @@ public final class DiskView {
 				return;
 		}
 		// Remove any existing item that the candidate covers (descendants of candidate).
-		stagedItems.removeIf(existing -> !existing.path().equals(candidate.path()) && existing.path().startsWith(candidate.path()));
+		stagedItems.removeIf(
+				existing -> !existing.path().equals(candidate.path()) && existing.path().startsWith(candidate.path()));
 		stagedItems.add(candidate);
 	}
 
@@ -897,7 +1037,8 @@ public final class DiskView {
 		if (e.isDirectory()) {
 			return dirToStaged(e.dirNode());
 		}
-		java.nio.file.Path filePath = (viewRoot != null && viewRoot.path() != null) ? viewRoot.path().resolve(e.name()) : null;
+		java.nio.file.Path filePath =
+				(viewRoot != null && viewRoot.path() != null) ? viewRoot.path().resolve(e.name()) : null;
 		// For a file row, the parent node is whatever directory we're currently viewing.
 		return new StagedItem(false, filePath, e.staticSize(), null, viewRoot);
 	}
@@ -938,7 +1079,8 @@ public final class DiskView {
 		sb.append(String.format("  Volume total : %s%n", humanSize(target.totalBytes())));
 		sb.append(String.format("  OS used      : %s%n", humanSize(target.usedBytes())));
 		sb.append(String.format("  OS free      : %s%n", humanSize(target.usableBytes())));
-		sb.append(String.format("  Scanned      : %s  (%d files)%n", humanSize(root.totalBytes()), root.totalFileCount()));
+		sb.append(String.format("  Scanned      : %s  (%d files)%n", humanSize(root.totalBytes()),
+				root.totalFileCount()));
 		long delta = root.totalBytes() - target.usedBytes();
 		if (delta > 0) {
 			// Scanner sum exceeds OS-reported used space; APFS clones are the usual cause.
@@ -956,7 +1098,8 @@ public final class DiskView {
 			sb.append(String.format("    Snapshots      : %s%n", hidden.localSnapshotCount() == 0 ? "no local snapshots"
 					: hidden.localSnapshotCount() + " local snapshot" + (hidden.localSnapshotCount() == 1 ? "" : "s")));
 			sb.append(String.format("    Other          : %s%n", humanSize(hidden.residualBytes())));
-			sb.append(String.format("    Not accessible : %d path%s%n", lastPermDeniedCount, lastPermDeniedCount == 1 ? "" : "s"));
+			sb.append(String.format("    Not accessible : %d path%s%n", lastPermDeniedCount,
+					lastPermDeniedCount == 1 ? "" : "s"));
 		}
 		sb.append("  Root breakdown (by size):\n");
 		for (DirectoryNode child : children) {
@@ -970,7 +1113,8 @@ public final class DiskView {
 		if (isMac()) {
 			boolean granted = isFdaGranted();
 			boolean skip = fdaPromptSkippedThisSession;
-			LOG.fine(() -> "FDA gate: granted=" + granted + " sessionSkip=" + skip + " → " + (!granted && !skip ? "show prompt" : "no prompt"));
+			LOG.fine(() -> "FDA gate: granted=" + granted + " sessionSkip=" + skip + " → " + (!granted && !skip
+					? "show prompt" : "no prompt"));
 			if (!granted && !skip) {
 				promptForFda();
 			}
@@ -994,7 +1138,8 @@ public final class DiskView {
 			LOG.fine(() -> "FDA probe: " + tccDb + " not found — assuming pre-TCC macOS, treating as granted");
 			return true;
 		} catch (java.io.IOException e) {
-			LOG.fine(() -> "FDA probe: " + tccDb + " open failed (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ") — not granted");
+			LOG.fine(() -> "FDA probe: " + tccDb + " open failed (" + e.getClass()
+					.getSimpleName() + ": " + e.getMessage() + ") — not granted");
 			return false;
 		}
 	}
@@ -1011,7 +1156,8 @@ public final class DiskView {
 		alert.showAndWait().ifPresent(b -> {
 			if (b == openSettings) {
 				try {
-					new ProcessBuilder("open", "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles").start();
+					new ProcessBuilder("open",
+							"x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles").start();
 				} catch (java.io.IOException ignore) {
 				}
 			} else {
@@ -1021,6 +1167,18 @@ public final class DiskView {
 	}
 
 	private void doStartScan() {
+		// Begin a JFR Scan event spanning this scan run. ScanID is generated here so any
+		// Render / VisualizationActive / UserAction event committed after this point can
+		// be correlated to the scan in JMC. Generated even when JFR isn't recording —
+		// the cost is one ThreadLocalRandom.nextLong + a couple of field assignments.
+		currentScanId = java.util.concurrent.ThreadLocalRandom.current().nextLong();
+		ScanEvent se = new ScanEvent();
+		se.scanId = currentScanId;
+		se.root = target.root().toString();
+		se.strategy = Scanner.strategyLabelFor(target);
+		se.begin();
+		currentScanEvent = se;
+
 		scanner.scan(target.root(), new Scanner.ScanListener() {
 			@Override
 			public void onStart(DirectoryNode liveRoot) {
@@ -1037,8 +1195,10 @@ public final class DiskView {
 					scanning = true;
 					refreshTable();
 					rebuildBreadcrumb();
-					redraw();
+					redrawWith("scan-start");
 					liveTicker.start();
+					strategyBadge.setVisible(true);
+					strategyPulse.playFromStart();
 				});
 			}
 
@@ -1062,6 +1222,8 @@ public final class DiskView {
 				Platform.runLater(() -> {
 					scanning = false;
 					liveTicker.stop();
+					stopStrategyPulse();
+					commitScanEvent(result, "complete");
 					// Drop colors that were memoized during the scan against stale child
 					// sort orders — a node briefly cached as rank-0 stays cached as rank-0
 					// until invalidated, even if siblings overtook it. Same for the
@@ -1070,7 +1232,7 @@ public final class DiskView {
 					colorCache.clear();
 					topLevelPaletteIdx.clear();
 					refreshTable();
-					redraw();
+					redrawWith("scan-complete");
 				});
 			}
 
@@ -1079,11 +1241,30 @@ public final class DiskView {
 				Platform.runLater(() -> {
 					scanning = false;
 					liveTicker.stop();
+					stopStrategyPulse();
+					commitScanEvent(null, "error");
 					progressPath = "Scan failed: " + t.getMessage();
-					redraw();
+					redrawWith("scan-error");
 				});
 			}
 		});
+	}
+
+	/**
+	 * Finalises {@link #currentScanEvent} and commits it. {@code outcome} is one of {@code "complete"},
+	 * {@code "error"}, or {@code "cancelled"}. Idempotent.
+	 */
+	private void commitScanEvent(DirectoryNode result, String outcome) {
+		ScanEvent se = currentScanEvent;
+		if (se == null)
+			return;
+		currentScanEvent = null;
+		se.fileCount = result != null ? result.totalFileCount() : progressFiles;
+		se.totalBytes = result != null ? result.totalBytes() : progressBytes;
+		se.permissionDeniedCount = lastPermDeniedCount;
+		se.outcome = outcome;
+		se.end();
+		se.commit();
 	}
 
 	// ---- table refresh ---------------------------------------------------
@@ -1164,7 +1345,8 @@ public final class DiskView {
 		try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
 			for (Path p : stream) {
 				try {
-					BasicFileAttributes attrs = Files.readAttributes(p, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+					BasicFileAttributes attrs = Files.readAttributes(p, BasicFileAttributes.class,
+							LinkOption.NOFOLLOW_LINKS);
 					if (attrs.isRegularFile()) {
 						Path fileName = p.getFileName();
 						String name = (fileName == null) ? p.toString() : fileName.toString();
@@ -1181,16 +1363,17 @@ public final class DiskView {
 	}
 
 	/**
-	 * Files at or above this size become their own sunburst sector. Smaller files are summed per directory and surface as a single "Smaller
-	 * files" sector when the sum itself crosses the same threshold. 1 GB decimal — must match
+	 * Files at or above this size become their own sunburst sector. Smaller files are summed per directory and surface
+	 * as a single "Smaller files" sector when the sum itself crosses the same threshold. 1 GB decimal — must match
 	 * {@code ParallelDirectoryScanner.LARGE_FILE_THRESHOLD_BYTES}.
 	 */
 	private static final long FILE_SECTOR_THRESHOLD = 1_000_000_000L;
 
 	/**
-	 * Walks {@code dir} and appends synthetic children for any large files (≥ threshold) the scanner recorded, plus a single "Smaller
-	 * files" aggregate when the smaller-files sum on this directory also crosses the threshold. The synthetic children's bytes are already
-	 * counted in {@code dir.totalBytes()} via the scanner's normal propagation, so no totals are bumped here.
+	 * Walks {@code dir} and appends synthetic children for any large files (≥ threshold) the scanner recorded, plus a
+	 * single "Smaller files" aggregate when the smaller-files sum on this directory also crosses the threshold. The
+	 * synthetic children's bytes are already counted in {@code dir.totalBytes()} via the scanner's normal propagation,
+	 * so no totals are bumped here.
 	 */
 	private static void injectFileChildrenInto(DirectoryNode dir) {
 		// Snapshot real children before we add synthetic ones so the recursion doesn't
@@ -1200,7 +1383,8 @@ public final class DiskView {
 			injectFileChildrenInto(c);
 		}
 		for (DirectoryNode.FileRecord f : dir.largeFiles()) {
-			DirectoryNode fileNode = new DirectoryNode(dir, f.name(), dir.path() != null ? dir.path().resolve(f.name()) : null);
+			DirectoryNode fileNode = new DirectoryNode(dir, f.name(),
+					dir.path() != null ? dir.path().resolve(f.name()) : null);
 			fileNode.addSyntheticBytes(f.size());
 			fileNode.markDone();
 			fileNode.markFileSector();
@@ -1217,9 +1401,10 @@ public final class DiskView {
 	}
 
 	/**
-	 * Builds the synthetic "Hidden" subtree from {@link #cachedHidden} and attaches it as a child of {@code scanRootNode}. The Hidden node
-	 * itself and its children carry zero scanned bytes and no on-disk path, but their {@code totalBytes} is set so the sunburst renders
-	 * them like any other sector. {@code scanRootNode}'s {@code totalBytes} is bumped by Hidden's bytes so children fractions sum to 1.
+	 * Builds the synthetic "Hidden" subtree from {@link #cachedHidden} and attaches it as a child of
+	 * {@code scanRootNode}. The Hidden node itself and its children carry zero scanned bytes and no on-disk path, but
+	 * their {@code totalBytes} is set so the sunburst renders them like any other sector. {@code scanRootNode}'s
+	 * {@code totalBytes} is bumped by Hidden's bytes so children fractions sum to 1.
 	 */
 	private void injectHiddenInto(DirectoryNode scanRootNode) {
 		MacHiddenSpace.HiddenSpace h = cachedHidden;
@@ -1361,19 +1546,20 @@ public final class DiskView {
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label title = new Label("Keyboard Shortcuts");
-		title.setStyle("-fx-text-fill: " + css(scheme.textPrimary()) + ";"
-				+ "-fx-font-size: 18px; -fx-font-weight: 600; -fx-padding: 0 0 14 0;");
+		title.setStyle("-fx-text-fill: " + css(
+				scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600; -fx-padding: 0 0 14 0;");
 
 		Label hint = new Label("Press Esc to close");
-		hint.setStyle("-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
+		hint.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
 
 		VBox card = new VBox(title, grid, hint);
 		card.setAlignment(Pos.TOP_LEFT);
 		card.setPadding(new Insets(24, 28, 20, 28));
 		card.setMaxWidth(460);
 		card.setMaxHeight(Region.USE_PREF_SIZE);
-		card.setStyle("-fx-background-color: " + css(scheme.surface()) + ";" + "-fx-background-radius: 12;"
-				+ "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);");
+		card.setStyle("-fx-background-color: " + css(
+				scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);");
 
 		StackPane overlay = new StackPane(card);
 		overlay.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
@@ -1387,9 +1573,8 @@ public final class DiskView {
 
 	private void addHelpRow(javafx.scene.layout.GridPane grid, int row, String key, String desc) {
 		Label k = new Label(key);
-		k.setStyle("-fx-text-fill: " + css(scheme.accent()) + ";"
-				+ "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;"
-				+ "-fx-font-size: 13px; -fx-font-weight: 600;");
+		k.setStyle("-fx-text-fill: " + css(
+				scheme.accent()) + ";" + "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;" + "-fx-font-size: 13px; -fx-font-weight: 600;");
 		k.setMinWidth(64);
 		Label d = new Label(desc);
 		d.setStyle("-fx-text-fill: " + css(scheme.textPrimary()) + ";" + "-fx-font-size: 13px;");
@@ -1398,7 +1583,9 @@ public final class DiskView {
 	}
 
 	private void toggleRenderMode() {
+		endVizEvent();
 		currentMode = (currentMode == RenderMode.SUNBURST) ? RenderMode.HEATMAP : RenderMode.SUNBURST;
+		startVizEvent();
 		hoverNode = null;
 		hoveringHub = false;
 		hoveringFreeSpace = false;
@@ -1410,11 +1597,12 @@ public final class DiskView {
 		}
 		// Reclaim focus so subsequent keypresses route through this view's handler.
 		root.requestFocus();
-		redraw();
+		redrawWith("mode-change");
 	}
 
 	/**
-	 * Color for {@code node}'s sunburst sector. Used by both the canvas drawing path and the right-pane table swatch so they stay in sync.
+	 * Color for {@code node}'s sunburst sector. Used by both the canvas drawing path and the right-pane table swatch so
+	 * they stay in sync.
 	 * <p>Algorithm — DaisyDisk-style family inheritance:
 	 * <ul>
 	 *  <li>{@code scanRoot} → hub fill (no sector color).</li>
@@ -1501,8 +1689,9 @@ public final class DiskView {
 
 	/**
 	 * Returns the palette index this top-level family will use, allocating on first access. Starts from
-	 * {@code name.hashCode() % paletteSize} and walks forward to the first index not already claimed by a previously-allocated sibling — so
-	 * two top-level siblings whose names happen to hash to the same bucket can't render identical.
+	 * {@code name.hashCode() % paletteSize} and walks forward to the first index not already claimed by a
+	 * previously-allocated sibling — so two top-level siblings whose names happen to hash to the same bucket can't
+	 * render identical.
 	 */
 	private int allocateTopLevelIdx(DirectoryNode node) {
 		Integer cached = topLevelPaletteIdx.get(node);
@@ -1521,9 +1710,9 @@ public final class DiskView {
 	}
 
 	/**
-	 * Per-tick: detect any top-level folders that have just transitioned to {@code DONE} and drop their descendants' cached colors. The
-	 * next render re-derives those colors against the now-final sort order, so per-folder colors stabilize *as that folder finishes* rather
-	 * than all flipping at the very end of the scan.
+	 * Per-tick: detect any top-level folders that have just transitioned to {@code DONE} and drop their descendants'
+	 * cached colors. The next render re-derives those colors against the now-final sort order, so per-folder colors
+	 * stabilize *as that folder finishes* rather than all flipping at the very end of the scan.
 	 * <p>The top-level node itself is left in the cache because its color is hash-based via
 	 * {@link #allocateTopLevelIdx}, not rank-based — it doesn't shift during the scan.
 	 */
@@ -1552,29 +1741,42 @@ public final class DiskView {
 	}
 
 	/**
-	 * Sort comparator that puts {@link #hiddenNode} last and otherwise sorts by size desc. Used wherever scanRoot's children are ordered so
-	 * Hidden never moves position as the scan progresses or as users navigate.
-	 * <p>{@code sizes} must contain a frozen snapshot of {@code totalBytes()} for every node passed to the comparator. Reading the live
-	 * {@link DirectoryNode#totalBytes()} inside the comparator would cause TimSort to throw
-	 * {@code "Comparison method violates its general contract"} during a parallel scan: the merge passes invoke the comparator multiple
-	 * times for the same pair, and concurrent writers can shift the values between calls so transitivity breaks.
+	 * Single-pass snapshot pairing a node with its {@code totalBytes()} captured at the moment of capture. Replaces the
+	 * older {@code IdentityHashMap<DirectoryNode, Long>} pattern that JFR flagged as the #1 render-CPU hotspot: TimSort
+	 * calls the comparator O(N log N) times per render, the old pattern did two map lookups + two unboxings per
+	 * comparison plus N {@code Long.valueOf} boxings up front. With this record, comparisons read primitive
+	 * {@code long} fields directly.
+	 * <p>The snapshot is still required: reading {@link DirectoryNode#totalBytes()} inside the comparator would cause
+	 * TimSort to throw "Comparison method violates its general contract" during a parallel scan, because concurrent
+	 * writers can shift values between the comparator's repeated calls on the same pair and break transitivity.
 	 */
-	private Comparator<DirectoryNode> hiddenLastSizeDesc(java.util.Map<DirectoryNode, Long> sizes) {
-		return (a, b) -> {
-			boolean aHidden = (a == hiddenNode);
-			boolean bHidden = (b == hiddenNode);
-			if (aHidden != bHidden)
-				return aHidden ? 1 : -1;
-			return Long.compare(sizes.get(b), sizes.get(a));
-		};
+	private record SizedNode(DirectoryNode node, long size) {
 	}
 
-	/** Frozen-size snapshot of {@code nodes}. See {@link #hiddenLastSizeDesc} for the why. */
-	private static java.util.IdentityHashMap<DirectoryNode, Long> snapshotSizes(java.util.Collection<DirectoryNode> nodes) {
-		java.util.IdentityHashMap<DirectoryNode, Long> m = new java.util.IdentityHashMap<>(nodes.size());
+	/**
+	 * Sort comparator that puts {@link #hiddenNode} last and otherwise sorts by size desc. Used wherever scanRoot's
+	 * children are ordered so Hidden never moves position as the scan progresses or as users navigate.
+	 * <p>Held as a field (not a per-call factory) so the renderer reuses one instance across every
+	 * {@code layoutChildrenInto} call instead of allocating a fresh capturing lambda on each parent. The method
+	 * reference reads {@link #hiddenNode} at call time, so reassignments of the {@code hiddenNode} field (between
+	 * scans, via the picker) are still seen correctly.
+	 */
+	private final Comparator<SizedNode> hiddenLastSizeDesc = this::compareHiddenLastSizeDesc;
+
+	private int compareHiddenLastSizeDesc(SizedNode a, SizedNode b) {
+		boolean aHidden = (a.node == hiddenNode);
+		boolean bHidden = (b.node == hiddenNode);
+		if (aHidden != bHidden)
+			return aHidden ? 1 : -1;
+		return Long.compare(b.size, a.size);
+	}
+
+	/** Frozen-size snapshot of {@code nodes}. See {@link SizedNode} for the why. */
+	private static List<SizedNode> snapshotSized(java.util.Collection<DirectoryNode> nodes) {
+		List<SizedNode> out = new ArrayList<>(nodes.size());
 		for (DirectoryNode n : nodes)
-			m.put(n, n.totalBytes());
-		return m;
+			out.add(new SizedNode(n, n.totalBytes()));
+		return out;
 	}
 
 	private int depthFromScanRoot(DirectoryNode node) {
@@ -1584,20 +1786,54 @@ public final class DiskView {
 		return d;
 	}
 
-	private static int sortedRank(DirectoryNode node) {
+	/**
+	 * Returns the index of {@code node} in its parent's size-descending sibling list, with results cached per-parent in
+	 * {@link #rankCache} for the duration of the current render. Reads {@link #rankCache} so this can no longer be
+	 * {@code static}.
+	 */
+	private int sortedRank(DirectoryNode node) {
 		DirectoryNode parent = node.parent();
 		if (parent == null)
 			return 0;
-		List<DirectoryNode> sorted = new ArrayList<>(parent.children());
-		// Snapshot sizes so the comparator is consistent under concurrent writers.
-		java.util.IdentityHashMap<DirectoryNode, Long> sizes = snapshotSizes(sorted);
-		sorted.sort((a, b) -> Long.compare(sizes.get(b), sizes.get(a)));
-		return Math.max(0, sorted.indexOf(node));
+
+		// Fast path: parent's children are already sorted by size desc and stable
+		// (post-scan, no mutations since). The sorted-children indices ARE the ranks;
+		// build the lookup map once and reuse across renders.
+		if (parent.isSortStableByTotalBytes()) {
+			java.util.IdentityHashMap<DirectoryNode, Integer> ranks = stableRankCache.get(parent);
+			if (ranks == null) {
+				List<DirectoryNode> kids = parent.children();
+				ranks = new java.util.IdentityHashMap<>(kids.size());
+				for (int i = 0; i < kids.size(); i++) {
+					ranks.put(kids.get(i), i);
+				}
+				stableRankCache.put(parent, ranks);
+			}
+			Integer r = ranks.get(node);
+			return r != null ? r : 0;
+		}
+
+		// Unstable (mid-scan, or post-scan but a mutation happened): evict any stale
+		// long-term entry and fall back to per-render snapshot+sort.
+		stableRankCache.remove(parent);
+		java.util.IdentityHashMap<DirectoryNode, Integer> ranks = rankCache.get(parent);
+		if (ranks == null) {
+			List<SizedNode> sorted = snapshotSized(parent.children());
+			sorted.sort((a, b) -> Long.compare(b.size, a.size));
+			ranks = new java.util.IdentityHashMap<>(sorted.size());
+			for (int i = 0; i < sorted.size(); i++) {
+				ranks.put(sorted.get(i).node, i);
+			}
+			rankCache.put(parent, ranks);
+		}
+		Integer r = ranks.get(node);
+		return r != null ? r : 0;
 	}
 
 	/**
-	 * Inner radius of the ring at layout depth {@code depth}. Depths {@code <= NORMAL_RINGS} use full-width rings; deeper depths use thin
-	 * rings. Accepts fractional depths so the drill-in animation can interpolate radii smoothly.
+	 * Inner radius of the ring at layout depth {@code depth}. Depths {@code <= NORMAL_RINGS} use full-width rings;
+	 * deeper depths use thin rings. Accepts fractional depths so the drill-in animation can interpolate radii
+	 * smoothly.
 	 */
 	private static double ringInnerR(double depth, double normalW, double thinW) {
 		if (depth <= 1)
@@ -1612,64 +1848,147 @@ public final class DiskView {
 		if (rootForView == null)
 			return out;
 
+		// Compute per-render ring widths from the current canvas size, so the recursion
+		// can do depth-aware pixel-arc culling (a sweep of N° at the inner ring is
+		// fewer pixels of arc than the same N° at an outer ring; the angle threshold
+		// alone over-culls deep rings and under-culls shallow ones).
+		double w = canvas.getWidth();
+		double h = canvas.getHeight();
+		double maxR = Math.max(40, Math.min(w, h) * 0.46);
+		double normalW = (maxR - HUB_RADIUS) / (NORMAL_RINGS + THIN_RINGS * THIN_RING_FACTOR);
+		if (normalW < 6)
+			normalW = 6;
+		double thinW = normalW * THIN_RING_FACTOR;
+
 		// When viewing the scan root, ring 1 is the root's children (no anchor ring).
 		// When drilled into a sector, ring 1 is that sector at 360° anchoring the view,
 		// and ring 2 onward shows its descendants.
 		boolean rootHasRing = rootForView != scanRoot;
 		if (rootHasRing) {
 			out.put(rootForView, new Layout(1, 90.0, 360.0, getNodeColor(rootForView)));
-			layoutChildrenInto(rootForView, 2, 90.0, 360.0, out);
+			layoutChildrenInto(rootForView, 2, 90.0, 360.0, out, normalW, thinW);
 		} else {
 			double usedSweep = target.totalBytes() > 0 ? target.usedFraction() * 360.0 : 360.0;
 			double startAngle = 90.0 - usedSweep / 2.0;
-			double scannedSweep =
-					target.usedBytes() > 0 ? Math.min(usedSweep, usedSweep * rootForView.totalBytes() / (double) target.usedBytes())
-							: usedSweep;
-			layoutChildrenInto(rootForView, 1, startAngle, scannedSweep, out);
+			double scannedSweep = target.usedBytes() > 0 ? Math.min(usedSweep,
+					usedSweep * rootForView.totalBytes() / (double) target.usedBytes()) : usedSweep;
+			layoutChildrenInto(rootForView, 1, startAngle, scannedSweep, out, normalW, thinW);
 		}
 		return out;
 	}
 
-	private void layoutChildrenInto(DirectoryNode parent, int depth, double startDeg, double sweepDeg, Map<DirectoryNode, Layout> out) {
+	/**
+	 * Recursive sunburst layout. Two culling thresholds compose:
+	 * <ul>
+	 *   <li>{@link #MIN_VISIBLE_SWEEP_DEG} — a fixed angle floor, cheapest check; cuts most slivers.</li>
+	 *   <li>Pixel-arc check — at the outer radius of this depth's ring, we require {@code >= 1 px} of arc length. Sectors below that
+	 *       can't render visibly even at high DPI, and crucially we save the recursive descent into their subtrees.</li>
+	 * </ul>
+	 * Both checks let the sweep "consume" the angle (via {@code a += childSweep}) so non-culled siblings keep their proportional
+	 * positions; we just skip the {@link Layout} allocation and the recursion for invisible sectors.
+	 */
+	private void layoutChildrenInto(
+			DirectoryNode parent, int depth, double startDeg, double sweepDeg,
+			Map<DirectoryNode, Layout> out, double normalW, double thinW) {
 		if (depth > MAX_DEPTH)
 			return;
 		long total = parent.totalBytes();
 		if (total <= 0)
 			return;
 
-		List<DirectoryNode> ordered = new ArrayList<>(parent.children());
-		// Snapshot child sizes before sorting so the comparator stays consistent under
-		// the parallel scanner's concurrent writers, and so the layout loop's frac
-		// values match the order we just sorted by (no late drift between sort and
-		// render that could cause sectors to render out of size order).
-		java.util.IdentityHashMap<DirectoryNode, Long> sizes = snapshotSizes(ordered);
+		double outerR = ringInnerR(depth + 1, normalW, thinW);
+		double minSweepFromPixels = Math.toDegrees(1.0 / outerR);
+
+		// Fast path: parent's children are sort-stable (post-{@link DirectoryNode#sortBySizeRecursive},
+		// no subsequent mutation) AND the parent isn't scanRoot (whose children may include hiddenNode,
+		// which we always pin last regardless of size). For everyone else, parent.children() is already
+		// in size-desc order — skip the snapshot+sort and iterate directly, reading totalBytes() inline.
+		// This kills the per-render TimSort that JFR flagged as the dominant render-CPU cost on large
+		// trees (1.38M-node SUNBURST snapshots).
+		if (parent != scanRoot && parent.isSortStableByTotalBytes()) {
+			double a = startDeg;
+			for (DirectoryNode child : parent.children()) {
+				long size = child.totalBytes();
+				double frac = size / (double) total;
+				double childSweep = sweepDeg * frac;
+				if (childSweep < MIN_VISIBLE_SWEEP_DEG || childSweep < minSweepFromPixels) {
+					a += childSweep;
+					continue;
+				}
+				out.put(child, new Layout(depth, a, childSweep, getNodeColor(child)));
+				layoutChildrenInto(child, depth + 1, a, childSweep, out, normalW, thinW);
+				a += childSweep;
+			}
+			return;
+		}
+
+		// Slow path (mid-scan, OR scanRoot which needs Hidden pinned last): snapshot child sizes
+		// alongside the nodes so the comparator can read primitive long fields (no boxing, no map
+		// lookup per comparison). See SizedNode for context.
+		List<SizedNode> ordered = snapshotSized(parent.children());
 		// Hidden always lands at the end of scanRoot's children regardless of size — it's
 		// less actionable than real folders and a stable position is more useful than a
 		// size-correct one.
-		ordered.sort(hiddenLastSizeDesc(sizes));
+		ordered.sort(hiddenLastSizeDesc);
 
 		double a = startDeg;
-		for (DirectoryNode child : ordered) {
-			double frac = sizes.get(child) / (double) total;
+		for (SizedNode s : ordered) {
+			double frac = s.size / (double) total;
 			double childSweep = sweepDeg * frac;
-			if (childSweep < MIN_VISIBLE_SWEEP_DEG) {
+			if (childSweep < MIN_VISIBLE_SWEEP_DEG || childSweep < minSweepFromPixels) {
 				a += childSweep;
 				continue;
 			}
-			out.put(child, new Layout(depth, a, childSweep, getNodeColor(child)));
-			layoutChildrenInto(child, depth + 1, a, childSweep, out);
+			out.put(s.node, new Layout(depth, a, childSweep, getNodeColor(s.node)));
+			layoutChildrenInto(s.node, depth + 1, a, childSweep, out, normalW, thinW);
 			a += childSweep;
 		}
 	}
 
 	// ---- rendering -------------------------------------------------------
 
+	/**
+	 * Wrapper around {@link #redraw()} that stamps the JFR {@link RenderEvent} with a meaningful {@code trigger}.
+	 * Direct {@code redraw()} calls record the trigger as {@code "auto"}.
+	 */
+	private void redrawWith(String trigger) {
+		pendingRedrawTrigger = trigger;
+		redraw();
+	}
+
 	private void redraw() {
+		// JFR Render event spans the entire layout+draw work. Fields filled at commit time
+		// since width/height/mode could in principle change across the body (defensive).
+		RenderEvent renderEvent = new RenderEvent();
+		String trigger = pendingRedrawTrigger;
+		pendingRedrawTrigger = "auto";
+		renderEvent.trigger = trigger;
+		renderEvent.scanId = currentScanId;
+		renderEvent.begin();
+		try {
+			doRedraw();
+		} finally {
+			renderEvent.mode = currentMode.name();
+			renderEvent.widthPx = (int) canvas.getWidth();
+			renderEvent.heightPx = (int) canvas.getHeight();
+			renderEvent.nodeCount = progressFiles;
+			renderEvent.end();
+			renderEvent.commit();
+			vizEventRenderCount++;
+		}
+	}
+
+	private void doRedraw() {
 		GraphicsContext g = canvas.getGraphicsContext2D();
 		double w = canvas.getWidth();
 		double h = canvas.getHeight();
 		g.setFill(scheme.background());
 		g.fillRect(0, 0, w, h);
+
+		// Reset per-render rank cache. {@link #sortedRank} fills it lazily during this draw,
+		// so subsequent calls for siblings of the same parent become O(1) lookups. Across
+		// renders the cache is invalid because sizes shift as the scan progresses.
+		rankCache.clear();
 
 		sectors.clear();
 		rects.clear();
@@ -1711,7 +2030,8 @@ public final class DiskView {
 		drawHub(g, cx, cy);
 	}
 
-	private void drawLayout(GraphicsContext g, double cx, double cy, double normalW, double thinW, Map<DirectoryNode, Layout> layout) {
+	private void drawLayout(
+			GraphicsContext g, double cx, double cy, double normalW, double thinW, Map<DirectoryNode, Layout> layout) {
 		// Render outer rings first so that any anti-aliasing edges are overdrawn cleanly
 		// by the inner rings.
 		List<Map.Entry<DirectoryNode, Layout>> entries = new ArrayList<>(layout.entrySet());
@@ -1749,11 +2069,13 @@ public final class DiskView {
 
 			long unaccountedBytes = target.usedBytes() - viewRoot.totalBytes();
 			if (unaccountedBytes > 0 && target.usedBytes() > 0) {
-				double scannedSweep = Math.min(usedSweep, usedSweep * viewRoot.totalBytes() / (double) target.usedBytes());
+				double scannedSweep = Math.min(usedSweep,
+						usedSweep * viewRoot.totalBytes() / (double) target.usedBytes());
 				double unaccountedSweep = usedSweep - scannedSweep;
 				if (unaccountedSweep > MIN_VISIBLE_SWEEP_DEG) {
 					double unaccountedStart = startAngle + scannedSweep;
-					Color unaccountedColor = hoveringUnaccounted ? scheme.surface().brighter().brighter() : scheme.surface().brighter();
+					Color unaccountedColor =
+							hoveringUnaccounted ? scheme.surface().brighter().brighter() : scheme.surface().brighter();
 					drawAnnularSector(g, cx, cy, r1, r2, unaccountedStart, unaccountedSweep, unaccountedColor);
 					sectors.add(new SectorRect(null, 1, unaccountedStart, unaccountedSweep, r1, r2, true));
 				}
@@ -1837,8 +2159,8 @@ public final class DiskView {
 	}
 
 	private void drawAnnularSector(
-			GraphicsContext g, double cx, double cy, double r1, double r2, double startDeg, double sweepDeg,
-			Color fill) {
+			GraphicsContext g, double cx, double cy, double r1, double r2, double startDeg,
+			double sweepDeg, Color fill) {
 		double a1 = Math.toRadians(startDeg);
 		double a2 = Math.toRadians(startDeg + sweepDeg);
 		g.setFill(fill);
@@ -1881,8 +2203,11 @@ public final class DiskView {
 			if (focus == null)
 				return;
 			if (scanning && focus == scanRoot && !hoveringHub && hoverNode == null) {
-				title = humanSize(progressBytes);
-				subtitle = progressFiles + " files";
+				// Scanner-driven overrides take precedence; null fields fall back to the
+				// bytes/files text that the parallel scanner is happy with.
+				Scanner.HubState hs = scanner.hubState();
+				title = hs.title() != null ? hs.title() : humanSize(progressBytes);
+				subtitle = hs.subtitle() != null ? hs.subtitle() : (progressFiles + " files");
 			} else {
 				title = (focus == scanRoot) ? target.displayName() : focus.name();
 				subtitle = humanSize(focus.totalBytes());
@@ -1988,11 +2313,13 @@ public final class DiskView {
 	}
 
 	/**
-	 * Squarified treemap (Bruls/Huijgen/van Wijk). Items are pixel-area-scaled via {@code scale}. Walks items in size-desc order, packing
-	 * them into rows along the rectangle's short side until adding the next item would worsen the row's worst aspect ratio, then commits
-	 * the row and continues on the remaining strip.
+	 * Squarified treemap (Bruls/Huijgen/van Wijk). Items are pixel-area-scaled via {@code scale}. Walks items in
+	 * size-desc order, packing them into rows along the rectangle's short side until adding the next item would worsen
+	 * the row's worst aspect ratio, then commits the row and continues on the remaining strip.
 	 */
-	private void squarify(GraphicsContext g, List<TreemapItem> items, double x, double y, double w, double h, double scale, int depth) {
+	private void squarify(
+			GraphicsContext g, List<TreemapItem> items, double x, double y, double w, double h,
+			double scale, int depth) {
 		if (items.isEmpty() || w < 1 || h < 1)
 			return;
 		List<TreemapItem> remaining = new ArrayList<>(items);
@@ -2012,7 +2339,8 @@ public final class DiskView {
 				double trialSum = rowSum + nextArea;
 				double trialMin = Math.min(rowMin, nextArea);
 				double trialMax = Math.max(rowMax, nextArea);
-				double currentWorst = row.isEmpty() ? Double.POSITIVE_INFINITY : worstAspect(rowSum, rowMin, rowMax, shortSide);
+				double currentWorst =
+						row.isEmpty() ? Double.POSITIVE_INFINITY : worstAspect(rowSum, rowMin, rowMax, shortSide);
 				double trialWorst = worstAspect(trialSum, trialMin, trialMax, shortSide);
 				if (row.isEmpty() || trialWorst <= currentWorst) {
 					row.add(next);
@@ -2049,7 +2377,8 @@ public final class DiskView {
 	}
 
 	private void layoutHeatmapRow(
-			GraphicsContext g, List<TreemapItem> row, double x, double y, double w, double h, double scale, boolean rowAlongTop, int depth) {
+			GraphicsContext g, List<TreemapItem> row, double x, double y, double w, double h,
+			double scale, boolean rowAlongTop, int depth) {
 		double rowSum = 0;
 		for (TreemapItem t : row)
 			rowSum += Math.max(0, t.bytes()) * scale;
@@ -2077,8 +2406,14 @@ public final class DiskView {
 		}
 	}
 
-	private void drawTreemapCell(GraphicsContext g, TreemapItem item, double x, double y, double w, double h, int depth) {
-		if (w < 0.5 || h < 0.5)
+	private void drawTreemapCell(
+			GraphicsContext g, TreemapItem item, double x, double y, double w, double h, int depth) {
+		// Sub-pixel cull. Anything thinner than 1 px on either axis can't render visibly
+		// (Canvas's fillRect will antialias to nothing) and we'd still pay for getNodeColor,
+		// hover-state derivation, fillRect, and a rects.add hit-test entry. JFR flagged the
+		// recursive squarify/drawTreemapCell chain as the FX-thread CPU dominant on big
+		// trees; this is the cheapest and biggest cut to its max-render time.
+		if (w < 1.0 || h < 1.0)
 			return;
 
 		Color base = item.color();
@@ -2157,7 +2492,8 @@ public final class DiskView {
 		}
 	}
 
-	private void drawTreemapLabel(GraphicsContext g, double x, double y, double w, String name, long bytes, Color fillBase) {
+	private void drawTreemapLabel(
+			GraphicsContext g, double x, double y, double w, String name, long bytes, Color fillBase) {
 		Color textColor = textOn(fillBase);
 		g.setFill(textColor);
 		g.setFont(Font.font("Segoe UI", FontWeight.SEMI_BOLD, 11));
@@ -2212,18 +2548,27 @@ public final class DiskView {
 	private void drawHubProgress(GraphicsContext g, double cx, double cy) {
 		double r = HUB_RADIUS - 4;
 		double thickness = 2.5;
-		long usedBytes = target.totalBytes() - target.usableBytes();
 
 		g.setStroke(scheme.accent());
 		g.setLineWidth(thickness);
 		g.setLineCap(StrokeLineCap.ROUND);
 
-		if (usedBytes > 0 && progressBytes > 0) {
-			double frac = Math.min(1.0, progressBytes / (double) usedBytes);
-			// Draw a faint full track first.
+		// Scanner override wins; otherwise compute bytes/usedBytes ourselves (the parallel
+		// scanner relies on the fallback). Negative = "no override, use the default path."
+		Scanner.HubState hs = scanner.hubState();
+		double frac = hs.arcFraction();
+		if (frac < 0) {
+			long usedBytes = target.totalBytes() - target.usableBytes();
+			if (usedBytes > 0 && progressBytes > 0) {
+				frac = Math.min(1.0, progressBytes / (double) usedBytes);
+			}
+		}
+
+		if (frac >= 0) {
+			// Faint full track first.
 			g.setStroke(scheme.accent().deriveColor(0, 1, 1, 0.18));
 			g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90, 360, ArcType.OPEN);
-			// Then the filled portion clockwise from 12 o'clock.
+			// Filled portion clockwise from 12 o'clock.
 			g.setStroke(scheme.accent());
 			g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90, -360 * frac, ArcType.OPEN);
 		} else {
@@ -2346,8 +2691,8 @@ public final class DiskView {
 	}
 
 	/**
-	 * Walk from current viewRoot up to {@code targetAncestor}, pushing each intermediate node onto the forward stack so Right arrow can
-	 * replay the path. {@code targetAncestor} must be an ancestor of viewRoot (or equal to it).
+	 * Walk from current viewRoot up to {@code targetAncestor}, pushing each intermediate node onto the forward stack so
+	 * Right arrow can replay the path. {@code targetAncestor} must be an ancestor of viewRoot (or equal to it).
 	 */
 	private void navigateUpTo(DirectoryNode targetAncestor) {
 		if (targetAncestor == viewRoot)
@@ -2427,8 +2772,8 @@ public final class DiskView {
 			color = scheme.textMuted();
 			weight = "400";
 		}
-		return "-fx-text-fill: " + css(color) + ";" + "-fx-font-size: 11.5px; -fx-font-weight: " + weight + ";" + (active ? ""
-				: "-fx-cursor: hand;");
+		return "-fx-text-fill: " + css(color) + ";" + "-fx-font-size: 11.5px; -fx-font-weight: " + weight + ";" + (
+				active ? "" : "-fx-cursor: hand;");
 	}
 
 	private Label separatorLabel() {
@@ -2510,8 +2855,8 @@ public final class DiskView {
 	}
 
 	private static String css(Color c) {
-		return String.format("rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255), (int) Math.round(c.getGreen() * 255),
-				(int) Math.round(c.getBlue() * 255), c.getOpacity());
+		return String.format("rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255),
+				(int) Math.round(c.getGreen() * 255), (int) Math.round(c.getBlue() * 255), c.getOpacity());
 	}
 
 	private static double lerp(double a, double b, double t) {
@@ -2523,21 +2868,24 @@ public final class DiskView {
 		return 1 - inv * inv * inv;
 	}
 
-	private record SectorRect(DirectoryNode node, int depth, double startDeg, double sweepDeg, double r1, double r2, boolean unaccounted) {
+	private record SectorRect(DirectoryNode node, int depth, double startDeg, double sweepDeg, double r1, double r2,
+							  boolean unaccounted) {
 	}
 
 	/**
-	 * Hit-test rect for the heatmap. {@code node == null} means the rectangle is the free-space or unaccounted virtual entry at scan root.
+	 * Hit-test rect for the heatmap. {@code node == null} means the rectangle is the free-space or unaccounted virtual
+	 * entry at scan root.
 	 */
-	private record RectHit(DirectoryNode node, double x, double y, double w, double h, boolean unaccounted, boolean freeSpace) {
+	private record RectHit(DirectoryNode node, double x, double y, double w, double h, boolean unaccounted,
+						   boolean freeSpace) {
 		boolean contains(double mx, double my) {
 			return mx >= x && mx <= x + w && my >= y && my <= y + h;
 		}
 	}
 
 	/**
-	 * Heatmap item — a directory child or a virtual entry (free / unaccounted) used while building the squarified layout. {@code bytes}
-	 * drives the layout area; {@code color} is the resolved fill before alpha/hover modulation.
+	 * Heatmap item — a directory child or a virtual entry (free / unaccounted) used while building the squarified
+	 * layout. {@code bytes} drives the layout area; {@code color} is the resolved fill before alpha/hover modulation.
 	 */
 	private record TreemapItem(DirectoryNode node, long bytes, Color color, boolean unaccounted, boolean freeSpace) {
 	}
@@ -2545,12 +2893,14 @@ public final class DiskView {
 	private record Layout(double depth, double startDeg, double sweepDeg, Color color) {
 	}
 
-	private record FrameEntry(DirectoryNode node, double depth, double start, double sweep, double alphaScale, Color color) {
+	private record FrameEntry(DirectoryNode node, double depth, double start, double sweep, double alphaScale,
+							  Color color) {
 	}
 
 	/**
-	 * Row in the staging (delete-tray) table: a folder or file the user has marked for deletion. {@code parentNode} is captured at staging
-	 * time so a successful delete can apply size/count deltas to the in-memory tree without re-walking.
+	 * Row in the staging (delete-tray) table: a folder or file the user has marked for deletion. {@code parentNode} is
+	 * captured at staging time so a successful delete can apply size/count deltas to the in-memory tree without
+	 * re-walking.
 	 */
 	private record StagedItem(boolean isDirectory, java.nio.file.Path path, long sizeAtStaging, DirectoryNode dirNode,
 							  DirectoryNode parentNode) {
@@ -2575,6 +2925,169 @@ public final class DiskView {
 
 		static Entry forFile(String name, long size) {
 			return new Entry(false, name, size, null);
+		}
+	}
+
+	/**
+	 * JFR duration event spanning a window during which a particular {@link RenderMode} was displayed — from the moment
+	 * a {@link DiskView} is built (or the user toggles modes) until the next toggle or until the view is shut down.
+	 * JMC's event browser shows one row per window, with the {@code renderCount} field telling you how many actual
+	 * repaints happened during that span — a 7 s window with 420 renders is very different from a 7 s window with 4.
+	 * <p>Spans user-interaction time, not render time. For per-frame cost see {@link RenderEvent}.
+	 * <p>Works in JVM mode and in native-image builds compiled with
+	 * {@code --enable-monitoring=jfr}. Default-enabled, no extra registration required.
+	 */
+	@jdk.jfr.Name("se.hirt.diskspace.VisualizationActive")
+	@jdk.jfr.Label("Visualization Active")
+	@jdk.jfr.Category({"DiskSpace", "UI"})
+	@jdk.jfr.Description("A period during which a particular visualization mode was displayed for a particular disk. " + "Spans user-interaction time, not render time. Use Render events for per-frame cost.")
+	public static class VisualizationEvent extends jdk.jfr.Event {
+		@jdk.jfr.Label("Mode")
+		@jdk.jfr.Description("SUNBURST or HEATMAP.")
+		String mode;
+		@jdk.jfr.Label("Disk")
+		@jdk.jfr.Description("Display name of the scanned disk.")
+		String disk;
+		@jdk.jfr.Label("Render Count")
+		@jdk.jfr.Description("Number of actual repaints that happened while this mode was active.")
+		int renderCount;
+		@jdk.jfr.Label("Scan ID")
+		@jdk.jfr.Description("Correlation ID matching the Scan / Render events of the same scan run.")
+		long scanId;
+	}
+
+	/**
+	 * JFR event fired around each repaint of the visualization on the JavaFX thread — the wall-clock time the FX thread
+	 * spent re-laying-out and drawing. {@code trigger} tells you why the repaint happened (scan-update / mode-change /
+	 * resize / user / …) and {@code nodeCount} approximates tree size at render time, so you can answer "how does
+	 * render cost scale with the tree?" directly from the recording.
+	 * <p>{@code @StackTrace(false)}: the call site is fixed and known; capturing a stack
+	 * per render would be the bulk of the event's cost.
+	 */
+	@jdk.jfr.Name("se.hirt.diskspace.Render")
+	@jdk.jfr.Label("Visualization Render")
+	@jdk.jfr.Category({"DiskSpace", "UI"})
+	@jdk.jfr.Description("One repaint of the visualization on the JavaFX UI thread.")
+	@jdk.jfr.StackTrace(false)
+	public static class RenderEvent extends jdk.jfr.Event {
+		@jdk.jfr.Label("Mode")
+		@jdk.jfr.Description("SUNBURST or HEATMAP.")
+		String mode;
+		@jdk.jfr.Label("Trigger")
+		@jdk.jfr.Description("Why this render was scheduled: scan-update / mode-change / resize / user / scan-start / scan-complete / scan-error / rescan / anim / auto.")
+		String trigger;
+		@jdk.jfr.Label("Node Count")
+		@jdk.jfr.Description("Approximate live file count at render time (tracks tree growth during a scan).")
+		long nodeCount;
+		@jdk.jfr.Label("Width")
+		@jdk.jfr.Description("Canvas width in pixels at render time.")
+		int widthPx;
+		@jdk.jfr.Label("Height")
+		@jdk.jfr.Description("Canvas height in pixels at render time.")
+		int heightPx;
+		@jdk.jfr.Label("Scan ID")
+		@jdk.jfr.Description("Correlation ID matching the Scan event of the active scan, or 0 if no scan is in flight.")
+		long scanId;
+	}
+
+	/**
+	 * JFR instant event fired when the user takes an action that changes view state — a keypress, a navigation click,
+	 * etc. The key field is the literal key name (or {@code "Click"} for mouse), the operation field describes what
+	 * happened ({@code "toggle-mode"}, {@code "rescan"}, {@code "drill-in"}, …). Lets JMC line up "user pressed V" with
+	 * the {@link RenderEvent} it caused.
+	 */
+	@jdk.jfr.Name("se.hirt.diskspace.UserAction")
+	@jdk.jfr.Label("User Action")
+	@jdk.jfr.Category({"DiskSpace", "UI"})
+	@jdk.jfr.Description("Keypress or click and the operation it triggered. Instant event — duration is zero.")
+	@jdk.jfr.StackTrace(false)
+	public static class UserActionEvent extends jdk.jfr.Event {
+		@jdk.jfr.Label("Key")
+		@jdk.jfr.Description("Key name (e.g. V, R, Esc) or 'Click' for mouse.")
+		String key;
+		@jdk.jfr.Label("Operation")
+		@jdk.jfr.Description("Effect of the action: toggle-mode, rescan, drill-in, drill-out, toggle-units, …")
+		String operation;
+		@jdk.jfr.Label("Mode")
+		@jdk.jfr.Description("Visualization mode at the time of the action.")
+		String mode;
+		@jdk.jfr.Label("Scan ID")
+		long scanId;
+	}
+
+	/**
+	 * Fires a {@link UserActionEvent} for the given key + operation. Cheap when JFR isn't recording — instant events
+	 * with no stack trace are essentially a timestamp write.
+	 */
+	private void emitUserAction(String key, String operation) {
+		UserActionEvent e = new UserActionEvent();
+		e.key = key;
+		e.operation = operation;
+		e.mode = currentMode.name();
+		e.scanId = currentScanId;
+		e.commit();
+	}
+
+	/**
+	 * JFR event fired once per scan, at completion (or cancel/error). Records the final tree dimensions and total bytes
+	 * so scan-throughput is a first-class metric in JMC. Use {@code scanId} to join Render events from the same run.
+	 */
+	@jdk.jfr.Name("se.hirt.diskspace.Scan")
+	@jdk.jfr.Label("Disk Scan")
+	@jdk.jfr.Category({"DiskSpace", "Scanner"})
+	@jdk.jfr.Description("Top-level disk scan from start to completion or cancellation.")
+	public static class ScanEvent extends jdk.jfr.Event {
+		@jdk.jfr.Label("Scan ID")
+		@jdk.jfr.Description("Correlation ID also stamped on Render and VisualizationActive events from the same run.")
+		long scanId;
+		@jdk.jfr.Label("Root Path")
+		@jdk.jfr.Description("Filesystem root that was scanned (e.g. C:\\, /home).")
+		String root;
+		@jdk.jfr.Label("Strategy")
+		@jdk.jfr.Description("Which scanner ran: MFT / Parallel(N) / Sequential.")
+		String strategy;
+		@jdk.jfr.Label("File Count")
+		@jdk.jfr.Description("Total number of files counted by the scan (excludes directories).")
+		long fileCount;
+		@jdk.jfr.Label("Total Bytes")
+		@jdk.jfr.Description("Sum of file sizes captured by the scan, in bytes.")
+		@jdk.jfr.DataAmount
+		long totalBytes;
+		@jdk.jfr.Label("Permission Denied Count")
+		@jdk.jfr.Description("Number of files or directories the scanner couldn't read because of permission denials.")
+		long permissionDeniedCount;
+		@jdk.jfr.Label("Outcome")
+		@jdk.jfr.Description("How the scan ended: complete (normal completion), error (exception), or cancelled (user navigated away).")
+		String outcome;
+	}
+
+	/**
+	 * Begins a new {@link VisualizationEvent} for the current {@link #currentMode} on the current target volume,
+	 * replacing any in-flight event reference. Cheap when JFR isn't recording — {@code Event.begin()} is a single
+	 * nanoTime read. Resets the per-window render counter so the event's {@code renderCount} reflects only this
+	 * window.
+	 */
+	private void startVizEvent() {
+		vizEventRenderCount = 0;
+		VisualizationEvent e = new VisualizationEvent();
+		e.mode = currentMode.name();
+		e.disk = target.displayName();
+		e.scanId = currentScanId;
+		e.begin();
+		currentVizEvent = e;
+	}
+
+	/**
+	 * Ends + commits the current {@link VisualizationEvent}, if any. Idempotent. Captures {@link #vizEventRenderCount}
+	 * into the event payload before commit.
+	 */
+	private void endVizEvent() {
+		VisualizationEvent e = currentVizEvent;
+		if (e != null) {
+			currentVizEvent = null;
+			e.renderCount = vizEventRenderCount;
+			e.end();
+			e.commit();
 		}
 	}
 }

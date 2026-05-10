@@ -34,8 +34,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-public record Volume(String displayName, String deviceName, Path root, long totalBytes, long usableBytes, long usedBytes, String fsType,
-					 StorageProfile storageProfile) {
+public record Volume(String displayName, String deviceName, Path root, long totalBytes, long usableBytes,
+					 long usedBytes, String fsType, StorageProfile storageProfile) {
 
 	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(Volume.class.getName());
 
@@ -48,9 +48,9 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 	}
 
 	/**
-	 * On macOS APFS, Java NIO's {@code totalSpace − usableSpace} is the *container* used (system snapshot + Data + Preboot + VM +
-	 * snapshots). We want the per-volume Used, which only {@code df}'s {@code Used} column reports correctly. Falls back to the Java NIO
-	 * calculation when {@code df} is unavailable or this isn't macOS.
+	 * On macOS APFS, Java NIO's {@code totalSpace − usableSpace} is the *container* used (system snapshot + Data +
+	 * Preboot + VM + snapshots). We want the per-volume Used, which only {@code df}'s {@code Used} column reports
+	 * correctly. Falls back to the Java NIO calculation when {@code df} is unavailable or this isn't macOS.
 	 */
 	private static long computeUsedBytes(Path scanRoot, long totalBytes, long usableBytes) {
 		long mac = MacVolumeInfo.spaceUsed(scanRoot);
@@ -84,9 +84,10 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 				long total = store.getTotalSpace();
 				long usable = store.getUsableSpace();
 				long used = computeUsedBytes(scanRoot, total, usable);
-				LOG.info(String.format("Volume: root=%s scanRoot=%s device=%s display=%s type=%s", root, scanRoot, deviceName, displayName,
-						store.type()));
-				volumes.add(new Volume(displayName, deviceName, scanRoot, total, usable, used, store.type(), StorageProfile.UNKNOWN));
+				LOG.info(String.format("Volume: root=%s scanRoot=%s device=%s display=%s type=%s", root, scanRoot,
+						deviceName, displayName, store.type()));
+				volumes.add(new Volume(displayName, deviceName, scanRoot, total, usable, used, store.type(),
+						StorageProfile.UNKNOWN));
 			} catch (Exception ignore) {
 				// Volume not accessible (offline drive, permission denied) — skip silently.
 			}
@@ -95,9 +96,9 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 	}
 
 	/**
-	 * Resolves storage profiles via {@link StorageProfileProbe#probeMany} (one PowerShell invocation on Windows, parallel single probes
-	 * elsewhere) and rebuilds each Volume with the classified profile. Volumes missing from the result map default to
-	 * {@link StorageProfile#UNKNOWN}.
+	 * Resolves storage profiles via {@link StorageProfileProbe#probeMany} (one PowerShell invocation on Windows,
+	 * parallel single probes elsewhere) and rebuilds each Volume with the classified profile. Volumes missing from the
+	 * result map default to {@link StorageProfile#UNKNOWN}.
 	 */
 	private static List<Volume> enrichWithStorageProfiles(List<Volume> volumes) {
 		if (volumes.isEmpty())
@@ -112,8 +113,8 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 	}
 
 	/**
-	 * Looks in /Volumes/ for a Finder-visible label whose inode matches {@code scanRoot}. Falls back to {@code fallback} when not on macOS
-	 * or nothing matches.
+	 * Looks in /Volumes/ for a Finder-visible label whose inode matches {@code scanRoot}. Falls back to
+	 * {@code fallback} when not on macOS or nothing matches.
 	 */
 	public static Volume from(Path target) {
 		try {
@@ -139,7 +140,8 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 		try (DirectoryStream<Path> ds = Files.newDirectoryStream(volumes)) {
 			for (Path entry : ds) {
 				try {
-					LOG.info(String.format("  /Volumes entry: %s  isSameFile(%s)=%b", entry, scanRoot, Files.isSameFile(entry, scanRoot)));
+					LOG.info(String.format("  /Volumes entry: %s  isSameFile(%s)=%b", entry, scanRoot,
+							Files.isSameFile(entry, scanRoot)));
 					if (Files.isSameFile(entry, scanRoot)) {
 						Path name = entry.getFileName();
 						if (name != null)
@@ -167,9 +169,9 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 		if (type == null)
 			return false;
 		return switch (type.toLowerCase()) {
-			case "proc", "sysfs", "tmpfs", "devtmpfs", "cgroup", "cgroup2", "devpts", "securityfs", "pstore", "autofs", "overlay",
-				 "squashfs", "fuse.gvfsd-fuse", "fuse.portal", "tracefs", "debugfs", "configfs", "bpf", "binfmt_misc", "mqueue",
-				 "hugetlbfs", "rpc_pipefs", "fusectl" -> true;
+			case "proc", "sysfs", "tmpfs", "devtmpfs", "cgroup", "cgroup2", "devpts", "securityfs", "pstore", "autofs",
+				 "overlay", "squashfs", "fuse.gvfsd-fuse", "fuse.portal", "tracefs", "debugfs", "configfs", "bpf",
+				 "binfmt_misc", "mqueue", "hugetlbfs", "rpc_pipefs", "fusectl" -> true;
 			default -> false;
 		};
 	}

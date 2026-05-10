@@ -29,7 +29,6 @@
 package se.hirt.diskspace.scan;
 
 import se.hirt.diskspace.model.DirectoryNode;
-import se.hirt.diskspace.model.StorageProfile;
 import se.hirt.diskspace.model.Volume;
 
 import java.nio.file.Path;
@@ -37,39 +36,87 @@ import java.nio.file.Path;
 public interface Scanner {
 
 	/**
-	 * Starts scanning {@code root} on a background thread. The listener's {@code onStart} fires synchronously with the live, mutating tree
-	 * before the thread is started — UI code can begin observing the root immediately. Other callbacks fire on the scan thread; UI code is
-	 * responsible for marshalling to the JavaFX Application Thread.
+	 * Process-lifetime preference for which scanner family to use. {@link ScanStrategy#AUTO} picks the fastest
+	 * available implementation per volume; {@link ScanStrategy#PARALLEL} forces the FS-walking scanner. Toggleable from
+	 * the picker UI (S key).
+	 */
+	java.util.concurrent.atomic.AtomicReference<ScanStrategy> PREFERENCE = new java.util.concurrent.atomic.AtomicReference<>(
+			ScanStrategy.AUTO);
+
+	/**
+	 * Starts scanning {@code root} on a background thread. The listener's {@code onStart} fires synchronously with the
+	 * live, mutating tree before the thread is started — UI code can begin observing the root immediately. Other
+	 * callbacks fire on the scan thread; UI code is responsible for marshalling to the JavaFX Application Thread.
 	 */
 	void scan(Path root, ScanListener listener);
 
 	void cancel();
 
 	/**
-	 * Returns the scanner used for a volume, with parallelism sized to the storage profile. {@link ParallelDirectoryScanner} runs
-	 * sequentially when given parallelism 1, so a single implementation covers both spinning and solid-state media; the per-profile
-	 * pool size is the only knob that changes.
+	 * Optional per-frame overrides for what the {@code DiskView} hub displays during a scan. Polled by the UI on every
+	 * redraw, so implementations must be safe to call from the JavaFX thread while the scan is in flight.
+	 * <p>Any field can be left as a "no override" sentinel — {@code null} for the strings,
+	 * {@code -1} for {@code arcFraction} — and the hub falls back to its default rendering (running
+	 * {@code humanSize(bytes)} title, {@code "X files"} subtitle, and a {@code bytes / usedBytes} progress arc) driven
+	 * by {@link ScanListener#onProgress}.
+	 * <p>The default — {@link #DEFAULT} — is no-overrides. {@link ParallelDirectoryScanner}
+	 * uses it; the bytes-driven hub is exactly right for an FS walk that's discovering files in real time.
+	 * {@link MftScanner} overrides during phase 1 (USN enumeration) because no bytes are known yet, then defers to
+	 * defaults during phase 2 (size lookup) so the visible hub matches the parallel scanner once real bytes start
+	 * flowing.
 	 */
-	static Scanner forVolume(Volume volume) {
-		return new ParallelDirectoryScanner(parallelismFor(volume.storageProfile()));
+	record HubState(String title, String subtitle, double arcFraction) {
+		public static final HubState DEFAULT = new HubState(null, null, -1.0);
 	}
 
 	/**
-	 * Maps a storage profile to a ForkJoinPool size. {@link StorageProfile#HDD HDD} is sequential because two concurrent readers on a
-	 * spinning disk only trade kernel readahead for head seeks. {@link StorageProfile#SSD SSD} stops scaling around 4–8 concurrent
-	 * metadata readers. {@link StorageProfile#NETWORK NETWORK} is latency-bound, so concurrency hides RTT. {@link StorageProfile#MIXED
-	 * MIXED} and {@link StorageProfile#UNKNOWN UNKNOWN} fall back to the SSD value — the common case is solid-state, and the only
-	 * profile that loses badly to parallelism (HDD) is the one we explicitly identify.
+	 * Returns the scanner's current hub overrides, or {@link HubState#DEFAULT} for "no override". Polled by the UI on
+	 * every redraw, so it must be cheap and thread-safe.
 	 */
-	static int parallelismFor(StorageProfile profile) {
-		if (profile == null)
-			return 8;
-		return switch (profile) {
-			case HDD -> 1;
-			case SSD -> 8;
-			case NETWORK -> 16;
-			case MIXED, UNKNOWN -> 8;
-		};
+	default HubState hubState() {
+		return HubState.DEFAULT;
+	}
+
+	/**
+	 * Returns the next strategy in cycle order, skipping any whose primary {@link ScannerProvider} isn't registered on
+	 * this platform — e.g. {@link ScanStrategy#MFT} on macOS / Linux, where cycling through it is a dead step because
+	 * every volume falls through to parallel walking anyway.
+	 */
+	static ScanStrategy nextAvailable(ScanStrategy current) {
+		ScanStrategy n = current.next();
+		while (!ScannerProviders.isStrategyAvailable(n)) {
+			n = n.next();
+		}
+		return n;
+	}
+
+	/**
+	 * Returns the scanner used for {@code volume} under the current {@link #PREFERENCE}. Selection (including the "user
+	 * forced MFT but volume isn't NTFS, fall back to parallel" semantics) is expressed declaratively by the
+	 * {@link ScannerProviders} list rather than as branchy code here.
+	 */
+	static Scanner forVolume(Volume volume) {
+		ScanStrategy pref = PREFERENCE.get();
+		return ScannerProviders.providerFor(volume, pref).createScanner(volume, pref);
+	}
+
+	/**
+	 * Short label that {@link #forVolume(Volume)} would produce for {@code volume} under the current
+	 * {@link #PREFERENCE}. Used by the picker UI for per-row badges and the global indicator.
+	 */
+	static String strategyLabelFor(Volume volume) {
+		ScanStrategy pref = PREFERENCE.get();
+		return ScannerProviders.providerFor(volume, pref).label(volume, pref);
+	}
+
+	/**
+	 * Tooltip-friendly explanation of what {@link #forVolume(Volume)} would actually do for {@code volume} — reflects
+	 * the actually-chosen provider, including the "MFT not available — falling back" wording when the parallel provider
+	 * is selected as the AUTO fallback for a forced-MFT pref.
+	 */
+	static String strategyDescriptionFor(Volume volume) {
+		ScanStrategy pref = PREFERENCE.get();
+		return ScannerProviders.providerFor(volume, pref).description(volume, pref);
 	}
 
 	interface ScanListener {

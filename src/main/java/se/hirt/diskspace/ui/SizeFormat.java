@@ -29,8 +29,9 @@
 package se.hirt.diskspace.ui;
 
 /**
- * App-wide unit formatting for byte counts. {@link Mode#DECIMAL} (1000-based, "GB") matches Finder, Disk Utility, and drive manufacturer
- * specs. {@link Mode#BINARY} (1024-based, "GiB") matches {@code df -h}/{@code du -h}. Toggled at runtime via the {@code U} shortcut.
+ * App-wide unit formatting for byte counts. {@link Mode#DECIMAL} (1000-based, "GB") matches Finder, Disk Utility, and
+ * drive manufacturer specs. {@link Mode#BINARY} (1024-based, "GiB") matches {@code df -h}/{@code du -h}. Toggled at
+ * runtime via the {@code U} shortcut.
  */
 public final class SizeFormat {
 

@@ -51,6 +51,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         <surefire-plugin.version>3.5.2</surefire-plugin.version>
         <javafx-maven-plugin.version>0.0.8</javafx-maven-plugin.version>
         <gluonfx-maven-plugin.version>1.0.27</gluonfx-maven-plugin.version>
+        <graalvm-sdk.version>24.2.0</graalvm-sdk.version>
     </properties>
 
     <dependencies>
@@ -64,6 +65,20 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             <artifactId>javafx-graphics</artifactId>
             <version>${javafx.version}</version>
         </dependency>
+
+        <!-- GraalVM Native Image API. Provides the @CFunction / @CContext / etc. annotations
+             we use to call Win32 system DLLs directly from MftScanner + WindowsElevation.
+             Compile scope (not provided): the SDK classes need to be on the JVM-mode runtime
+             classpath too, because MftScanner's class graph references PointerBase/Pointer/
+             ComparableWord at field-type level. Class load happens as soon as Scanner.forVolume
+             reaches MftScanner.canScan, even though canScan is guarded to return false in JVM
+             mode. Native-image build coexists fine — substrate uses its own SDK version. -->
+        <dependency>
+            <groupId>org.graalvm.sdk</groupId>
+            <artifactId>nativeimage</artifactId>
+            <version>${graalvm-sdk.version}</version>
+        </dependency>
+
 
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -88,7 +103,9 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                 <version>${surefire-plugin.version}</version>
             </plugin>
 
-            <!-- Dev runner: `mvn javafx:run` launches the app on the JVM. -->
+            <!-- Dev runner: `mvn javafx:run` launches the app on the JVM. MFT scanning is
+                 disabled in JVM mode (the @CFunction bindings only resolve in native-image
+                 builds), so dev mode falls back to the parallel directory scanner. -->
             <plugin>
                 <groupId>org.openjfx</groupId>
                 <artifactId>javafx-maven-plugin</artifactId>
@@ -102,8 +119,15 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     <profiles>
         <!--
-          Debug logging for `mvn javafx:run`. Activates -Ddiskspace.log.level=FINE on the
-          spawned JVM so se.hirt.diskspace.* logs to the console at FINE level.
+          Debug logging + JFR for `mvn javafx:run`:
+            * -Ddiskspace.log.level=FINE   → se.hirt.diskspace.* logs at FINE level
+            * StartFlightRecording=...     → JFR recording running for the whole session,
+                                              dumped to diskspace.jfr in the working dir on
+                                              exit. Open with `jfr summary diskspace.jfr`
+                                              or load in JDK Mission Control / VisualVM.
+                                              `settings=profile` captures methods + locks +
+                                              GC + allocation; heavier than `default` but
+                                              what you want for diagnosing freezes.
           Run: `mvn -Pdebug-logging javafx:run`
         -->
         <profile>
@@ -117,6 +141,9 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             <mainClass>${main.class}</mainClass>
                             <options>
                                 <option>-Ddiskspace.log.level=FINE</option>
+                                <option>
+                                    -XX:StartFlightRecording=name=diskspace,filename=diskspace.jfr,dumponexit=true,settings=profile
+                                </option>
                             </options>
                         </configuration>
                     </plugin>
@@ -127,9 +154,12 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         <!--
           Native build via Gluon Substrate.
           Run: `mvn -Pnative gluonfx:build gluonfx:nativerun`
-          Prerequisites: GraalVM 25 + native-image, plus platform toolchain
+          Prerequisites: Oracle GraalVM for JDK 21 LTS + native-image, plus platform toolchain
             (Windows: VS 2022 with C++ workload; macOS: Xcode CLT; Linux: gcc + dev headers).
-          Note: gluonfx-maven-plugin and JavaFX versions may need bumping to support Java 25.
+          GC note: native-image on Windows is stuck with Serial GC. The G1 collector
+          is Oracle-GraalVM-only AND Linux-only, so on Windows we tune Serial instead
+          (capped max heap below). Linux native-image builds could opt into G1 by
+          adding the gc flag in an OS-specific profile if that becomes worthwhile.
         -->
         <profile>
             <id>native</id>
@@ -141,6 +171,121 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         <version>${gluonfx-maven-plugin.version}</version>
                         <configuration>
                             <mainClass>${main.class}</mainClass>
+                            <nativeImageArgs>
+                                <!-- Cap the heap at 4 GB. Serial GC's stop-the-world full
+                                     collections scale with heap size; without a cap, Substrate
+                                     ergonomics let the heap grow toward 80% of physical RAM,
+                                     which on a 64 GB machine means full GCs that pause for
+                                     seconds. 4 GB is comfortable for a multi-TB volume scan
+                                     (the DirectoryNode tree for ~4 M files is well under 1 GB)
+                                     and keeps worst-case Serial pauses bounded. -->
+                                <arg>-R:MaxHeapSize=4g</arg>
+                            </nativeImageArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          Diagnostic profile for the native build: layers GC logging on top of the `native`
+          profile so we can correlate UI freezes with collection events. Run together:
+            `mvn -Pnative,native-gc-log gluonfx:build`
+          Output: stdout of the produced .exe shows GC events. Drop this profile for
+          release builds — the chatter isn't useful to end users.
+        -->
+        <profile>
+            <id>native-gc-log</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.gluonhq</groupId>
+                        <artifactId>gluonfx-maven-plugin</artifactId>
+                        <version>${gluonfx-maven-plugin.version}</version>
+                        <configuration>
+                            <mainClass>${main.class}</mainClass>
+                            <nativeImageArgs>
+                                <arg>-R:MaxHeapSize=4g</arg>
+                                <!-- Bake runtime GC logging on by default in the produced exe.
+                                     -R: prefix means "set this as the default runtime arg"
+                                     rather than a build-time native-image option. -->
+                                <arg>-R:+PrintGC</arg>
+                                <arg>-R:+VerboseGC</arg>
+                                <arg>-R:+PrintGCTimeStamps</arg>
+                            </nativeImageArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          Intended to build the native exe with JFR (Java Flight Recorder) compiled in.
+          Pairs with the `native` profile:
+            `mvn -Pnative,native-jfr gluonfx:build`
+
+          STATUS: currently a no-op on Gluon Substrate. The build accepts every flag below
+          without warning, but the produced binary still throws
+            "Flight Recorder is not supported on this VM"
+          at runtime, both for the command-line StartFlightRecording forms and for the
+          programmatic JFR API in App.maybeStartJfrRecording(). Tracked at:
+            https://github.com/gluonhq/substrate/issues/1354
+          Minimal reproducer:
+            https://github.com/thegreystone/jfr-gluonfx-repro
+
+          JFR works fine on HotSpot today via the JVM debug-logging profile above (writes
+          diskspace.jfr), and is available in upstream GraalVM native-image since 21.2 (July
+          2021). This profile is kept in place so that once Gluon picks up upstream JFR
+          support the build line is already correct, no further wiring needed in App.java
+          or pom.xml. Drop the profile for release builds either way.
+        -->
+        <profile>
+            <id>native-jfr</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.gluonhq</groupId>
+                        <artifactId>gluonfx-maven-plugin</artifactId>
+                        <version>${gluonfx-maven-plugin.version}</version>
+                        <configuration>
+                            <mainClass>${main.class}</mainClass>
+                            <nativeImageArgs>
+                                <arg>-R:MaxHeapSize=4g</arg>
+                                <!-- The two flags an upstream native-image invocation would
+                                     use to enable JFR. Both are accepted by Gluon Substrate
+                                     today but produce no working JFR engine; see
+                                     https://github.com/gluonhq/substrate/issues/1354. -->
+                                <arg>--enable-monitoring=jfr</arg>
+                                <arg>-R:+FlightRecorder</arg>
+                            </nativeImageArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          Builds the native exe as a Windows console-subsystem binary so stdout/stderr stay
+          attached to the launching shell. Pairs with native-gc-log to actually see the GC
+          output:
+            `mvn -Pnative,native-gc-log,native-console gluonfx:build`
+            target\gluonfx\x86_64-windows\DiskSpace.exe > stdout.txt 2>&1
+          Side effect: a black console window pops up when launched from Explorer. Strictly
+          a debug profile — never ship a console-subsystem build to end users.
+        -->
+        <profile>
+            <id>native-console</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.gluonhq</groupId>
+                        <artifactId>gluonfx-maven-plugin</artifactId>
+                        <version>${gluonfx-maven-plugin.version}</version>
+                        <configuration>
+                            <mainClass>${main.class}</mainClass>
+                            <nativeImageArgs>
+                                <arg>-H:NativeLinkerOption=/SUBSYSTEM:CONSOLE</arg>
+                            </nativeImageArgs>
                         </configuration>
                     </plugin>
                 </plugins>
