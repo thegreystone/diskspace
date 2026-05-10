@@ -32,32 +32,37 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import se.hirt.diskspace.model.StorageProfile;
 import se.hirt.diskspace.model.Volume;
-import se.hirt.diskspace.scan.MftScanner;
-import se.hirt.diskspace.scan.Scanner;
-import se.hirt.diskspace.scan.Win32StorageProbe;
-import se.hirt.diskspace.scan.WindowsElevation;
+import se.hirt.diskspace.scan.*;
 
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Windows-only implementations of the {@link Capabilities} interfaces. The whole class is annotated {@code @Platforms(WINDOWS)} so it
- * physically does not exist in non-Windows native-image builds; {@link Capabilities}' static initializer references {@link #mft()} /
- * {@link #elevation()} / {@link #storageProbe()} only inside a build-time-foldable Windows guard, so on non-Windows the references are
- * dead-stripped before the analyzer tries to load this class or anything it imports.
+ * Windows-only implementations of the platform abstractions. The whole class is annotated {@code @Platforms(WINDOWS)}
+ * so it physically does not exist in non-Windows native-image builds; {@link Capabilities} (for elevation / storage
+ * probe) and {@link se.hirt.diskspace.scan.ScannerProviders} (for the MFT scanner provider) reference
+ * {@link #elevation()} / {@link #storageProbe()} / {@link #mftScannerProvider()} only behind build-time-foldable
+ * Windows guards, so on non-Windows the references are dead-stripped before the analyzer tries to load this class or
+ * anything it imports.
  */
 @Platforms(Platform.WINDOWS.class)
-final class WindowsCapabilities {
+public final class WindowsCapabilities {
 
 	private WindowsCapabilities() {
 	}
 
-	static Capabilities.Mft mft() {
-		return new Capabilities.Mft() {
+	/**
+	 * MFT scanner provider — wraps {@link MftScanner} as a {@link ScannerProvider} so cross-platform code in
+	 * {@code Scanner.forVolume} can select it generically. Only matches {@link ScanStrategy#AUTO} and
+	 * {@link ScanStrategy#MFT}; {@code canScan} delegates to the NTFS+drive-letter+admin probe in
+	 * {@link MftScanner#canScan(Volume)}.
+	 */
+	public static ScannerProvider mftScannerProvider() {
+		return new ScannerProvider() {
 			@Override
-			public boolean isAvailable() {
-				return MftScanner.isAvailable();
+			public boolean matchesPreference(ScanStrategy preference) {
+				return preference == ScanStrategy.AUTO || preference == ScanStrategy.MFT;
 			}
 
 			@Override
@@ -66,8 +71,18 @@ final class WindowsCapabilities {
 			}
 
 			@Override
-			public Scanner createScanner() {
+			public Scanner createScanner(Volume volume, ScanStrategy preference) {
 				return new MftScanner();
+			}
+
+			@Override
+			public String label(Volume volume, ScanStrategy preference) {
+				return "MFT";
+			}
+
+			@Override
+			public String description(Volume volume, ScanStrategy preference) {
+				return "Reads the NTFS Master File Table via FSCTL_ENUM_USN_DATA, then bulk-enumerates child sizes per directory. Requires admin / SeBackupPrivilege.";
 			}
 		};
 	}

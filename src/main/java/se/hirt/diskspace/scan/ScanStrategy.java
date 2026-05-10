@@ -29,29 +29,31 @@
 package se.hirt.diskspace.scan;
 
 /**
- * User preference for scan strategy. {@link Scanner#forVolume(se.hirt.diskspace.model.Volume)} resolves the actual scanner to instantiate
- * based on this preference and the volume's capabilities.
+ * User preference for scan strategy. {@link Scanner#forVolume(se.hirt.diskspace.model.Volume)} resolves the actual
+ * scanner to instantiate based on this preference and the volume's capabilities.
  * <p>S in the picker cycles through these values in declared order
  * ({@link #AUTO} → {@link #MFT} → {@link #PARALLEL} → {@link #SEQUENTIAL} → {@link #AUTO}).
  */
 public enum ScanStrategy {
 	/**
-	 * Pick the fastest implementation available for each volume. NTFS on Windows with admin privilege gets the MFT scanner; everything else
-	 * gets parallel walking sized to the storage profile.
+	 * Pick the fastest implementation available for each volume. NTFS on Windows with admin privilege gets the MFT
+	 * scanner; everything else gets parallel walking sized to the storage profile.
 	 */
 	AUTO,
 	/**
-	 * Force the MFT scanner. Falls back to PARALLEL if the volume isn't eligible (non-NTFS, non-Windows, no privilege).
+	 * Force the MFT scanner. Falls back to PARALLEL if the volume isn't eligible (non-NTFS, non-Windows, no
+	 * privilege).
 	 */
 	MFT,
 	/**
-	 * Force parallel directory walking with the per-profile pool size (HDD=1, SSD=8, NETWORK=16). Skips MFT even when available — useful
-	 * for A/B comparison.
+	 * Force parallel directory walking with the per-profile pool size (HDD=1, SSD=8, NETWORK=16). Skips MFT even when
+	 * available — useful for A/B comparison.
 	 */
 	PARALLEL,
 	/**
-	 * Force single-threaded directory walking (parallelism=1). Mostly a debugging knob — useful for measuring the speedup parallelism is
-	 * actually giving us, or for spinning HDDs where extra readers just trade kernel readahead for head seeks.
+	 * Force single-threaded directory walking (parallelism=1). Mostly a debugging knob — useful for measuring the
+	 * speedup parallelism is actually giving us, or for spinning HDDs where extra readers just trade kernel readahead
+	 * for head seeks.
 	 */
 	SEQUENTIAL;
 

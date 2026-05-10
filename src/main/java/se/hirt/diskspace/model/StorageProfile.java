@@ -29,7 +29,8 @@
 package se.hirt.diskspace.model;
 
 /**
- * Physical-storage classification surfaced in the picker so users can see at a glance what kind of media each volume sits on.
+ * Physical-storage classification surfaced in the picker so users can see at a glance what kind of media each volume
+ * sits on.
  */
 public enum StorageProfile {
 	/** Solid-state local storage (SATA SSD, NVMe, eMMC). */
@@ -44,8 +45,8 @@ public enum StorageProfile {
 	UNKNOWN;
 
 	/**
-	 * Short label for inline UI display. {@link #UNKNOWN} renders as empty string so the picker doesn't show a meaningless tag for fuzzy
-	 * cases.
+	 * Short label for inline UI display. {@link #UNKNOWN} renders as empty string so the picker doesn't show a
+	 * meaningless tag for fuzzy cases.
 	 */
 	public String shortLabel() {
 		return switch (this) {
@@ -58,16 +59,18 @@ public enum StorageProfile {
 	}
 
 	/**
-	 * Scan-strategy explanation for tooltip display. Stays focused on how DiskSpace walks this profile — the storage type itself is already
-	 * shown as its own key/value line.
+	 * Scan-strategy explanation for tooltip display. Stays focused on how DiskSpace walks this profile — the storage
+	 * type itself is already shown as its own key/value line.
 	 */
 	public String tooltipDescription() {
 		return switch (this) {
 			case SSD -> "Parallel (8 readers) — SSD metadata throughput peaks around 4–8 concurrent readers.";
 			case HDD -> "Sequential — concurrent readers on spinning media trade kernel readahead for head seeks.";
 			case NETWORK -> "Parallel (16 readers) — round-trip latency dominates, so concurrency hides it.";
-			case MIXED -> "Parallel (8 readers) — the logical-volume layer reorders requests across the underlying disks.";
-			case UNKNOWN -> "Parallel (8 readers) by default — the only profile that loses to parallelism is a confirmed spinning disk.";
+			case MIXED ->
+					"Parallel (8 readers) — the logical-volume layer reorders requests across the underlying disks.";
+			case UNKNOWN ->
+					"Parallel (8 readers) by default — the only profile that loses to parallelism is a confirmed spinning disk.";
 		};
 	}
 }

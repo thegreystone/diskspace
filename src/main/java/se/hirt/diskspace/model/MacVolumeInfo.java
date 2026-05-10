@@ -35,10 +35,11 @@ import java.nio.file.Path;
 
 /**
  * macOS-specific volume queries that go beyond what {@link java.nio.file.FileStore} exposes. On APFS,
- * {@code FileStore.getTotalSpace()/getUsableSpace()} return container-wide totals — the same numbers regardless of which volume in the
- * container is queried — because the underlying {@code statfs(2)} call reports container blocks. The per-volume figures Finder and Disk
- * Utility show come from {@code getattrlist(2)} with {@code ATTR_VOL_SPACEUSED}, which Java NIO doesn't surface. {@code df(1)} exposes that
- * attribute in its {@code Used} column, so we shell out and parse the output.
+ * {@code FileStore.getTotalSpace()/getUsableSpace()} return container-wide totals — the same numbers regardless of
+ * which volume in the container is queried — because the underlying {@code statfs(2)} call reports container blocks.
+ * The per-volume figures Finder and Disk Utility show come from {@code getattrlist(2)} with {@code ATTR_VOL_SPACEUSED},
+ * which Java NIO doesn't surface. {@code df(1)} exposes that attribute in its {@code Used} column, so we shell out and
+ * parse the output.
  */
 final class MacVolumeInfo {
 
@@ -51,8 +52,8 @@ final class MacVolumeInfo {
 	}
 
 	/**
-	 * Runs {@code df -k <path>} and returns the Used column converted to bytes (it's reported in 1024-byte blocks). Returns -1 if anything
-	 * fails — caller should fall back to the Java NIO computation.
+	 * Runs {@code df -k <path>} and returns the Used column converted to bytes (it's reported in 1024-byte blocks).
+	 * Returns -1 if anything fails — caller should fall back to the Java NIO computation.
 	 */
 	static long spaceUsed(Path path) {
 		if (!isMac() || path == null)
@@ -63,7 +64,8 @@ final class MacVolumeInfo {
 			Process p = pb.start();
 			String header;
 			String dataLine;
-			try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+			try (BufferedReader r = new BufferedReader(
+					new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
 				header = r.readLine();
 				dataLine = r.readLine();
 				// Drain the rest so the process can exit cleanly.

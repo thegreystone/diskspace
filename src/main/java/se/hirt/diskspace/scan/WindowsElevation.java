@@ -28,11 +28,7 @@
  */
 package se.hirt.diskspace.scan;
 
-import org.graalvm.nativeimage.ImageInfo;
-import org.graalvm.nativeimage.Platform;
-import org.graalvm.nativeimage.Platforms;
-import org.graalvm.nativeimage.StackValue;
-import org.graalvm.nativeimage.UnmanagedMemory;
+import org.graalvm.nativeimage.*;
 import org.graalvm.nativeimage.c.type.CCharPointer;
 import org.graalvm.nativeimage.c.type.CIntPointer;
 import org.graalvm.nativeimage.c.type.WordPointer;
@@ -44,14 +40,14 @@ import java.util.logging.Logger;
 
 /**
  * Windows-only helpers for detecting and requesting administrator elevation. Wraps {@code OpenProcessToken} /
- * {@code GetTokenInformation(TokenElevation)} for the detect side and {@code ShellExecuteW} with the {@code "runas"} verb for the relaunch
- * side.
+ * {@code GetTokenInformation(TokenElevation)} for the detect side and {@code ShellExecuteW} with the {@code "runas"}
+ * verb for the relaunch side.
  * <p><b>Native-image only.</b> {@link #isAvailable()} returns false in JVM dev mode, so the
- * caller (typically {@code App.maybeOfferElevation}) just won't surface the prompt there. The Win32 calls are direct {@code @CFunction}
- * invocations linked by native-image — no JNI shim, no extra DLL.
+ * caller (typically {@code App.maybeOfferElevation}) just won't surface the prompt there. The Win32 calls are direct
+ * {@code @CFunction} invocations linked by native-image — no JNI shim, no extra DLL.
  * <p>The class is gated with {@code @Platforms(WINDOWS)} so it does not exist on non-Windows
- * native-images at all; cross-platform code reaches it only via {@code platform.Capabilities.ELEVATION}. Direct imports from cross-platform
- * code are a build-time error rather than a silent native-image regression.
+ * native-images at all; cross-platform code reaches it only via {@code platform.Capabilities.ELEVATION}. Direct imports
+ * from cross-platform code are a build-time error rather than a silent native-image regression.
  */
 @Platforms(Platform.WINDOWS.class)
 public final class WindowsElevation {
@@ -70,8 +66,9 @@ public final class WindowsElevation {
 	private static final int SW_SHOWNORMAL = 1;
 
 	/**
-	 * True iff we're on Windows AND running as a built native-image (not JVM dev mode). The {@code @CFunction} bindings only resolve in
-	 * native-image builds; calling them from a regular JVM throws {@code UnsatisfiedLinkError}, so this guard is mandatory.
+	 * True iff we're on Windows AND running as a built native-image (not JVM dev mode). The {@code @CFunction} bindings
+	 * only resolve in native-image builds; calling them from a regular JVM throws {@code UnsatisfiedLinkError}, so this
+	 * guard is mandatory.
 	 */
 	public static boolean isAvailable() {
 		if (!System.getProperty("os.name", "").toLowerCase().contains("win"))
@@ -80,8 +77,8 @@ public final class WindowsElevation {
 	}
 
 	/**
-	 * Returns true iff the current process token is elevated (i.e. running as administrator via UAC). Returns false on any error or when
-	 * {@link #isAvailable()} is false.
+	 * Returns true iff the current process token is elevated (i.e. running as administrator via UAC). Returns false on
+	 * any error or when {@link #isAvailable()} is false.
 	 */
 	public static boolean isElevated() {
 		if (!isAvailable())
@@ -106,9 +103,9 @@ public final class WindowsElevation {
 	}
 
 	/**
-	 * Spawns a new copy of the current process via {@code ShellExecuteW} with the {@code "runas"} verb. Windows shows the UAC prompt and,
-	 * on consent, launches the new process elevated. Returns true if the spawn was initiated successfully (the user may still decline UAC,
-	 * which produces a successful return here but no elevated process).
+	 * Spawns a new copy of the current process via {@code ShellExecuteW} with the {@code "runas"} verb. Windows shows
+	 * the UAC prompt and, on consent, launches the new process elevated. Returns true if the spawn was initiated
+	 * successfully (the user may still decline UAC, which produces a successful return here but no elevated process).
 	 * <p>Do {@code Platform.exit()} the current (un-elevated) process after a
 	 * successful return so the user isn't left with two windows.
 	 */
@@ -130,7 +127,8 @@ public final class WindowsElevation {
 		try {
 			// ShellExecute's return is encoded as HINSTANCE but is really an integer status
 			// code: 0..32 are SE_ERR_* error codes; > 32 means a launched-app HINSTANCE.
-			long status = Win32.ShellExecuteW(Win32.nullHandle(), verb, file, pars, WordFactory.nullPointer(), SW_SHOWNORMAL);
+			long status = Win32.ShellExecuteW(Win32.nullHandle(), verb, file, pars, WordFactory.nullPointer(),
+					SW_SHOWNORMAL);
 			boolean spawned = status > 32;
 			if (!spawned) {
 				LOG.warning(
@@ -146,8 +144,8 @@ public final class WindowsElevation {
 	}
 
 	/**
-	 * Quoting that's just-good-enough for re-passing argv through {@code ShellExecute}'s {@code lpParameters}. Wraps anything containing
-	 * whitespace or quotes in double quotes with internal quotes escaped. Skips empty args.
+	 * Quoting that's just-good-enough for re-passing argv through {@code ShellExecute}'s {@code lpParameters}. Wraps
+	 * anything containing whitespace or quotes in double quotes with internal quotes escaped. Skips empty args.
 	 */
 	private static String joinArgs(List<String> args) {
 		StringBuilder sb = new StringBuilder();

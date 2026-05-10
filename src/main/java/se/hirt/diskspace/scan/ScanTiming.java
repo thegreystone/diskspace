@@ -35,8 +35,8 @@ import java.util.Locale;
 import java.util.logging.Logger;
 
 /**
- * Shared scan-completion timing and throughput logging. Format is identical for sequential and parallel scanners so A/B comparisons in the
- * log are trivial — search for {@code "Scan complete:"}.
+ * Shared scan-completion timing and throughput logging. Format is identical for sequential and parallel scanners so A/B
+ * comparisons in the log are trivial — search for {@code "Scan complete:"}.
  */
 final class ScanTiming {
 
@@ -44,8 +44,8 @@ final class ScanTiming {
 	}
 
 	/**
-	 * Emits a multi-line INFO log summarising elapsed wall time, file/byte counts pulled from the scan root's running totals, and derived
-	 * throughput (files/sec and bytes/sec).
+	 * Emits a multi-line INFO log summarising elapsed wall time, file/byte counts pulled from the scan root's running
+	 * totals, and derived throughput (files/sec and bytes/sec).
 	 */
 	static void log(Logger log, Path rootPath, DirectoryNode root, long startNanos, String strategy) {
 		long elapsedNanos = System.nanoTime() - startNanos;
@@ -56,7 +56,8 @@ final class ScanTiming {
 		double bytesPerSec = seconds > 0 ? bytes / seconds : 0.0;
 		log.info(String.format(Locale.ROOT,
 				"Scan complete: %s%n" + "  Strategy   : %s%n" + "  Wall time  : %.2fs%n" + "  Files      : %,d%n" + "  Bytes      : %s (%,d)%n" + "  Throughput : %,d files/s, %s/s",
-				rootPath, strategy, seconds, files, formatBytes(bytes), bytes, filesPerSec, formatBytes((long) bytesPerSec)));
+				rootPath, strategy, seconds, files, formatBytes(bytes), bytes, filesPerSec,
+				formatBytes((long) bytesPerSec)));
 	}
 
 	private static String formatBytes(long bytes) {

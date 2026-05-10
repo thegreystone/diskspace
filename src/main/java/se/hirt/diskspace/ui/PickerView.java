@@ -60,8 +60,8 @@ public final class PickerView {
 	private final List<Runnable> sizeRefreshers = new ArrayList<>();
 	private final StackPane helpOverlay;
 	/**
-	 * Lifted to an instance field so {@link #dispatchTopLevelKey} can fire it on S. Constructed during {@link #PickerView} setup; never
-	 * null after the constructor returns.
+	 * Lifted to an instance field so {@link #dispatchTopLevelKey} can fire it on S. Constructed during
+	 * {@link #PickerView} setup; never null after the constructor returns.
 	 */
 	private Runnable toggleStrategy;
 
@@ -79,9 +79,9 @@ public final class PickerView {
 		}
 
 		Button choose = new Button("Choose folder…");
-		choose.setStyle(
-				"-fx-background-color: transparent;" + "-fx-text-fill: " + toCss(scheme.accent()) + ";" + "-fx-border-color: " + toCss(
-						scheme.accent()) + ";" + "-fx-border-radius: 6; -fx-background-radius: 6;" + "-fx-padding: 8 14 8 14; -fx-cursor: hand;");
+		choose.setStyle("-fx-background-color: transparent;" + "-fx-text-fill: " + toCss(
+				scheme.accent()) + ";" + "-fx-border-color: " + toCss(
+				scheme.accent()) + ";" + "-fx-border-radius: 6; -fx-background-radius: 6;" + "-fx-padding: 8 14 8 14; -fx-cursor: hand;");
 		choose.setOnAction(e -> {
 			DirectoryChooser dc = new DirectoryChooser();
 			dc.setTitle("Choose folder to scan");
@@ -97,13 +97,15 @@ public final class PickerView {
 		// row tooltips regenerate on hover so per-disk strategy text picks up the change
 		// automatically.
 		Label strategyLabel = new Label();
-		strategyLabel.setStyle(
-				"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-cursor: hand; -fx-padding: 0 0 0 12;");
-		Runnable refreshStrategy = () -> strategyLabel.setText("Scan: " + Scanner.PREFERENCE.get().label() + "  ·  click or S to cycle");
+		strategyLabel.setStyle("-fx-text-fill: " + toCss(
+				scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-cursor: hand; -fx-padding: 0 0 0 12;");
+		Runnable refreshStrategy = () -> strategyLabel.setText(
+				"Scan: " + Scanner.PREFERENCE.get().label() + "  ·  click or S to cycle");
 		refreshStrategy.run();
 		Tooltip strategyTip = new Tooltip();
 		strategyTip.setShowDelay(Duration.millis(300));
-		strategyTip.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace; -fx-font-size: 12px;");
+		strategyTip.setStyle(
+				"-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace; -fx-font-size: 12px;");
 		strategyTip.setOnShowing(e -> strategyTip.setText(buildStrategyTooltip()));
 		Tooltip.install(strategyLabel, strategyTip);
 		this.toggleStrategy = () -> {
@@ -129,8 +131,8 @@ public final class PickerView {
 		ScrollPane scroll = new ScrollPane(centered);
 		scroll.setFitToWidth(true);
 		scroll.setFitToHeight(true);
-		scroll.setStyle(
-				"-fx-background: " + toCss(scheme.background()) + ";" + "-fx-background-color: " + toCss(scheme.background()) + ";");
+		scroll.setStyle("-fx-background: " + toCss(scheme.background()) + ";" + "-fx-background-color: " + toCss(
+				scheme.background()) + ";");
 
 		BorderPane body = new BorderPane(scroll);
 		body.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
@@ -160,9 +162,10 @@ public final class PickerView {
 	}
 
 	/**
-	 * Top-level command dispatch. Shared between this view's own root filter and MainWindow's BorderPane handler so Esc/U keep working when
-	 * focus has drifted to the TabPane header (e.g. just after closing the last DiskView tab and the auto-created picker is selected).
-	 * While the help overlay is visible we swallow other keys so they don't trigger silently behind it.
+	 * Top-level command dispatch. Shared between this view's own root filter and MainWindow's BorderPane handler so
+	 * Esc/U keep working when focus has drifted to the TabPane header (e.g. just after closing the last DiskView tab
+	 * and the auto-created picker is selected). While the help overlay is visible we swallow other keys so they don't
+	 * trigger silently behind it.
 	 */
 	public void dispatchTopLevelKey(KeyEvent e) {
 		if (e.getCode() == KeyCode.ESCAPE) {
@@ -231,7 +234,8 @@ public final class PickerView {
 				scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600;" + "-fx-padding: 0 0 14 0;");
 
 		Label hint = new Label("Press Esc to close");
-		hint.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
+		hint.setStyle(
+				"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
 
 		VBox card = new VBox(title, grid, hint);
 		card.setAlignment(Pos.TOP_LEFT);
@@ -265,7 +269,8 @@ public final class PickerView {
 
 	private Region buildRow(Volume v) {
 		Label name = new Label(v.displayName());
-		name.setStyle("-fx-text-fill: " + toCss(scheme.textPrimary()) + ";" + "-fx-font-size: 15px; -fx-font-weight: 600;");
+		name.setStyle(
+				"-fx-text-fill: " + toCss(scheme.textPrimary()) + ";" + "-fx-font-size: 15px; -fx-font-weight: 600;");
 
 		Label path = new Label(v.root().toString());
 		path.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px;");
@@ -282,7 +287,8 @@ public final class PickerView {
 		String tagText = v.storageProfile() == null ? "" : v.storageProfile().shortLabel();
 		if (!tagText.isEmpty()) {
 			Label tag = new Label(tagText);
-			tag.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-font-weight: 600;");
+			tag.setStyle(
+					"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-font-weight: 600;");
 			sizeBlock.getChildren().add(tag);
 		}
 		sizeBlock.getChildren().add(total);
@@ -294,10 +300,11 @@ public final class PickerView {
 
 		VBox box = new VBox(4, name, path, barRow);
 		box.setPadding(new Insets(14, 16, 14, 16));
-		String baseStyle = "-fx-background-color: " + toCss(scheme.surface()) + ";" + "-fx-background-radius: 10; -fx-cursor: hand;";
+		String baseStyle = "-fx-background-color: " + toCss(
+				scheme.surface()) + ";" + "-fx-background-radius: 10; -fx-cursor: hand;";
 		box.setStyle(baseStyle);
-		box.setOnMouseEntered(
-				e -> box.setStyle(baseStyle + "-fx-effect: dropshadow(gaussian, " + toCss(scheme.accent()) + ", 12, 0.15, 0, 0);"));
+		box.setOnMouseEntered(e -> box.setStyle(
+				baseStyle + "-fx-effect: dropshadow(gaussian, " + toCss(scheme.accent()) + ", 12, 0.15, 0, 0);"));
 		box.setOnMouseExited(e -> box.setStyle(baseStyle));
 		box.setOnMouseClicked(e -> onSelection.accept(v));
 
@@ -317,8 +324,8 @@ public final class PickerView {
 	/** Width keys are padded to in the top key/value block. Longest = "File system". */
 	private static final int TOOLTIP_KEY_WIDTH = 11;
 	/**
-	 * Word-wrap target for value text in the tooltip. Tuned for the monospace 12px font so the rendered width stays comfortably narrow
-	 * without orphaning short trailing words on their own line.
+	 * Word-wrap target for value text in the tooltip. Tuned for the monospace 12px font so the rendered width stays
+	 * comfortably narrow without orphaning short trailing words on their own line.
 	 */
 	private static final int TOOLTIP_WRAP_WIDTH = 50;
 
@@ -328,8 +335,8 @@ public final class PickerView {
 		sb.append(v.root()).append("\n\n");
 
 		String fs = v.fsType();
-		String storage =
-				v.storageProfile() == null || v.storageProfile().shortLabel().isEmpty() ? "Unknown" : v.storageProfile().shortLabel();
+		String storage = v.storageProfile() == null || v.storageProfile().shortLabel().isEmpty() ? "Unknown"
+				: v.storageProfile().shortLabel();
 		appendKeyValue(sb, "File system", fs == null || fs.isBlank() ? "—" : fs);
 		appendKeyValue(sb, "Storage", storage);
 		// Resolved strategy + description from Scanner — reflects the current preference
@@ -384,8 +391,8 @@ public final class PickerView {
 	}
 
 	/**
-	 * Word-wraps {@code value} to {@link #TOOLTIP_WRAP_WIDTH}, indenting continuation lines to align under the first value character (i.e.
-	 * {@code keyWidth + " : ".length}).
+	 * Word-wraps {@code value} to {@link #TOOLTIP_WRAP_WIDTH}, indenting continuation lines to align under the first
+	 * value character (i.e. {@code keyWidth + " : ".length}).
 	 */
 	private static void appendWrappedKeyValue(StringBuilder sb, String key, String value) {
 		List<String> lines = wordWrap(value, TOOLTIP_WRAP_WIDTH);
@@ -401,8 +408,8 @@ public final class PickerView {
 	}
 
 	/**
-	 * Word-wraps {@code value} and emits each line indented to the value column — used to attach a wrapped continuation paragraph to a
-	 * previously-emitted key/value line.
+	 * Word-wraps {@code value} and emits each line indented to the value column — used to attach a wrapped continuation
+	 * paragraph to a previously-emitted key/value line.
 	 */
 	private static void appendIndentedWrap(StringBuilder sb, String value) {
 		String indent = " ".repeat(TOOLTIP_KEY_WIDTH + 3);
@@ -412,8 +419,8 @@ public final class PickerView {
 	}
 
 	/**
-	 * Greedy word-wrap. Long single tokens (e.g. URLs) overflow the target width rather than getting hyphenated — this is fine for our
-	 * short, prose-only descriptions.
+	 * Greedy word-wrap. Long single tokens (e.g. URLs) overflow the target width rather than getting hyphenated — this
+	 * is fine for our short, prose-only descriptions.
 	 */
 	private static List<String> wordWrap(String text, int width) {
 		List<String> lines = new ArrayList<>();
@@ -466,8 +473,8 @@ public final class PickerView {
 	}
 
 	private static String toCss(Color c) {
-		return String.format("rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255), (int) Math.round(c.getGreen() * 255),
-				(int) Math.round(c.getBlue() * 255), c.getOpacity());
+		return String.format("rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255),
+				(int) Math.round(c.getGreen() * 255), (int) Math.round(c.getBlue() * 255), c.getOpacity());
 	}
 
 }

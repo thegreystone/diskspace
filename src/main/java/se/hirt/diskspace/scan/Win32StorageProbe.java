@@ -47,13 +47,15 @@ import java.util.Map;
 import java.util.logging.Logger;
 
 /**
- * Native-image-only Win32 classifier that replaces the PowerShell shellout in {@code StorageProfileProbe.probeWindowsBatch}. Per drive:
- * {@code GetDriveTypeW} for network/removable detection, then {@code IOCTL_STORAGE_QUERY_PROPERTY(StorageDeviceSeekPenaltyProperty)} on the
- * volume handle to read {@code DEVICE_SEEK_PENALTY_DESCRIPTOR.IncursSeekPenalty} for SSD-vs-HDD. Total cost ~5–10 ms per drive vs. ~2.4 s
- * for the PowerShell batch (PowerShell startup + WMI/CIM connection dominate that figure).
+ * Native-image-only Win32 classifier that replaces the PowerShell shellout in
+ * {@code StorageProfileProbe.probeWindowsBatch}. Per drive: {@code GetDriveTypeW} for network/removable detection, then
+ * {@code IOCTL_STORAGE_QUERY_PROPERTY(StorageDeviceSeekPenaltyProperty)} on the volume handle to read
+ * {@code DEVICE_SEEK_PENALTY_DESCRIPTOR.IncursSeekPenalty} for SSD-vs-HDD. Total cost ~5–10 ms per drive vs. ~2.4 s for
+ * the PowerShell batch (PowerShell startup + WMI/CIM connection dominate that figure).
  * <p>No admin / privilege required: the volume is opened with zero {@code dwDesiredAccess},
- * which is sufficient for {@code IOCTL_STORAGE_QUERY_PROPERTY}. Failures (drive not present, ioctl unsupported on enterprise / SAS / RAID
- * controllers, etc.) degrade to {@link StorageProfile#UNKNOWN} rather than blocking — matches the existing PowerShell-failure semantics.
+ * which is sufficient for {@code IOCTL_STORAGE_QUERY_PROPERTY}. Failures (drive not present, ioctl unsupported on
+ * enterprise / SAS / RAID controllers, etc.) degrade to {@link StorageProfile#UNKNOWN} rather than blocking — matches
+ * the existing PowerShell-failure semantics.
  */
 @Platforms(Platform.WINDOWS.class)
 public final class Win32StorageProbe {
@@ -65,7 +67,10 @@ public final class Win32StorageProbe {
 	private static final int DRIVE_FIXED = 3;
 	private static final int DRIVE_REMOTE = 4;
 
-	/** {@code IOCTL_STORAGE_QUERY_PROPERTY = CTL_CODE(IOCTL_STORAGE_BASE, 0x500, METHOD_BUFFERED, FILE_ANY_ACCESS) = 0x2D1400}. */
+	/**
+	 * {@code IOCTL_STORAGE_QUERY_PROPERTY = CTL_CODE(IOCTL_STORAGE_BASE, 0x500, METHOD_BUFFERED, FILE_ANY_ACCESS) =
+	 * 0x2D1400}.
+	 */
 	private static final int IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400;
 	/** {@code STORAGE_PROPERTY_ID.StorageDeviceSeekPenaltyProperty = 7}. */
 	private static final int StorageDeviceSeekPenaltyProperty = 7;
@@ -83,10 +88,10 @@ public final class Win32StorageProbe {
 	}
 
 	/**
-	 * Classifies every {@code volume} in {@code volumes} via direct Win32 ioctls. Preserves input order in the returned map. UNC mounts (no
-	 * drive letter) and unrecognised inputs return {@link StorageProfile#UNKNOWN}; the caller is responsible for short-circuiting those
-	 * before calling this method if it has cheaper information. Pure native-image path; calling on the JVM throws
-	 * {@code UnsatisfiedLinkError} via {@link Win32}.
+	 * Classifies every {@code volume} in {@code volumes} via direct Win32 ioctls. Preserves input order in the returned
+	 * map. UNC mounts (no drive letter) and unrecognised inputs return {@link StorageProfile#UNKNOWN}; the caller is
+	 * responsible for short-circuiting those before calling this method if it has cheaper information. Pure
+	 * native-image path; calling on the JVM throws {@code UnsatisfiedLinkError} via {@link Win32}.
 	 */
 	public static Map<Path, StorageProfile> probeAll(List<Volume> volumes) {
 		Map<Path, StorageProfile> results = new LinkedHashMap<>();
@@ -112,7 +117,8 @@ public final class Win32StorageProbe {
 
 	/**
 	 * Classifies a single drive letter (e.g. {@code "C"}). {@link StorageProfile#NETWORK} for {@code DRIVE_REMOTE},
-	 * {@link StorageProfile#SSD} / {@link StorageProfile#HDD} from the seek-penalty descriptor, otherwise {@link StorageProfile#UNKNOWN}.
+	 * {@link StorageProfile#SSD} / {@link StorageProfile#HDD} from the seek-penalty descriptor, otherwise
+	 * {@link StorageProfile#UNKNOWN}.
 	 */
 	public static StorageProfile probeOne(String driveLetter) {
 		long startNanos = System.nanoTime();
@@ -140,8 +146,8 @@ public final class Win32StorageProbe {
 		HANDLE h;
 		CCharPointer volBuf = Win32.allocWideString("\\\\.\\" + driveLetter + ":");
 		try {
-			h = Win32.CreateFileW(volBuf, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, WordFactory.nullPointer(), OPEN_EXISTING, 0,
-					Win32.nullHandle());
+			h = Win32.CreateFileW(volBuf, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, WordFactory.nullPointer(),
+					OPEN_EXISTING, 0, Win32.nullHandle());
 		} finally {
 			UnmanagedMemory.free(volBuf);
 		}
@@ -162,9 +168,9 @@ public final class Win32StorageProbe {
 	}
 
 	/**
-	 * Runs {@code IOCTL_STORAGE_QUERY_PROPERTY(StorageDeviceSeekPenaltyProperty)}. Returns {@link StorageProfile#SSD} when
-	 * {@code IncursSeekPenalty == 0}, {@link StorageProfile#HDD} when nonzero, or {@link StorageProfile#UNKNOWN} on ioctl failure (e.g.
-	 * enterprise / SAS / RAID controllers that don't implement the descriptor).
+	 * Runs {@code IOCTL_STORAGE_QUERY_PROPERTY(StorageDeviceSeekPenaltyProperty)}. Returns {@link StorageProfile#SSD}
+	 * when {@code IncursSeekPenalty == 0}, {@link StorageProfile#HDD} when nonzero, or {@link StorageProfile#UNKNOWN}
+	 * on ioctl failure (e.g. enterprise / SAS / RAID controllers that don't implement the descriptor).
 	 * <pre>
 	 *   STORAGE_PROPERTY_QUERY input (12 bytes):
 	 *     +0  DWORD PropertyId         = StorageDeviceSeekPenaltyProperty (7)
@@ -188,7 +194,8 @@ public final class Win32StorageProbe {
 			out.writeInt(0, 0);
 			out.writeInt(4, 0);
 			out.writeInt(8, 0);
-			int ok = Win32.DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, query, 12, out, 12, bytesReturned, WordFactory.nullPointer());
+			int ok = Win32.DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, query, 12, out, 12, bytesReturned,
+					WordFactory.nullPointer());
 			if (ok == 0) {
 				int err = Win32.GetLastError();
 				LOG.fine(() -> "  win32: " + driveLetter + " StorageDeviceSeekPenaltyProperty err=" + err);

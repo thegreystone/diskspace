@@ -32,7 +32,7 @@ import org.graalvm.nativeimage.ImageInfo;
 import org.graalvm.nativeimage.Platform;
 import se.hirt.diskspace.model.StorageProfile;
 import se.hirt.diskspace.model.Volume;
-import se.hirt.diskspace.scan.Scanner;
+import se.hirt.diskspace.scan.ScannerProvider;
 
 import java.nio.file.Path;
 import java.util.Collections;
@@ -40,51 +40,34 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Cross-platform registry for platform-specific capabilities. Three small interfaces — one per concern (MFT-style fast scanner, UAC
- * elevation, native bulk storage classifier) — each with default-method "not available" no-ops, and a static initializer that picks either
- * the Windows-specific implementations or the {@code NOOP} singletons. Cross-platform code (e.g. {@code Scanner.forVolume},
- * {@code App.maybeOfferElevation}, {@code StorageProfileProbe.probeMany}) consumes capabilities through this class only, never by
- * referencing the underlying Windows-only classes ({@code MftScanner}, {@code WindowsElevation}, {@code Win32StorageProbe}) directly.
- *
- * <h3>Why a registry instead of inline platform checks</h3>
- * Each of the three Windows-only classes is annotated {@code @Platforms(Platform.WINDOWS.class)}, so it physically does not exist in a
- * non-Windows native-image. Routing all access through this class means: (1) the platform check happens in exactly one place, (2) callers
- * cannot accidentally re-introduce a direct unguarded reference — that's a build-time error, and (3) future Linux/macOS native fast paths
- * (e.g. an NTFS-3G backed {@code Mft} on Linux) plug in by adding another impl class and another branch in the static initializer below;
- * the cross-platform call sites stay platform-blind.
- *
+ * Cross-platform registry for the platform-specific bits the rest of the codebase consumes generically: UAC elevation,
+ * the native bulk storage classifier, and the optional MFT-style fast scanner. Each Windows-only implementation is
+ * loaded only on a Windows native-image binary; otherwise the field holds either a "not available" no-op singleton (for
+ * the interface-typed slots) or {@code null} (for {@link #MFT_PROVIDER}, which the scanner registry treats as "no
+ * native MFT here, use the parallel fallback"). Cross-platform code never references the underlying
+ * {@code WindowsElevation} / {@code Win32StorageProbe} / {@code MftScanner} classes directly; those are annotated
+ * {@code @Platforms(WINDOWS)} and a direct cross-platform reference is a build-time error.
+ * <h3>One platform check, in one place</h3>
+ * The static initializer below contains the only {@link Platform#includedIn(Class)} call in the cross-platform code
+ * path. It selects between {@link WindowsCapabilities}'s factory methods on a Windows native-image and the no-op
+ * fallbacks everywhere else.
  * <h3>Operand order is load-bearing</h3>
- * {@link Platform#includedIn(Class)} delegates to {@code ImageSingletons.lookup}, which throws on a plain JVM ({@code mvn javafx:run}). The
- * {@link ImageInfo#inImageRuntimeCode()} half of the gate must be evaluated first to short-circuit before {@code Platform.includedIn} is
- * touched — reversing the {@code &&} would crash dev mode at startup. On a native-image build both halves fold to constants during
- * Substrate's analysis, so the dead branch (and its reference to {@link WindowsCapabilities}) is dead-stripped before the points-to
- * analysis tries to resolve any {@code @Platforms(WINDOWS)}-gated type on a non-matching platform.
+ * {@link Platform#includedIn(Class)} delegates to {@code ImageSingletons.lookup}, which throws on a plain JVM
+ * ({@code mvn javafx:run}). The {@link ImageInfo#inImageRuntimeCode()} half of the gate must be evaluated first to
+ * short-circuit before {@code Platform.includedIn} is touched; reversing the {@code &&} crashes dev mode at startup. On
+ * a native-image build both halves fold to build-time constants during Substrate's analysis, so the dead branch (and
+ * every reference inside it to {@link WindowsCapabilities} and its imports) is dead-stripped before the points-to
+ * analysis attempts to resolve any {@code @Platforms(WINDOWS)}-gated type on a non-matching platform.
+ * <h3>Why the gate must be inline, not via a static-final flag</h3>
+ * Substrate folds {@code Platform.includedIn(WINDOWS)} when it appears textually inside a method body; it does NOT fold
+ * cross-class field reads of a {@code static final boolean} derived from it (that would require build-time class
+ * initialization, which we don't request). An earlier draft of this code routed the platform check through a public
+ * {@code IS_WINDOWS_NATIVE} field, and the analyzer reached {@link WindowsCapabilities} on macOS / Linux. Reverting to
+ * inline {@code Platform.includedIn} fixed it; do not extract this check into a constant.
  */
 public final class Capabilities {
 
 	private Capabilities() {
-	}
-
-	/**
-	 * MFT-style fast directory scanner. Today only the Windows NTFS implementation exists ({@code FSCTL_ENUM_USN_DATA} +
-	 * {@code GetFileInformationByHandleEx}); the interface is platform-neutral so a future Linux NTFS-3G fast path or APFS catalog-tree
-	 * implementation can plug in without touching cross-platform callers.
-	 */
-	public interface Mft {
-		Mft NOOP = new Mft() {
-		};
-
-		default boolean isAvailable() {
-			return false;
-		}
-
-		default boolean canScan(Volume volume) {
-			return false;
-		}
-
-		default Scanner createScanner() {
-			throw new UnsupportedOperationException("MFT scanner is not available on this platform");
-		}
 	}
 
 	/** UAC-style admin elevation. Currently Windows-only via {@code ShellExecuteW("runas")}. */
@@ -106,9 +89,9 @@ public final class Capabilities {
 	}
 
 	/**
-	 * Fast OS-native bulk classifier for SSD/HDD/NETWORK. The slow cross-platform paths (PowerShell on Windows JVM mode, {@code diskutil} on
-	 * macOS, {@code findmnt}/{@code lsblk} on Linux) live in {@code StorageProfileProbe} and stay there; this interface only covers the
-	 * native-image fast shortcut.
+	 * Fast OS-native bulk classifier for SSD/HDD/NETWORK. The slow cross-platform paths (PowerShell on Windows JVM
+	 * mode, {@code diskutil} on macOS, {@code findmnt}/{@code lsblk} on Linux) live in {@code StorageProfileProbe} and
+	 * stay there; this interface only covers the native-image fast shortcut.
 	 */
 	public interface StorageProbe {
 		StorageProbe NOOP = new StorageProbe() {
@@ -123,21 +106,30 @@ public final class Capabilities {
 		}
 	}
 
-	public static final Mft MFT;
 	public static final Elevation ELEVATION;
 	public static final StorageProbe STORAGE_PROBE;
 
+	/**
+	 * MFT-style fast scanner provider, or {@code null} when no native fast path is available on this binary
+	 * ({@code mvn javafx:run}, non-Windows native-image, future Linux/macOS builds without an NTFS-3G or APFS
+	 * provider). {@link se.hirt.diskspace.scan.ScannerProviders} treats null as "skip this entry"; never construct a
+	 * sentinel non-null instance, because that would force the {@link ScannerProvider}'s implementation type to be
+	 * reachable on platforms where it doesn't belong.
+	 */
+	public static final ScannerProvider MFT_PROVIDER;
+
 	static {
-		// inImageRuntimeCode FIRST: Platform.includedIn → ImageSingletons.lookup, which
-		// throws on a plain JVM. Short-circuit keeps mvn javafx:run alive.
+		// Inline Platform.includedIn so Substrate folds it during analysis. Do NOT extract to a static-final flag;
+		// see the class javadoc for why that breaks dead-stripping. inImageRuntimeCode FIRST so a plain JVM doesn't
+		// trigger ImageSingletons.lookup (which throws when not running inside Substrate).
 		if (ImageInfo.inImageRuntimeCode() && Platform.includedIn(Platform.WINDOWS.class)) {
-			MFT = WindowsCapabilities.mft();
 			ELEVATION = WindowsCapabilities.elevation();
 			STORAGE_PROBE = WindowsCapabilities.storageProbe();
+			MFT_PROVIDER = WindowsCapabilities.mftScannerProvider();
 		} else {
-			MFT = Mft.NOOP;
 			ELEVATION = Elevation.NOOP;
 			STORAGE_PROBE = StorageProbe.NOOP;
+			MFT_PROVIDER = null;
 		}
 	}
 }

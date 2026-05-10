@@ -33,25 +33,28 @@ import javafx.scene.paint.Color;
 public final class SectorPalette {
 
 	/** Twelve harmonious, saturated-but-not-screaming colors. Works on dark and light backgrounds. */
-	private static final Color[] BASE = {Color.web("#5BC9C9"), Color.web("#4DA8E0"), Color.web("#6B6FE0"), Color.web("#9466E0"),
-			Color.web("#C95FB7"), Color.web("#D85A8E"), Color.web("#E07260"), Color.web("#E0A04F"), Color.web("#A8C95F"),
-			Color.web("#5FC982"), Color.web("#7AB8A0"), Color.web("#6B8FB5"),};
+	private static final Color[] BASE = {Color.web("#5BC9C9"), Color.web("#4DA8E0"), Color.web("#6B6FE0"),
+			Color.web("#9466E0"), Color.web("#C95FB7"), Color.web("#D85A8E"), Color.web("#E07260"),
+			Color.web("#E0A04F"), Color.web("#A8C95F"), Color.web("#5FC982"), Color.web("#7AB8A0"),
+			Color.web("#6B8FB5"),};
 
 	/**
-	 * Distinct neutral grey reserved for the synthetic "Hidden" sector — never collides with the regular palette so users can spot it at a
-	 * glance. Darker than the large-file grey, lighter than the "Smaller files" near-black, so the three greys read as a legible scale.
+	 * Distinct neutral grey reserved for the synthetic "Hidden" sector — never collides with the regular palette so
+	 * users can spot it at a glance. Darker than the large-file grey, lighter than the "Smaller files" near-black, so
+	 * the three greys read as a legible scale.
 	 */
 	private static final Color HIDDEN_BASE = Color.web("#484C54");
 
 	/**
-	 * Dark grey for the "Smaller files" aggregate sector — distinct from {@link #HIDDEN_BASE} and from the regular palette, so it reads as
-	 * "uninteresting bulk" at a glance.
+	 * Dark grey for the "Smaller files" aggregate sector — distinct from {@link #HIDDEN_BASE} and from the regular
+	 * palette, so it reads as "uninteresting bulk" at a glance.
 	 */
 	private static final Color SMALLER_FILES_BASE = Color.web("#3D4148");
 
 	/**
-	 * Light grey for large-file sectors (single files ≥ 1 GB). Lighter than {@link #SMALLER_FILES_BASE} and {@link #HIDDEN_BASE} so it's
-	 * clearly distinguishable, but still neutral so it doesn't compete with real folder colors.
+	 * Light grey for large-file sectors (single files ≥ 1 GB). Lighter than {@link #SMALLER_FILES_BASE} and
+	 * {@link #HIDDEN_BASE} so it's clearly distinguishable, but still neutral so it doesn't compete with real folder
+	 * colors.
 	 */
 	private static final Color LARGE_FILE_BASE = Color.web("#C8CDD4");
 
@@ -59,16 +62,17 @@ public final class SectorPalette {
 	}
 
 	/**
-	 * Number of distinct palette colors. Callers can use this with {@link #atIndex(int, int)} to enumerate or to dedupe top-level color
-	 * allocation.
+	 * Number of distinct palette colors. Callers can use this with {@link #atIndex(int, int)} to enumerate or to dedupe
+	 * top-level color allocation.
 	 */
 	public static int paletteSize() {
 		return BASE.length;
 	}
 
 	/**
-	 * Returns the palette color at {@code i}, with the same depth-darkening behavior as {@link #forName}. {@code i} is taken modulo
-	 * {@link #paletteSize()}. Used by collision-avoidance code that needs a specific index, not a hashed one.
+	 * Returns the palette color at {@code i}, with the same depth-darkening behavior as {@link #forName}. {@code i} is
+	 * taken modulo {@link #paletteSize()}. Used by collision-avoidance code that needs a specific index, not a hashed
+	 * one.
 	 */
 	public static Color atIndex(int i, int depth) {
 		Color base = BASE[Math.floorMod(i, BASE.length)];
@@ -93,9 +97,9 @@ public final class SectorPalette {
 	}
 
 	/**
-	 * Color for a file-sector node: {@code "Smaller files"} aggregates pick up their dark grey via {@link #forName}; everything else (i.e.
-	 * an individual large file) gets a neutral medium grey rather than a hashed-by-name palette color, so files don't compete visually with
-	 * folders.
+	 * Color for a file-sector node: {@code "Smaller files"} aggregates pick up their dark grey via {@link #forName};
+	 * everything else (i.e. an individual large file) gets a neutral medium grey rather than a hashed-by-name palette
+	 * color, so files don't compete visually with folders.
 	 */
 	public static Color forFileSector(String name, int depth) {
 		if ("Smaller files".equals(name)) {

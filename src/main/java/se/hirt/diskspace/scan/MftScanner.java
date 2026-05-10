@@ -56,22 +56,25 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Master File Table scanner for NTFS volumes on Windows. Pulls MFT records in bulk via {@code FSCTL_ENUM_USN_DATA} (parent/child structure
- * + names + attributes — no sizes), builds the {@link DirectoryNode} tree on the fly with deferred orphan linking, and looks up file sizes
- * in parallel via {@code OpenFileById} + {@code GetFileInformationByHandleEx}.
+ * Master File Table scanner for NTFS volumes on Windows. Pulls MFT records in bulk via {@code FSCTL_ENUM_USN_DATA}
+ * (parent/child structure + names + attributes — no sizes), builds the {@link DirectoryNode} tree on the fly with
+ * deferred orphan linking, and looks up file sizes in parallel via {@code OpenFileById} +
+ * {@code GetFileInformationByHandleEx}.
  * <p>Why USN over {@code FSCTL_QUERY_FILE_LAYOUT}: the latter returned
- * {@code ERROR_INVALID_FUNCTION} on the target NTFS volumes under all three published IOCTL variants (228/NEITHER, 228/BUFFERED,
- * 219/BUFFERED) despite the diagnostic {@code FSCTL_GET_NTFS_VOLUME_DATA} working on the same handle. USN is older, more universally
- * supported, and unlocks incremental rescan via {@code FSCTL_READ_USN_JOURNAL} as a follow-up.
+ * {@code ERROR_INVALID_FUNCTION} on the target NTFS volumes under all three published IOCTL variants (228/NEITHER,
+ * 228/BUFFERED, 219/BUFFERED) despite the diagnostic {@code FSCTL_GET_NTFS_VOLUME_DATA} working on the same handle. USN
+ * is older, more universally supported, and unlocks incremental rescan via {@code FSCTL_READ_USN_JOURNAL} as a
+ * follow-up.
  * <p>Requires admin / {@code SeBackupPrivilege} + {@code SeManageVolumePrivilege} to open the
- * raw volume handle and read the MFT. Capability check in {@link #canScan(Volume)} is cached per mount path for the JVM lifetime.
+ * raw volume handle and read the MFT. Capability check in {@link #canScan(Volume)} is cached per mount path for the JVM
+ * lifetime.
  * <p><b>Native-image only.</b> All Win32 calls go through {@link Win32}'s {@code @CFunction}
- * bindings, which resolve only when running as a built native-image. {@link #isAvailable()} returns false in JVM dev mode so
- * {@code Scanner.forVolume(...)} falls back to {@link ParallelDirectoryScanner} there.
+ * bindings, which resolve only when running as a built native-image. {@link #isAvailable()} returns false in JVM dev
+ * mode so {@code Scanner.forVolume(...)} falls back to {@link ParallelDirectoryScanner} there.
  * <p>The class is gated with {@code @Platforms(WINDOWS)} so it does not exist on non-Windows
- * native-images at all; cross-platform code reaches it only via {@code platform.Capabilities.MFT}, whose static initializer dead-strips the
- * reference on non-matching platforms. Direct imports from cross-platform code are therefore a build-time error rather than a silent
- * native-image regression.
+ * native-images at all; cross-platform code reaches it only via {@code platform.Capabilities.MFT}, whose static
+ * initializer dead-strips the reference on non-matching platforms. Direct imports from cross-platform code are
+ * therefore a build-time error rather than a silent native-image regression.
  */
 @Platforms(Platform.WINDOWS.class)
 public final class MftScanner implements Scanner {
@@ -85,13 +88,16 @@ public final class MftScanner implements Scanner {
 	private static final int FILE_ANY_ACCESS = 0;
 
 	/** {@code FSCTL_ENUM_USN_DATA} = function 44, METHOD_NEITHER, FILE_ANY_ACCESS = 0x900B3. */
-	private static final int FSCTL_ENUM_USN_DATA = ctlCode(FILE_DEVICE_FILE_SYSTEM, 44, METHOD_NEITHER, FILE_ANY_ACCESS);
+	private static final int FSCTL_ENUM_USN_DATA = ctlCode(FILE_DEVICE_FILE_SYSTEM, 44, METHOD_NEITHER,
+			FILE_ANY_ACCESS);
 
 	/**
-	 * {@code FSCTL_GET_NTFS_VOLUME_DATA} = function 25, METHOD_BUFFERED, FILE_ANY_ACCESS. Returns NTFS_VOLUME_DATA_BUFFER from which we
-	 * extract MFT size + cluster usage — used to drive an honest progress arc during phase 1 (USN enumeration).
+	 * {@code FSCTL_GET_NTFS_VOLUME_DATA} = function 25, METHOD_BUFFERED, FILE_ANY_ACCESS. Returns
+	 * NTFS_VOLUME_DATA_BUFFER from which we extract MFT size + cluster usage — used to drive an honest progress arc
+	 * during phase 1 (USN enumeration).
 	 */
-	private static final int FSCTL_GET_NTFS_VOLUME_DATA = ctlCode(FILE_DEVICE_FILE_SYSTEM, 25, METHOD_BUFFERED, FILE_ANY_ACCESS);
+	private static final int FSCTL_GET_NTFS_VOLUME_DATA = ctlCode(FILE_DEVICE_FILE_SYSTEM, 25, METHOD_BUFFERED,
+			FILE_ANY_ACCESS);
 
 	// CreateFile parameters
 	private static final int GENERIC_READ = 0x80000000;
@@ -100,8 +106,8 @@ public final class MftScanner implements Scanner {
 	private static final int FILE_SHARE_DELETE = 0x00000004;
 	private static final int OPEN_EXISTING = 3;
 	/**
-	 * Required to open a directory via CreateFile and to use the volume handle as a hint for {@code OpenFileById}. Pairs with
-	 * SeBackupPrivilege which we enable up-front.
+	 * Required to open a directory via CreateFile and to use the volume handle as a hint for {@code OpenFileById}.
+	 * Pairs with SeBackupPrivilege which we enable up-front.
 	 */
 	private static final int FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
 
@@ -120,23 +126,23 @@ public final class MftScanner implements Scanner {
 	/** {@code FILE_ID_DESCRIPTOR.Type = FileIdType}. */
 	private static final int FILE_ID_TYPE = 0;
 	/**
-	 * Minimum access right for {@code GetFileInformationByHandleEx(FileIdBothDirectoryInfo)}. Same numeric value as {@code FILE_READ_DATA}
-	 * but with directory semantics.
+	 * Minimum access right for {@code GetFileInformationByHandleEx(FileIdBothDirectoryInfo)}. Same numeric value as
+	 * {@code FILE_READ_DATA} but with directory semantics.
 	 */
 	private static final int FILE_LIST_DIRECTORY = 0x00000001;
 
 	/**
-	 * Output buffer size for each {@code FSCTL_ENUM_USN_DATA} call. 4 MB amortises the per-ioctl round-trip cost across more records — at
-	 * ~1 KB per parsed USN record we expect ~30K records per chunk, so a typical NTFS volume returns its full MFT in ~100 ioctls instead of
-	 * the ~500 we'd pay at 1 MB. Larger values (8/16/32 MB) deliver diminishing returns and grow the unmanaged scratch footprint at scan
-	 * start; 4 MB is a sweet spot empirically.
+	 * Output buffer size for each {@code FSCTL_ENUM_USN_DATA} call. 4 MB amortises the per-ioctl round-trip cost across
+	 * more records — at ~1 KB per parsed USN record we expect ~30K records per chunk, so a typical NTFS volume returns
+	 * its full MFT in ~100 ioctls instead of the ~500 we'd pay at 1 MB. Larger values (8/16/32 MB) deliver diminishing
+	 * returns and grow the unmanaged scratch footprint at scan start; 4 MB is a sweet spot empirically.
 	 */
 	private static final int OUTPUT_BUFFER_SIZE = 4 * 1024 * 1024;
 
 	/**
-	 * Number of parallel workers doing directory-batched size lookups. NTFS metadata paths serialise to some degree at the kernel level —
-	 * empirically 32 workers hurt more than 8, so we keep this low. The win comes from issuing fewer syscalls per file (bulk dir enum), not
-	 * from more concurrent syscalls.
+	 * Number of parallel workers doing directory-batched size lookups. NTFS metadata paths serialise to some degree at
+	 * the kernel level — empirically 32 workers hurt more than 8, so we keep this low. The win comes from issuing fewer
+	 * syscalls per file (bulk dir enum), not from more concurrent syscalls.
 	 */
 	private static final int SIZE_WORKER_THREADS = 8;
 
@@ -146,10 +152,11 @@ public final class MftScanner implements Scanner {
 	private static final Cleaner CLEANER = Cleaner.create();
 
 	/**
-	 * Pre-allocated unmanaged scratch for a single size-lookup task: a 24-byte FILE_ID_DESCRIPTOR plus a 64 KB bulk-directory-info buffer.
-	 * One ScratchSet is created per worker at scan start, borrowed from {@link State#scratchPool} for the duration of each
-	 * {@link #lookupDirectorySizes} call, and returned. Total native footprint per scan is bounded at
-	 * {@code SIZE_WORKER_THREADS * (24 + 64 KB)} regardless of how many directories the volume contains.
+	 * Pre-allocated unmanaged scratch for a single size-lookup task: a 24-byte FILE_ID_DESCRIPTOR plus a 64 KB
+	 * bulk-directory-info buffer. One ScratchSet is created per worker at scan start, borrowed from
+	 * {@link State#scratchPool} for the duration of each {@link #lookupDirectorySizes} call, and returned. Total native
+	 * footprint per scan is bounded at {@code SIZE_WORKER_THREADS * (24 + 64 KB)} regardless of how many directories
+	 * the volume contains.
 	 */
 	private static final class ScratchSet implements AutoCloseable {
 		final Pointer descriptor;
@@ -198,49 +205,53 @@ public final class MftScanner implements Scanner {
 	// ── Hub progress (consumed by Scanner.hubState() from the JavaFX thread) ───────────
 
 	/**
-	 * Phase 1 (USN enumeration) is bytes-blind — we know structure but not file sizes — so the hub borrows a fraction of the arc's range to
-	 * show enumeration progress. Phase 2 (size lookup) accumulates real bytes and falls through to the default bytes/usedBytes arc, so the
-	 * look matches {@link ParallelDirectoryScanner}. IDLE is the default; flipped on scan() entry and back on completion/cancel.
+	 * Phase 1 (USN enumeration) is bytes-blind — we know structure but not file sizes — so the hub borrows a fraction
+	 * of the arc's range to show enumeration progress. Phase 2 (size lookup) accumulates real bytes and falls through
+	 * to the default bytes/usedBytes arc, so the look matches {@link ParallelDirectoryScanner}. IDLE is the default;
+	 * flipped on scan() entry and back on completion/cancel.
 	 */
 	private enum Phase {IDLE, ENUMERATING, SIZE_LOOKUP}
 
 	private volatile Phase phase = Phase.IDLE;
 	/**
-	 * Total MFT records on the target volume, computed once via FSCTL_GET_NTFS_VOLUME_DATA at scan start. {@code 0} = couldn't determine,
-	 * in which case phase 1 falls back to the indeterminate spinner.
+	 * Total MFT records on the target volume, computed once via FSCTL_GET_NTFS_VOLUME_DATA at scan start. {@code 0} =
+	 * couldn't determine, in which case phase 1 falls back to the indeterminate spinner.
 	 */
 	private volatile long totalMftRecords;
 	/**
-	 * Cursor returned by the previous FSCTL_ENUM_USN_DATA chunk; numerator for the phase 1 arc fraction. Monotonically increasing.
+	 * Cursor returned by the previous FSCTL_ENUM_USN_DATA chunk; numerator for the phase 1 arc fraction. Monotonically
+	 * increasing.
 	 */
 	private volatile long currentNextFrn;
 	/**
-	 * Number of FSCTL_ENUM_USN_DATA chunks processed so far this scan; the {@code N} in the phase 1 hub subtitle "Chunk N". We deliberately
-	 * don't show a total — the obvious estimate ({@code MftValidDataLength / OUTPUT_BUFFER_SIZE}) is wildly wrong because each chunk
-	 * returns *parsed* USN records (~80–120 B each), not raw MFT bytes.
+	 * Number of FSCTL_ENUM_USN_DATA chunks processed so far this scan; the {@code N} in the phase 1 hub subtitle "Chunk
+	 * N". We deliberately don't show a total — the obvious estimate ({@code MftValidDataLength / OUTPUT_BUFFER_SIZE})
+	 * is wildly wrong because each chunk returns *parsed* USN records (~80–120 B each), not raw MFT bytes.
 	 */
 	private volatile long currentChunk;
 	/**
-	 * {@code (totalClusters - freeClusters) * bytesPerCluster} captured at scan start. Same denominator the parallel scanner's hub arc
-	 * uses, so phase 2 visually matches.
+	 * {@code (totalClusters - freeClusters) * bytesPerCluster} captured at scan start. Same denominator the parallel
+	 * scanner's hub arc uses, so phase 2 visually matches.
 	 */
 	private volatile long usedBytesForArc;
 	/**
-	 * Live state during a scan; null when {@link #phase} is IDLE. {@link Scanner#hubState()} reads {@code state.runningBytes} from here for
-	 * phase 2 progress.
+	 * Live state during a scan; null when {@link #phase} is IDLE. {@link Scanner#hubState()} reads
+	 * {@code state.runningBytes} from here for phase 2 progress.
 	 */
 	private volatile State currentState;
 	/**
-	 * Phase 1 occupies the first {@value} of the progress arc; phase 2 fills the rest. Empirically phase 1 is ~35% of wall time on a
-	 * populated SSD, but biasing slightly low keeps the arc moving forward instead of stalling near the boundary.
+	 * Phase 1 occupies the first {@value} of the progress arc; phase 2 fills the rest. Empirically phase 1 is ~35% of
+	 * wall time on a populated SSD, but biasing slightly low keeps the arc moving forward instead of stalling near the
+	 * boundary.
 	 */
 	private static final double PHASE_1_ARC_BUDGET = 0.30;
 
 	// ── Capability checks ──────────────────────────────────────────────────
 
 	/**
-	 * Coarse availability check. Windows + native-image runtime only. The {@link Win32} bindings are GraalVM {@code @CFunction} stubs that
-	 * only resolve when running as a built native-image; calling them from a regular JVM throws {@code UnsatisfiedLinkError}.
+	 * Coarse availability check. Windows + native-image runtime only. The {@link Win32} bindings are GraalVM
+	 * {@code @CFunction} stubs that only resolve when running as a built native-image; calling them from a regular JVM
+	 * throws {@code UnsatisfiedLinkError}.
 	 */
 	public static boolean isAvailable() {
 		if (!System.getProperty("os.name", "").toLowerCase().contains("win"))
@@ -249,8 +260,8 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * True iff the volume can be scanned via MFT: Windows + NTFS + drive-letter root + raw volume open succeeds. Result cached per mount
-	 * path.
+	 * True iff the volume can be scanned via MFT: Windows + NTFS + drive-letter root + raw volume open succeeds. Result
+	 * cached per mount path.
 	 */
 	public static boolean canScan(Volume v) {
 		if (!isAvailable())
@@ -271,9 +282,9 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * Probes whether {@code FSCTL_ENUM_USN_DATA} actually works on this volume. Just opening {@code C:\} succeeds even without admin (you
-	 * have normal read access to the root), so we have to issue the real IOCTL to find out — opening alone gives a false positive and the
-	 * scan would later fail with {@code ERROR_ACCESS_DENIED} mid-flight.
+	 * Probes whether {@code FSCTL_ENUM_USN_DATA} actually works on this volume. Just opening {@code C:\} succeeds even
+	 * without admin (you have normal read access to the root), so we have to issue the real IOCTL to find out — opening
+	 * alone gives a false positive and the scan would later fail with {@code ERROR_ACCESS_DENIED} mid-flight.
 	 */
 	private static boolean probeVolumeOpen(String drive) {
 		ensurePrivilegesEnabled();
@@ -287,7 +298,8 @@ public final class MftScanner implements Scanner {
 			inBuf.writeLong(8, 0L);              // LowUsn
 			inBuf.writeLong(16, Long.MAX_VALUE); // HighUsn
 			CIntPointer bytesReturned = StackValueAlloc.intPtr();
-			int ok = Win32.DeviceIoControl(h, FSCTL_ENUM_USN_DATA, inBuf, 24, outBuf, 1024, bytesReturned, WordFactory.nullPointer());
+			int ok = Win32.DeviceIoControl(h, FSCTL_ENUM_USN_DATA, inBuf, 24, outBuf, 1024, bytesReturned,
+					WordFactory.nullPointer());
 			if (ok != 0)
 				return true;
 			int err = Win32.GetLastError();
@@ -324,8 +336,8 @@ public final class MftScanner implements Scanner {
 	private static final Object PRIVILEGES_LOCK = new Object();
 
 	/**
-	 * Idempotent: enables {@code SeBackupPrivilege} + {@code SeManageVolumePrivilege} in the process token. Both are normally held by an
-	 * admin token but with {@code SE_PRIVILEGE_ENABLED} cleared until explicitly turned on.
+	 * Idempotent: enables {@code SeBackupPrivilege} + {@code SeManageVolumePrivilege} in the process token. Both are
+	 * normally held by an admin token but with {@code SE_PRIVILEGE_ENABLED} cleared until explicitly turned on.
 	 */
 	private static void ensurePrivilegesEnabled() {
 		if (privilegesEnabled)
@@ -365,7 +377,8 @@ public final class MftScanner implements Scanner {
 					tpBuf.writeInt(0, 1);
 					tpBuf.writeLong(4, luidBuf.readLong(0));
 					tpBuf.writeInt(12, SE_PRIVILEGE_ENABLED);
-					int adj = Win32.AdjustTokenPrivileges(token, 0, tpBuf, 16, WordFactory.nullPointer(), WordFactory.nullPointer());
+					int adj = Win32.AdjustTokenPrivileges(token, 0, tpBuf, 16, WordFactory.nullPointer(),
+							WordFactory.nullPointer());
 					if (adj == 0)
 						return false;
 					return Win32.GetLastError() == 0;
@@ -384,8 +397,9 @@ public final class MftScanner implements Scanner {
 	// ── Volume open ───────────────────────────────────────────────────────
 
 	/**
-	 * Opens the volume's root directory (e.g. {@code "C:\"}) with {@code FILE_FLAG_BACKUP_SEMANTICS} so the handle routes through NTFS and
-	 * is suitable both for {@code FSCTL_ENUM_USN_DATA} and as a {@code hVolumeHint} for {@code OpenFileById}.
+	 * Opens the volume's root directory (e.g. {@code "C:\"}) with {@code FILE_FLAG_BACKUP_SEMANTICS} so the handle
+	 * routes through NTFS and is suitable both for {@code FSCTL_ENUM_USN_DATA} and as a {@code hVolumeHint} for
+	 * {@code OpenFileById}.
 	 */
 	private static HANDLE openVolume(String driveLetter) {
 		String path = driveLetter + ":\\";
@@ -405,9 +419,9 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * Issues {@code FSCTL_GET_NTFS_VOLUME_DATA} to populate {@link #totalMftRecords} and {@link #usedBytesForArc}, both used by
-	 * {@link #hubState()} to render an honest progress arc. Failures are logged at FINE and leave the fields at 0 — the hub falls back to
-	 * its indeterminate spinner for phase 1 in that case.
+	 * Issues {@code FSCTL_GET_NTFS_VOLUME_DATA} to populate {@link #totalMftRecords} and {@link #usedBytesForArc}, both
+	 * used by {@link #hubState()} to render an honest progress arc. Failures are logged at FINE and leave the fields at
+	 * 0 — the hub falls back to its indeterminate spinner for phase 1 in that case.
 	 * <pre>
 	 *   NTFS_VOLUME_DATA_BUFFER (64 bytes; newer kernels return 96 with extended fields):
 	 *     +0  LONGLONG VolumeSerialNumber
@@ -426,8 +440,8 @@ public final class MftScanner implements Scanner {
 		Pointer out = UnmanagedMemory.malloc(128); // oversize so newer kernels don't ERROR_MORE_DATA
 		CIntPointer bytesReturned = StackValueAlloc.intPtr();
 		try {
-			int ok = Win32.DeviceIoControl(h, FSCTL_GET_NTFS_VOLUME_DATA, WordFactory.nullPointer(), 0, out, 128, bytesReturned,
-					WordFactory.nullPointer());
+			int ok = Win32.DeviceIoControl(h, FSCTL_GET_NTFS_VOLUME_DATA, WordFactory.nullPointer(), 0, out, 128,
+					bytesReturned, WordFactory.nullPointer());
 			if (ok == 0) {
 				int err = Win32.GetLastError();
 				LOG.fine(() -> "queryNtfsVolumeData: FSCTL_GET_NTFS_VOLUME_DATA failed err=" + err);
@@ -442,7 +456,8 @@ public final class MftScanner implements Scanner {
 				totalMftRecords = mftValidDataLength / bytesPerFrs;
 			if (bytesPerCluster > 0)
 				usedBytesForArc = (totalClusters - freeClusters) * (long) bytesPerCluster;
-			LOG.fine(() -> "queryNtfsVolumeData: totalMftRecords=" + totalMftRecords + " usedBytesForArc=" + usedBytesForArc);
+			LOG.fine(
+					() -> "queryNtfsVolumeData: totalMftRecords=" + totalMftRecords + " usedBytesForArc=" + usedBytesForArc);
 		} finally {
 			UnmanagedMemory.free(out);
 		}
@@ -531,12 +546,14 @@ public final class MftScanner implements Scanner {
 	// ── Enumeration + streaming tree build ───────────────────────────────
 
 	/**
-	 * Per-scan state. Owns the volume handle, the size-worker pool, and the bounded scratch-buffer pool; releases all of them on
-	 * {@link #close()}. Construction is atomic: if any allocation fails, anything already allocated (including the handle and pool the
-	 * caller passed in) is freed before the constructor rethrows, so the caller doesn't need its own try/catch.
+	 * Per-scan state. Owns the volume handle, the size-worker pool, and the bounded scratch-buffer pool; releases all
+	 * of them on {@link #close()}. Construction is atomic: if any allocation fails, anything already allocated
+	 * (including the handle and pool the caller passed in) is freed before the constructor rethrows, so the caller
+	 * doesn't need its own try/catch.
 	 * <p>{@code close()} is idempotent and thread-safe — it's called both by {@link #enumerateAndBuild}'s
-	 * try-with-resources on the happy path and by {@link #cancel()} from outside the scan thread. The {@link Cleaner} registration is a
-	 * safety net for the edge case where neither path runs (e.g. coordinator thread killed without unwinding).
+	 * try-with-resources on the happy path and by {@link #cancel()} from outside the scan thread. The {@link Cleaner}
+	 * registration is a safety net for the edge case where neither path runs (e.g. coordinator thread killed without
+	 * unwinding).
 	 */
 	private static final class State implements AutoCloseable {
 		final DirectoryNode root;
@@ -545,19 +562,19 @@ public final class MftScanner implements Scanner {
 		/** N entries, one per worker, pre-allocated at construction. Workers borrow + return per task. */
 		final BlockingQueue<ScratchSet> scratchPool;
 		/**
-		 * All directory nodes seen so far, keyed by NTFS file ID. Concurrent because size workers may need to look up the parent path
-		 * during their lookups.
+		 * All directory nodes seen so far, keyed by NTFS file ID. Concurrent because size workers may need to look up
+		 * the parent path during their lookups.
 		 */
 		final ConcurrentMap<Long, DirectoryNode> nodesByFileId = new ConcurrentHashMap<>();
 		/**
-		 * File records (NOT directories) grouped by parent directory file ID. Filled during enumeration; consumed once per directory by the
-		 * size-lookup phase, which opens the directory and bulk-enumerates child sizes via FileIdBothDirectoryInfo. Only the enumeration
-		 * thread mutates this.
+		 * File records (NOT directories) grouped by parent directory file ID. Filled during enumeration; consumed once
+		 * per directory by the size-lookup phase, which opens the directory and bulk-enumerates child sizes via
+		 * FileIdBothDirectoryInfo. Only the enumeration thread mutates this.
 		 */
 		final Map<Long, List<MftRecord>> filesByParentId = new HashMap<>();
 		/**
-		 * Records (directories or files) waiting for their parent's DirectoryNode to be created. Only the enumeration thread mutates this;
-		 * no concurrent access.
+		 * Records (directories or files) waiting for their parent's DirectoryNode to be created. Only the enumeration
+		 * thread mutates this; no concurrent access.
 		 */
 		final Map<Long, List<MftRecord>> orphansByParentId = new HashMap<>();
 		/** Running counters for UI progress. {@link LongAdder} because size workers update them. */
@@ -613,9 +630,9 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * Cleanup action held by {@link State#cleanable}. Idempotent (a {@link Cleaner.Cleanable} only runs once, plus the {@link #closed}
-	 * guard for defensive depth). Holds direct references to the native resources — does NOT reference the owning {@link State}, so the
-	 * Cleaner can detect State becoming unreachable and run as a fallback.
+	 * Cleanup action held by {@link State#cleanable}. Idempotent (a {@link Cleaner.Cleanable} only runs once, plus the
+	 * {@link #closed} guard for defensive depth). Holds direct references to the native resources — does NOT reference
+	 * the owning {@link State}, so the Cleaner can detect State becoming unreachable and run as a fallback.
 	 */
 	private static final class CleanupAction implements Runnable {
 		private final HANDLE volumeHandle;
@@ -682,10 +699,12 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * Body of {@link #enumerateAndBuild}, factored out so the try-with-resources block stays readable. State + handle + workers are owned
-	 * by the caller's {@code State} and will be released by its {@code close()} regardless of how this method exits.
+	 * Body of {@link #enumerateAndBuild}, factored out so the try-with-resources block stays readable. State + handle +
+	 * workers are owned by the caller's {@code State} and will be released by its {@code close()} regardless of how
+	 * this method exits.
 	 */
-	private void runEnumeration(Path rootPath, DirectoryNode root, ScanListener listener, HANDLE h, ExecutorService workers, State state) {
+	private void runEnumeration(
+			Path rootPath, DirectoryNode root, ScanListener listener, HANDLE h, ExecutorService workers, State state) {
 		// Pre-register the scan-root DirectoryNode under the NTFS volume root file ID so
 		// children of the volume root link to it during streaming tree build.
 		root.setScanning();
@@ -711,7 +730,8 @@ public final class MftScanner implements Scanner {
 
 			CIntPointer bytesReturned = StackValueAlloc.intPtr();
 
-			LOG.fine(() -> "enumerateMft: buffers allocated (in=24 out=" + OUTPUT_BUFFER_SIZE + "), entering DeviceIoControl loop");
+			LOG.fine(
+					() -> "enumerateMft: buffers allocated (in=24 out=" + OUTPUT_BUFFER_SIZE + "), entering DeviceIoControl loop");
 
 			long lastProgressNanos = 0L;
 			long chunkCount = 0;
@@ -719,8 +739,8 @@ public final class MftScanner implements Scanner {
 
 			while (!cancelled) {
 				long ioctlStart = System.nanoTime();
-				int ok = Win32.DeviceIoControl(h, FSCTL_ENUM_USN_DATA, inBuf, 24, outBuf, OUTPUT_BUFFER_SIZE, bytesReturned,
-						WordFactory.nullPointer());
+				int ok = Win32.DeviceIoControl(h, FSCTL_ENUM_USN_DATA, inBuf, 24, outBuf, OUTPUT_BUFFER_SIZE,
+						bytesReturned, WordFactory.nullPointer());
 				long ioctlMs = (System.nanoTime() - ioctlStart) / 1_000_000L;
 				if (ok == 0) {
 					int err = Win32.GetLastError();
@@ -750,7 +770,8 @@ public final class MftScanner implements Scanner {
 
 				final long chunkNo = chunkCount;
 				final long imap = state.nodesByFileId.size();
-				LOG.fine(() -> String.format("enumerateMft: chunk=%d bytes=%d dirs=%d nodes=%d ioctl=%dms parse=%dms nextFRN=0x%x", chunkNo,
+				LOG.fine(() -> String.format(
+						"enumerateMft: chunk=%d bytes=%d dirs=%d nodes=%d ioctl=%dms parse=%dms nextFRN=0x%x", chunkNo,
 						returned, dirCount, imap, ioctlMs, parseMs, nextStartFrn));
 
 				long now = System.nanoTime();
@@ -775,7 +796,8 @@ public final class MftScanner implements Scanner {
 		long dispatchStart = System.nanoTime();
 		dispatchDirectorySizeLookups(state);
 		long dispatchMs = (System.nanoTime() - dispatchStart) / 1_000_000L;
-		LOG.fine("enumerateMft: dispatched " + state.filesByParentId.size() + " directory size-lookup tasks in " + dispatchMs + "ms");
+		LOG.fine(
+				"enumerateMft: dispatched " + state.filesByParentId.size() + " directory size-lookup tasks in " + dispatchMs + "ms");
 
 		// Wait for size workers to finish. They use the volume handle as OpenFileById hint,
 		// so we keep it open until they're done. Poll in short slices so we can emit
@@ -922,10 +944,10 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * Dispatches one size-lookup task per directory. Each task opens the directory by file ID and bulk-enumerates child entries via
-	 * {@code GetFileInformationByHandleEx} with {@code FileIdBothDirectoryInfo}, which returns FileId + EndOfFile for every child in one
-	 * syscall — a dramatic win over the previous one-OpenFileById-per-file pattern (3 syscalls per file × 3.7 M files vs ~3 syscalls per
-	 * directory × 564 k directories).
+	 * Dispatches one size-lookup task per directory. Each task opens the directory by file ID and bulk-enumerates child
+	 * entries via {@code GetFileInformationByHandleEx} with {@code FileIdBothDirectoryInfo}, which returns FileId +
+	 * EndOfFile for every child in one syscall — a dramatic win over the previous one-OpenFileById-per-file pattern (3
+	 * syscalls per file × 3.7 M files vs ~3 syscalls per directory × 564 k directories).
 	 */
 	private void dispatchDirectorySizeLookups(State state) {
 		for (Map.Entry<Long, List<MftRecord>> entry : state.filesByParentId.entrySet()) {
@@ -957,12 +979,14 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * Opens directory {@code parentId}, enumerates its entries via {@code FileIdBothDirectoryInfo}, and populates sizes on the parent node
-	 * for every child file we recorded during USN enum. The caller is responsible for borrowing {@code scratch} from
-	 * {@link State#scratchPool} before the call and returning it after; this method does no allocation of its own.
+	 * Opens directory {@code parentId}, enumerates its entries via {@code FileIdBothDirectoryInfo}, and populates sizes
+	 * on the parent node for every child file we recorded during USN enum. The caller is responsible for borrowing
+	 * {@code scratch} from {@link State#scratchPool} before the call and returning it after; this method does no
+	 * allocation of its own.
 	 */
 	private static void lookupDirectorySizes(
-			HANDLE volumeHint, long dirId, DirectoryNode parent, List<MftRecord> files, State state, ScratchSet scratch) {
+			HANDLE volumeHint, long dirId, DirectoryNode parent, List<MftRecord> files,
+			State state, ScratchSet scratch) {
 		// Build a fast lookup of file IDs we care about. NtQueryDirectoryFile returns ALL
 		// entries (including subdirectories which we already processed during USN enum),
 		// so we filter by membership in this map.
@@ -982,16 +1006,17 @@ public final class MftScanner implements Scanner {
 		// FILE_LIST_DIRECTORY is required for GetFileInformationByHandleEx to enumerate
 		// the directory's children — opening with 0 access succeeds but the subsequent
 		// directory-info query silently returns false.
-		HANDLE dirHandle = Win32.OpenFileById(volumeHint, desc, FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-				WordFactory.nullPointer(), FILE_FLAG_BACKUP_SEMANTICS);
+		HANDLE dirHandle = Win32.OpenFileById(volumeHint, desc, FILE_LIST_DIRECTORY,
+				FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, WordFactory.nullPointer(),
+				FILE_FLAG_BACKUP_SEMANTICS);
 		if (dirHandle.isNull() || dirHandle.equal(Win32.invalidHandleValue()))
 			return;
 		try {
 			Pointer buf = scratch.dirBuffer;
 			boolean restart = true;
 			while (true) {
-				int ok = Win32.GetFileInformationByHandleEx(dirHandle, restart ? FILE_ID_BOTH_DIR_RESTART_INFO : FILE_ID_BOTH_DIR_INFO, buf,
-						SCRATCH_DIR_BUFFER_SIZE);
+				int ok = Win32.GetFileInformationByHandleEx(dirHandle,
+						restart ? FILE_ID_BOTH_DIR_RESTART_INFO : FILE_ID_BOTH_DIR_INFO, buf, SCRATCH_DIR_BUFFER_SIZE);
 				restart = false;
 				if (ok == 0)
 					break; // ERROR_NO_MORE_FILES is the normal exit
@@ -1003,8 +1028,8 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * Walks a chained sequence of {@code FILE_ID_BOTH_DIR_INFO} records in {@code buf}, and for any entry whose FileId is in
-	 * {@code wantedById} populates the parent counters with the entry's EndOfFile size.
+	 * Walks a chained sequence of {@code FILE_ID_BOTH_DIR_INFO} records in {@code buf}, and for any entry whose FileId
+	 * is in {@code wantedById} populates the parent counters with the entry's EndOfFile size.
 	 * <pre>
 	 *   FILE_ID_BOTH_DIR_INFO layout (chained via NextEntryOffset):
 	 *     +0   DWORD NextEntryOffset
@@ -1025,7 +1050,8 @@ public final class MftScanner implements Scanner {
 	 *     +104 WCHAR FileName[FileNameLength/2]
 	 * </pre>
 	 */
-	private static void consumeDirEntries(Pointer buf, Map<Long, MftRecord> wantedById, DirectoryNode parent, State state) {
+	private static void consumeDirEntries(
+			Pointer buf, Map<Long, MftRecord> wantedById, DirectoryNode parent, State state) {
 		int offset = 0;
 		while (true) {
 			int nextOffset = buf.readInt(offset);
@@ -1090,8 +1116,8 @@ public final class MftScanner implements Scanner {
 	}
 
 	/**
-	 * Thin wrapper around {@link org.graalvm.nativeimage.StackValue} for cases where Java's type inference can't pick the right return type
-	 * without a hint. Centralises the {@code .class} literals so call sites stay readable.
+	 * Thin wrapper around {@link org.graalvm.nativeimage.StackValue} for cases where Java's type inference can't pick
+	 * the right return type without a hint. Centralises the {@code .class} literals so call sites stay readable.
 	 */
 	private static final class StackValueAlloc {
 		static CIntPointer intPtr() {

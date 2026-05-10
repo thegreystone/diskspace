@@ -49,7 +49,8 @@ public final class MainWindow {
 		this.scheme = scheme;
 
 		tabs = new TabPane();
-		tabs.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";" + "-fx-tab-min-height: 28; -fx-tab-max-height: 28;");
+		tabs.setStyle("-fx-background-color: " + toCss(
+				scheme.background()) + ";" + "-fx-tab-min-height: 28; -fx-tab-max-height: 28;");
 		tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.ALL_TABS);
 
 		plusTab = new Tab("+");
@@ -110,8 +111,9 @@ public final class MainWindow {
 	}
 
 	/**
-	 * Cancel all in-flight scans and stop animation timers across open tabs. Called from {@link se.hirt.diskspace.App#requestQuit()} so
-	 * background callbacks aren't still firing when the toolkit starts tearing down.
+	 * Cancel all in-flight scans and stop animation timers across open tabs. Called from
+	 * {@link se.hirt.diskspace.App#requestQuit()} so background callbacks aren't still firing when the toolkit starts
+	 * tearing down.
 	 */
 	public void shutdown() {
 		for (Tab t : tabs.getTabs()) {
@@ -162,7 +164,7 @@ public final class MainWindow {
 	}
 
 	private static String toCss(Color c) {
-		return String.format("rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255), (int) Math.round(c.getGreen() * 255),
-				(int) Math.round(c.getBlue() * 255), c.getOpacity());
+		return String.format("rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255),
+				(int) Math.round(c.getGreen() * 255), (int) Math.round(c.getBlue() * 255), c.getOpacity());
 	}
 }

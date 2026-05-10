@@ -38,28 +38,32 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Breaks down the bytes that are "used" at the APFS container level but don't appear in any single user-scannable volume. On macOS the
- * container Used (Java NIO's {@code totalSpace − usableSpace}) usually exceeds Used for the volume actually being scanned (Data), and
- * DiskSpace surfaces that delta in DaisyDisk-style buckets.
+ * Breaks down the bytes that are "used" at the APFS container level but don't appear in any single user-scannable
+ * volume. On macOS the container Used (Java NIO's {@code totalSpace − usableSpace}) usually exceeds Used for the volume
+ * actually being scanned (Data), and DiskSpace surfaces that delta in DaisyDisk-style buckets.
  * <p>The data sources are all command-line tools — {@code df -k}, {@code tmutil},
- * {@code diskutil apfs} — which keeps us out of native code and matches the numbers users see in Disk Utility verbatim.
+ * {@code diskutil apfs} — which keeps us out of native code and matches the numbers users see in Disk Utility
+ * verbatim.
  */
 public final class MacHiddenSpace {
 
-	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(MacHiddenSpace.class.getName());
+	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(
+			MacHiddenSpace.class.getName());
 
 	/**
 	 * @param otherVolumesBytes
-	 * 		sum of {@code df Used} for sibling APFS volumes in the same container as the scan root (System, Preboot, VM, Update, …)
+	 * 		sum of {@code df Used} for sibling APFS volumes in the same container as the scan root (System, Preboot, VM,
+	 * 		Update, …)
 	 * @param otherVolumesCount
 	 * 		number of sibling volumes summed
 	 * @param localSnapshotCount
 	 * 		number of Time Machine local snapshots reported by {@code tmutil listlocalsnapshots /}
 	 * @param residualBytes
-	 * 		container-used minus scan-volume-used minus other-volumes-used. This is what's "left over" — typically APFS metadata, purgeable
-	 * 		caches, and snapshot delta blocks.
+	 * 		container-used minus scan-volume-used minus other-volumes-used. This is what's "left over" — typically APFS
+	 * 		metadata, purgeable caches, and snapshot delta blocks.
 	 */
-	public record HiddenSpace(long otherVolumesBytes, int otherVolumesCount, int localSnapshotCount, long residualBytes) {
+	public record HiddenSpace(long otherVolumesBytes, int otherVolumesCount, int localSnapshotCount,
+	                          long residualBytes) {
 
 		public long totalBytes() {
 			return Math.max(0L, otherVolumesBytes + residualBytes);
@@ -180,8 +184,8 @@ public final class MacHiddenSpace {
 	private static final Pattern DISK_PREFIX = Pattern.compile("^(/dev/disk\\d+)s");
 
 	/**
-	 * Returns the container prefix (e.g. "/dev/disk3") for a device path like "/dev/disk3s5" or "/dev/disk3s1s1". Returns null for non-APFS
-	 * device paths.
+	 * Returns the container prefix (e.g. "/dev/disk3") for a device path like "/dev/disk3s5" or "/dev/disk3s1s1".
+	 * Returns null for non-APFS device paths.
 	 */
 	private static String containerPrefix(String device) {
 		if (device == null)
@@ -191,8 +195,8 @@ public final class MacHiddenSpace {
 	}
 
 	/**
-	 * True for siblings on the same container, e.g. "/dev/disk3s5" and "/dev/disk3s1s1" share prefix "/dev/disk3". The next char after the
-	 * prefix must be a non-digit so we don't confuse "/dev/disk3" with "/dev/disk30".
+	 * True for siblings on the same container, e.g. "/dev/disk3s5" and "/dev/disk3s1s1" share prefix "/dev/disk3". The
+	 * next char after the prefix must be a non-digit so we don't confuse "/dev/disk3" with "/dev/disk30".
 	 */
 	private static boolean isSiblingDevice(String device, String containerPrefix) {
 		if (!device.startsWith(containerPrefix))
@@ -210,8 +214,8 @@ public final class MacHiddenSpace {
 
 	/**
 	 * Counts user-visible local APFS snapshots on the Data volume. Uses {@code diskutil apfs listSnapshots} rather than
-	 * {@code tmutil listlocalsnapshots} because the latter only surfaces Time Machine snapshots — third-party tools (Carbon Copy Cloner,
-	 * etc.) create their own snapshots that {@code tmutil} ignores but {@code diskutil} reports.
+	 * {@code tmutil listlocalsnapshots} because the latter only surfaces Time Machine snapshots — third-party tools
+	 * (Carbon Copy Cloner, etc.) create their own snapshots that {@code tmutil} ignores but {@code diskutil} reports.
 	 */
 	private static int countLocalSnapshots() {
 		try {
@@ -219,7 +223,8 @@ public final class MacHiddenSpace {
 			pb.redirectErrorStream(true);
 			Process p = pb.start();
 			int count = 0;
-			try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+			try (BufferedReader r = new BufferedReader(
+					new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
 				String line;
 				while ((line = r.readLine()) != null) {
 					Matcher m = SNAPSHOT_COUNT.matcher(line);

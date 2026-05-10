@@ -40,16 +40,16 @@ import org.graalvm.word.PointerBase;
 import org.graalvm.word.WordFactory;
 
 /**
- * Direct bindings to the Windows system DLLs (kernel32, advapi32, shell32) used by {@link MftScanner} and {@link WindowsElevation}, via
- * GraalVM's {@code @CFunction}. The native-image linker resolves these symbols at build time against the standard Windows SDK import
- * libraries, so no extra DLL needs to ship alongside our executable.
+ * Direct bindings to the Windows system DLLs (kernel32, advapi32, shell32) used by {@link MftScanner} and
+ * {@link WindowsElevation}, via GraalVM's {@code @CFunction}. The native-image linker resolves these symbols at build
+ * time against the standard Windows SDK import libraries, so no extra DLL needs to ship alongside our executable.
  * <p><b>Native-image only.</b> In JVM dev mode (e.g. {@code mvn javafx:run}) the
- * {@code @CFunction} methods are stubs that throw on invocation; callers must guard with an {@code isAvailable()} / native-image check
- * before calling. The {@code @Platforms} annotation also gates this class out of non-Windows native-image builds entirely so the linker
- * never tries to find these symbols on Linux/macOS.
+ * {@code @CFunction} methods are stubs that throw on invocation; callers must guard with an {@code isAvailable()} /
+ * native-image check before calling. The {@code @Platforms} annotation also gates this class out of non-Windows
+ * native-image builds entirely so the linker never tries to find these symbols on Linux/macOS.
  * <p>Wide-string convention: every {@code W}-suffixed Win32 function expects {@code wchar_t*}
- * (UTF-16LE on Windows). We pass these as opaque {@link CCharPointer}s — the underlying memory is a byte buffer we fill via
- * {@link #allocWideString(String)}.
+ * (UTF-16LE on Windows). We pass these as opaque {@link CCharPointer}s — the underlying memory is a byte buffer we fill
+ * via {@link #allocWideString(String)}.
  */
 @Platforms(Platform.WINDOWS.class)
 public final class Win32 {
@@ -58,8 +58,8 @@ public final class Win32 {
 	}
 
 	/**
-	 * Marker interface for Win32 {@code HANDLE} values. Just {@link PointerBase} under the hood — the type only exists so signatures read
-	 * more clearly.
+	 * Marker interface for Win32 {@code HANDLE} values. Just {@link PointerBase} under the hood — the type only exists
+	 * so signatures read more clearly.
 	 */
 	public interface HANDLE extends PointerBase {
 	}
@@ -76,26 +76,26 @@ public final class Win32 {
 
 	@CFunction(value = "CreateFileW", transition = Transition.NO_TRANSITION)
 	public static native HANDLE CreateFileW(
-			CCharPointer lpFileName, int dwDesiredAccess, int dwShareMode, PointerBase lpSecurityAttributes, int dwCreationDisposition,
-			int dwFlagsAndAttributes, HANDLE hTemplateFile);
+			CCharPointer lpFileName, int dwDesiredAccess, int dwShareMode, PointerBase lpSecurityAttributes,
+			int dwCreationDisposition, int dwFlagsAndAttributes, HANDLE hTemplateFile);
 
 	@CFunction(value = "CloseHandle", transition = Transition.NO_TRANSITION)
 	public static native int CloseHandle(HANDLE hObject);
 
 	@CFunction(value = "DeviceIoControl", transition = Transition.NO_TRANSITION)
 	public static native int DeviceIoControl(
-			HANDLE hDevice, int dwIoControlCode, PointerBase lpInBuffer, int nInBufferSize, PointerBase lpOutBuffer, int nOutBufferSize,
-			CIntPointer lpBytesReturned, PointerBase lpOverlapped);
+			HANDLE hDevice, int dwIoControlCode, PointerBase lpInBuffer, int nInBufferSize, PointerBase lpOutBuffer,
+			int nOutBufferSize, CIntPointer lpBytesReturned, PointerBase lpOverlapped);
 
 	@CFunction(value = "OpenFileById", transition = Transition.NO_TRANSITION)
 	public static native HANDLE OpenFileById(
-			HANDLE hVolumeHint, PointerBase lpFileId, int dwDesiredAccess, int dwShareMode, PointerBase lpSecurityAttributes,
-			int dwFlagsAndAttributes);
+			HANDLE hVolumeHint, PointerBase lpFileId, int dwDesiredAccess, int dwShareMode,
+			PointerBase lpSecurityAttributes, int dwFlagsAndAttributes);
 
 	@CFunction(value = "GetFileInformationByHandleEx", transition = Transition.NO_TRANSITION)
 	public static native int GetFileInformationByHandleEx(
-			HANDLE hFile, int FileInformationClass, PointerBase lpFileInformation,
-			int dwBufferSize);
+			HANDLE hFile, int FileInformationClass,
+			PointerBase lpFileInformation, int dwBufferSize);
 
 	@CFunction(value = "GetCurrentProcess", transition = Transition.NO_TRANSITION)
 	public static native HANDLE GetCurrentProcess();
@@ -104,9 +104,9 @@ public final class Win32 {
 	public static native int GetLastError();
 
 	/**
-	 * Returns one of {@code DRIVE_UNKNOWN(0)}, {@code DRIVE_NO_ROOT_DIR(1)}, {@code DRIVE_REMOVABLE(2)}, {@code DRIVE_FIXED(3)},
-	 * {@code DRIVE_REMOTE(4)}, {@code DRIVE_CDROM(5)}, or {@code DRIVE_RAMDISK(6)}. Used by storage classification to pick out network
-	 * drives without any volume open.
+	 * Returns one of {@code DRIVE_UNKNOWN(0)}, {@code DRIVE_NO_ROOT_DIR(1)}, {@code DRIVE_REMOVABLE(2)},
+	 * {@code DRIVE_FIXED(3)}, {@code DRIVE_REMOTE(4)}, {@code DRIVE_CDROM(5)}, or {@code DRIVE_RAMDISK(6)}. Used by
+	 * storage classification to pick out network drives without any volume open.
 	 */
 	@CFunction(value = "GetDriveTypeW", transition = Transition.NO_TRANSITION)
 	public static native int GetDriveTypeW(CCharPointer lpRootPathName);
@@ -121,8 +121,8 @@ public final class Win32 {
 
 	@CFunction(value = "AdjustTokenPrivileges", transition = Transition.NO_TRANSITION)
 	public static native int AdjustTokenPrivileges(
-			HANDLE TokenHandle, int DisableAllPrivileges, PointerBase NewState, int BufferLength, PointerBase PreviousState,
-			CIntPointer ReturnLength);
+			HANDLE TokenHandle, int DisableAllPrivileges, PointerBase NewState, int BufferLength,
+			PointerBase PreviousState, CIntPointer ReturnLength);
 
 	@CFunction(value = "GetTokenInformation", transition = Transition.NO_TRANSITION)
 	public static native int GetTokenInformation(
@@ -132,18 +132,19 @@ public final class Win32 {
 	// ── shell32 ───────────────────────────────────────────────────────────
 
 	/**
-	 * Returns {@code HINSTANCE} cast as a pointer-sized integer; {@code > 32} means success, {@code <= 32} means an SE_ERR_* error code.
+	 * Returns {@code HINSTANCE} cast as a pointer-sized integer; {@code > 32} means success, {@code <= 32} means an
+	 * SE_ERR_* error code.
 	 */
 	@CFunction(value = "ShellExecuteW", transition = Transition.NO_TRANSITION)
 	public static native long ShellExecuteW(
-			HANDLE hwnd, CCharPointer lpOperation, CCharPointer lpFile, CCharPointer lpParameters,
-			CCharPointer lpDirectory, int nShowCmd);
+			HANDLE hwnd, CCharPointer lpOperation, CCharPointer lpFile,
+			CCharPointer lpParameters, CCharPointer lpDirectory, int nShowCmd);
 
 	// ── helpers ───────────────────────────────────────────────────────────
 
 	/**
-	 * Allocates an unmanaged UTF-16LE buffer for {@code s}, null-terminated, and returns a {@link CCharPointer} pointing at it. Caller must
-	 * {@link UnmanagedMemory#free} when done — there is no GC for these.
+	 * Allocates an unmanaged UTF-16LE buffer for {@code s}, null-terminated, and returns a {@link CCharPointer}
+	 * pointing at it. Caller must {@link UnmanagedMemory#free} when done — there is no GC for these.
 	 */
 	public static CCharPointer allocWideString(String s) {
 		int charCount = s.length() + 1; // +1 null terminator

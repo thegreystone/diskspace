@@ -40,41 +40,45 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Probes the underlying physical-storage type of a mounted volume by shelling out to a platform-native tool. Each probe completes in under
- * a second on healthy hardware; the caller is expected to run probes concurrently when classifying multiple volumes.
+ * Probes the underlying physical-storage type of a mounted volume by shelling out to a platform-native tool. Each probe
+ * completes in under a second on healthy hardware; the caller is expected to run probes concurrently when classifying
+ * multiple volumes.
  */
 public final class StorageProfileProbe {
 
 	private static final Logger LOG = Logger.getLogger(StorageProfileProbe.class.getName());
 	/**
-	 * Single-probe timeout. Sufficient for one diskutil/findmnt/lsblk call or a single PowerShell launch with light work.
+	 * Single-probe timeout. Sufficient for one diskutil/findmnt/lsblk call or a single PowerShell launch with light
+	 * work.
 	 */
 	private static final long TIMEOUT_MS = 3000;
 	/**
-	 * Batch-probe timeout. Generously sized: one PowerShell process classifies all drives sequentially, so cold-start overhead is paid once
-	 * but total work scales with N.
+	 * Batch-probe timeout. Generously sized: one PowerShell process classifies all drives sequentially, so cold-start
+	 * overhead is paid once but total work scales with N.
 	 */
 	private static final long BATCH_TIMEOUT_MS = 15000;
 
 	/**
-	 * Process-lifetime cache. Storage type for a given mount almost never changes during a session — physical media doesn't morph from
-	 * spinning to solid mid-run — so probing on every picker open is pure waste. Keyed by the absolute mount path string. Failures
-	 * (UNKNOWN) are cached too: if the probe couldn't classify once, it almost certainly can't on repeat attempts, and re-trying just slows
-	 * the picker down.
+	 * Process-lifetime cache. Storage type for a given mount almost never changes during a session — physical media
+	 * doesn't morph from spinning to solid mid-run — so probing on every picker open is pure waste. Keyed by the
+	 * absolute mount path string. Failures (UNKNOWN) are cached too: if the probe couldn't classify once, it almost
+	 * certainly can't on repeat attempts, and re-trying just slows the picker down.
 	 */
 	private static final ConcurrentMap<String, StorageProfile> CACHE = new ConcurrentHashMap<>();
 
 	/**
-	 * Batch PowerShell script. {@code %s} is substituted with a comma-separated list of quoted drive letters (e.g. {@code 'C','D','E'}).
-	 * Emits one {@code result: X=…} line per drive plus zero or more {@code diag: X …} lines for troubleshooting. Avoids the
-	 * N×PowerShell-cold-start cost of per-drive probes — one .NET startup classifies every drive in sequence.
+	 * Batch PowerShell script. {@code %s} is substituted with a comma-separated list of quoted drive letters (e.g.
+	 * {@code 'C','D','E'}). Emits one {@code result: X=…} line per drive plus zero or more {@code diag: X …} lines for
+	 * troubleshooting. Avoids the N×PowerShell-cold-start cost of per-drive probes — one .NET startup classifies every
+	 * drive in sequence.
 	 */
 	private static final String WINDOWS_BATCH_SCRIPT = "$ErrorActionPreference='Continue';" + "$drives = @(%s);" + "foreach ($drive in $drives) {" + "  try {" + "    $psd = Get-PSDrive -Name $drive -PSProvider FileSystem -ErrorAction Stop;" + "    if ($psd.DisplayRoot) {" + "      \"result: $drive=NETWORK\";" + "      \"diag: $drive DisplayRoot=$($psd.DisplayRoot)\"" + "    } else {" + "      $p = Get-Partition -DriveLetter $drive -ErrorAction Stop;" + "      $disks = @($p | Get-Disk | Get-PhysicalDisk);" + "      $types = @($disks | Select-Object -ExpandProperty MediaType -Unique);" + "      $r = if ($types.Count -gt 1) { 'MIXED' }" + "           elseif ($types.Count -eq 0) { 'UNKNOWN' }" + "           else { [string]$types[0] };" + "      \"result: $drive=$r\";" + "      foreach ($d in $disks) {" + "        \"diag: $drive FriendlyName='$($d.FriendlyName)' MediaType=$($d.MediaType) BusType=$($d.BusType) SpindleSpeed=$($d.SpindleSpeed)\"" + "      }" + "    }" + "  } catch {" + "    \"result: $drive=UNKNOWN\";" + "    \"diag: $drive Exception=$_\"" + "  }" + "}";
 
 	/**
-	 * Single-drive PowerShell script. Used by {@link #probe(Path, String)} for the directory-chooser path; {@code %s} is substituted twice
-	 * (PSDrive name + DriveLetter) with the drive letter. Output shape mirrors {@link #WINDOWS_BATCH_SCRIPT} for a single drive: first line
-	 * is the result, subsequent {@code diag:} lines are diagnostics.
+	 * Single-drive PowerShell script. Used by {@link #probe(Path, String)} for the directory-chooser path; {@code %s}
+	 * is substituted twice (PSDrive name + DriveLetter) with the drive letter. Output shape mirrors
+	 * {@link #WINDOWS_BATCH_SCRIPT} for a single drive: first line is the result, subsequent {@code diag:} lines are
+	 * diagnostics.
 	 */
 	private static final String WINDOWS_SCRIPT = "$ErrorActionPreference='Stop';" + "try {" + "  $psd = Get-PSDrive -Name '%s' -PSProvider FileSystem -ErrorAction Stop;" + "  if ($psd.DisplayRoot) {" + "    'NETWORK';" + "    \"diag: DisplayRoot=$($psd.DisplayRoot)\"" + "  } else {" + "    $p = Get-Partition -DriveLetter '%s' -ErrorAction Stop;" + "    $disks = @($p | Get-Disk | Get-PhysicalDisk);" + "    $types = @($disks | Select-Object -ExpandProperty MediaType -Unique);" + "    if ($types.Count -gt 1) { 'MIXED' }" + "    elseif ($types.Count -eq 0) { 'UNKNOWN' }" + "    else { [string]$types[0] };" + "    foreach ($d in $disks) {" + "      \"diag: FriendlyName='$($d.FriendlyName)' MediaType=$($d.MediaType) BusType=$($d.BusType) SpindleSpeed=$($d.SpindleSpeed)\"" + "    }" + "  }" + "} catch { 'UNKNOWN'; \"diag: Exception=$_\" }";
 
@@ -82,9 +86,9 @@ public final class StorageProfileProbe {
 	}
 
 	/**
-	 * Returns the storage profile for {@code mountPath}, or {@link StorageProfile#UNKNOWN} if classification fails. {@code fsType} is the
-	 * {@code FileStore.type()} string, used to short-circuit network filesystems without shelling out. Results are memoised for the
-	 * lifetime of the JVM (see {@link #CACHE}).
+	 * Returns the storage profile for {@code mountPath}, or {@link StorageProfile#UNKNOWN} if classification fails.
+	 * {@code fsType} is the {@code FileStore.type()} string, used to short-circuit network filesystems without shelling
+	 * out. Results are memoised for the lifetime of the JVM (see {@link #CACHE}).
 	 */
 	public static StorageProfile probe(Path mountPath, String fsType) {
 		String key = mountPath.toAbsolutePath().toString();
@@ -99,10 +103,11 @@ public final class StorageProfileProbe {
 	}
 
 	/**
-	 * Classifies many volumes at once, preserving input order in the returned map. On Windows this issues a single PowerShell invocation
-	 * that probes every uncached drive — paying the .NET cold-start cost once instead of per drive — which avoids the concurrent-process
-	 * contention that timed out individual probes when many volumes were enumerated together. macOS and Linux fall back to per-volume
-	 * parallel probes, since {@code diskutil} / {@code findmnt} don't have a comparable startup tax.
+	 * Classifies many volumes at once, preserving input order in the returned map. On Windows this issues a single
+	 * PowerShell invocation that probes every uncached drive — paying the .NET cold-start cost once instead of per
+	 * drive — which avoids the concurrent-process contention that timed out individual probes when many volumes were
+	 * enumerated together. macOS and Linux fall back to per-volume parallel probes, since {@code diskutil} /
+	 * {@code findmnt} don't have a comparable startup tax.
 	 * <p>Results for cache hits and network-filesystem short-circuits are returned without
 	 * any subprocess spawn.
 	 */
@@ -187,8 +192,8 @@ public final class StorageProfileProbe {
 		if (fsType == null)
 			return false;
 		String t = fsType.toLowerCase();
-		return t.contains("nfs") || t.contains("cifs") || t.contains("smb") || t.contains("afp") || t.contains("sshfs") || t.contains(
-				"webdav") || t.contains("davfs") || t.contains("ftp");
+		return t.contains("nfs") || t.contains("cifs") || t.contains("smb") || t.contains("afp") || t.contains(
+				"sshfs") || t.contains("webdav") || t.contains("davfs") || t.contains("ftp");
 	}
 
 	/** macOS: parse {@code diskutil info -plist <mount>} for {@code <key>SolidState</key>}. */
@@ -207,8 +212,8 @@ public final class StorageProfileProbe {
 	}
 
 	/**
-	 * Locates {@code <key>name</key>} in a plist string and returns the boolean of the next sibling element, or {@code null} if the key is
-	 * absent or has a non-boolean value. Tolerant of whitespace; not a real XML parser.
+	 * Locates {@code <key>name</key>} in a plist string and returns the boolean of the next sibling element, or
+	 * {@code null} if the key is absent or has a non-boolean value. Tolerant of whitespace; not a real XML parser.
 	 */
 	private static Boolean readBoolKey(String plist, String name) {
 		String needle = "<key>" + name + "</key>";
@@ -230,12 +235,12 @@ public final class StorageProfileProbe {
 	}
 
 	/**
-	 * Windows: a single PowerShell pipeline that handles network mappings, single-disk volumes, and Storage Spaces / spanned volumes
-	 * (multiple physical disks). The first output line is the parsed result; subsequent {@code diag:} lines are emitted for troubleshooting
-	 * and logged at FINE.
+	 * Windows: a single PowerShell pipeline that handles network mappings, single-disk volumes, and Storage Spaces /
+	 * spanned volumes (multiple physical disks). The first output line is the parsed result; subsequent {@code diag:}
+	 * lines are emitted for troubleshooting and logged at FINE.
 	 * <p>The script is delivered via {@code -EncodedCommand} (base64-encoded UTF-16LE) to
-	 * bypass Windows command-line quoting — embedded double-quotes in the script otherwise get stripped by the spawn pathway and break
-	 * parsing.
+	 * bypass Windows command-line quoting — embedded double-quotes in the script otherwise get stripped by the spawn
+	 * pathway and break parsing.
 	 */
 	private static StorageProfile probeWindows(Path mountPath) throws Exception {
 		String mountStr = mountPath.toString();
@@ -251,7 +256,8 @@ public final class StorageProfileProbe {
 		String script = String.format(WINDOWS_SCRIPT, drive, drive);
 		String encoded = encodePowerShellScript(script);
 		LOG.fine(() -> "  windows: probing drive " + drive + ":");
-		String out = runCommand(TIMEOUT_MS, "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded);
+		String out = runCommand(TIMEOUT_MS, "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+				encoded);
 		if (out == null) {
 			LOG.fine("  windows: PowerShell returned null (timeout / non-zero exit)");
 			return StorageProfile.UNKNOWN;
@@ -280,9 +286,10 @@ public final class StorageProfileProbe {
 	}
 
 	/**
-	 * Windows batch probe: one PowerShell process classifies every drive in the list. Pre-filters UNC paths and non-letter mounts in Java;
-	 * everything else goes into a single {@code -EncodedCommand} call driven by {@link #WINDOWS_BATCH_SCRIPT}. Output is parsed line by
-	 * line: {@code result: X=…} sets the per-drive classification, {@code diag: X …} lines are logged at FINE for troubleshooting.
+	 * Windows batch probe: one PowerShell process classifies every drive in the list. Pre-filters UNC paths and
+	 * non-letter mounts in Java; everything else goes into a single {@code -EncodedCommand} call driven by
+	 * {@link #WINDOWS_BATCH_SCRIPT}. Output is parsed line by line: {@code result: X=…} sets the per-drive
+	 * classification, {@code diag: X …} lines are logged at FINE for troubleshooting.
 	 */
 	private static Map<Path, StorageProfile> probeWindowsBatch(List<Volume> volumes) {
 		// Native-image fast path: 3 ioctls per drive (~5-10ms each) vs. ~2.4s for one
@@ -334,7 +341,8 @@ public final class StorageProfileProbe {
 		String script = String.format(WINDOWS_BATCH_SCRIPT, driveList);
 		String encoded = encodePowerShellScript(script);
 		LOG.fine(() -> "  windows batch: probing drives " + driveToPath.keySet());
-		String out = runCommand(BATCH_TIMEOUT_MS, "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded);
+		String out = runCommand(BATCH_TIMEOUT_MS, "powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+				encoded);
 
 		Map<String, StorageProfile> driveResults = new HashMap<>();
 		if (out != null) {
@@ -374,8 +382,8 @@ public final class StorageProfileProbe {
 	}
 
 	/**
-	 * Linux: {@code findmnt -T <path> -no SOURCE} to resolve the backing device, then {@code lsblk -no ROTA <device>} which walks
-	 * LVM/dm/RAID stacks down to physical disks and emits one row per physical leaf.
+	 * Linux: {@code findmnt -T <path> -no SOURCE} to resolve the backing device, then {@code lsblk -no ROTA <device>}
+	 * which walks LVM/dm/RAID stacks down to physical disks and emits one row per physical leaf.
 	 */
 	private static StorageProfile probeLinux(Path mountPath) throws Exception {
 		LOG.fine(() -> "  linux: findmnt -T " + mountPath);
@@ -412,8 +420,8 @@ public final class StorageProfileProbe {
 	}
 
 	/**
-	 * Spawns {@code command}, drains stdout on a background reader thread (so a full pipe buffer can't deadlock the wait), and returns the
-	 * captured stdout. Returns {@code null} on timeout, non-zero exit, or any I/O failure.
+	 * Spawns {@code command}, drains stdout on a background reader thread (so a full pipe buffer can't deadlock the
+	 * wait), and returns the captured stdout. Returns {@code null} on timeout, non-zero exit, or any I/O failure.
 	 */
 	private static String runCommand(long timeoutMs, String... command) {
 		Process p = null;
@@ -424,7 +432,8 @@ public final class StorageProfileProbe {
 			final Process proc = p;
 			StringBuilder sb = new StringBuilder();
 			Thread reader = new Thread(() -> {
-				try (BufferedReader br = new BufferedReader(new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+				try (BufferedReader br = new BufferedReader(
+						new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
 					String line;
 					while ((line = br.readLine()) != null) {
 						synchronized (sb) {
@@ -458,8 +467,8 @@ public final class StorageProfileProbe {
 	}
 
 	/**
-	 * Truncates the long base64 blob in {@code -EncodedCommand} payloads for log output — otherwise every probe failure dumps a few KB of
-	 * base64 into the log.
+	 * Truncates the long base64 blob in {@code -EncodedCommand} payloads for log output — otherwise every probe failure
+	 * dumps a few KB of base64 into the log.
 	 */
 	private static String commandSummary(String[] command) {
 		StringBuilder sb = new StringBuilder();
