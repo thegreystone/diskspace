@@ -265,20 +265,35 @@ public final class ParallelDirectoryScanner implements Scanner {
 	}
 
 	/**
-	 * {@code true} iff the default filesystem supports the {@code unix} attribute view (i.e. Linux/macOS). Detected once at class load —
-	 * the previous per-file try/catch on {@link UnsupportedOperationException} cost ~243 exceptions/sec on Windows during a scan (caught
-	 * silently and ignored, but {@code fillInStackTrace} dominated allocation and CPU profiles in JFR). One probe replaces millions of
-	 * throws.
+	 * {@code true} iff this JDK accepts our optimized {@code unix:size,blocks,fileKey,isRegularFile,isDirectory} attribute query. False on
+	 * Windows (no unix view) and on JDK 25+ where {@code unix:blocks} was removed from the supported attribute set — the JDK throws
+	 * {@code IllegalArgumentException: 'blocks' not recognized} for every {@code readAttributes} call. Detected once at class load by
+	 * actually attempting the read against the current working directory; the alternative — a per-file try/catch — cost ~243 exceptions/sec
+	 * on Windows during a scan (caught silently and ignored, but {@code fillInStackTrace} dominated allocation and CPU profiles in JFR).
+	 * One probe replaces millions of throws.
 	 */
-	private static final boolean UNIX_VIEW_SUPPORTED = FileSystems.getDefault().supportedFileAttributeViews().contains("unix");
+	private static final boolean UNIX_STAT_SUPPORTED = probeUnixStatSupport();
+
+	private static boolean probeUnixStatSupport() {
+		if (!FileSystems.getDefault().supportedFileAttributeViews().contains("unix")) {
+			return false;
+		}
+		try {
+			Files.readAttributes(Paths.get("."), "unix:size,blocks,fileKey,isRegularFile,isDirectory", LinkOption.NOFOLLOW_LINKS);
+			return true;
+		} catch (Throwable t) {
+			return false;
+		}
+	}
 
 	/**
-	 * Reads size, fileKey, and type bits in one syscall. On macOS/Linux this also pulls {@code unix:blocks} so the size we record is
-	 * physical-on-disk (blocks × 512) rather than logical, matching the sequential scanner's {@code physicalSize} behaviour. On Windows the
-	 * unix view is unsupported and we fall back to {@link BasicFileAttributes}.
+	 * Reads size, fileKey, and type bits in one syscall. On macOS/Linux pre-JDK-25 this also pulls {@code unix:blocks} so the size we record
+	 * is physical-on-disk (blocks × 512) rather than logical, matching the sequential scanner's {@code physicalSize} behaviour. On Windows
+	 * (no unix view) and on JDK 25+ (where {@code unix:blocks} was removed) we fall back to {@link BasicFileAttributes} and lose the
+	 * physical-vs-logical distinction.
 	 */
 	private static EntryStat readStat(Path p) throws IOException {
-		if (UNIX_VIEW_SUPPORTED) {
+		if (UNIX_STAT_SUPPORTED) {
 			Map<String, Object> a = Files.readAttributes(p, "unix:size,blocks,fileKey,isRegularFile,isDirectory",
 					LinkOption.NOFOLLOW_LINKS);
 			Long blocks = (Long) a.get("blocks");
