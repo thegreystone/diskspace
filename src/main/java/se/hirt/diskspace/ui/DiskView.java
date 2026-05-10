@@ -42,13 +42,11 @@ import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.geometry.VPos;
 import javafx.scene.Cursor;
+import javafx.scene.Node;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.*;
-import javafx.scene.input.Clipboard;
-import javafx.scene.input.ClipboardContent;
-import javafx.scene.input.KeyEvent;
-import javafx.scene.input.MouseButton;
+import javafx.scene.input.*;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.ArcType;
@@ -111,6 +109,12 @@ public final class DiskView {
 	private final Label rightHeaderInfo;
 	private final Rectangle headerFlash;
 	private Path currentHeaderPath;
+	/**
+	 * Single context menu shared by every "thing that represents a path" — table rows, breadcrumb crumbs, the path
+	 * label above the table, and visualization sectors. Each call site installs itself with a resolver that turns the
+	 * right-click event into the underlying {@link PathTarget}; the menu hides when the resolver yields {@code null}.
+	 */
+	private final PathContextMenu pathContextMenu = new PathContextMenu();
 	private final HBox breadcrumb;
 	/**
 	 * Top-right badge in the canvas pane showing which scanner was used (MFT / Parallel(8) / Sequential / etc). Sits on
@@ -262,13 +266,31 @@ public final class DiskView {
 		canvas.heightProperty().addListener((o, a, b) -> redrawWith("resize"));
 		canvas.setOnMouseMoved(e -> handleMouseMove(e.getX(), e.getY()));
 		canvas.setOnMouseExited(e -> {
+			// While the context menu is up, keep the right-clicked sector visually pinned —
+			// the popup window's bounds steal mouse-exit events from the canvas as the cursor
+			// crosses onto the menu, and clearing hover state here would make the highlight
+			// disappear the moment the user moves toward an action.
+			if (pathContextMenu.isShowing())
+				return;
 			hoverNode = null;
 			hoveringHub = false;
 			hoveringFreeSpace = false;
 			hoveringUnaccounted = false;
 			redraw();
 		});
-		canvas.setOnMouseClicked(e -> handleClick(e.getX(), e.getY()));
+		canvas.setOnMouseClicked(e -> {
+			if (e.getButton() == MouseButton.PRIMARY)
+				handleClick(e.getX(), e.getY());
+		});
+		// Right-click on a sector / cell offers the same Open / Copy / Stage actions as the table
+		// and breadcrumb, plus view-level actions (Help, Re-scan, …) so mouse-only users can reach
+		// them without memorizing keyboard shortcuts. Path actions are conditional on hovering a
+		// real sector — over the hub / free-space / unaccounted regions only the view actions show.
+		pathContextMenu.install(canvas, e -> {
+			if (hoveringHub || hoveringFreeSpace || hoveringUnaccounted)
+				return null;
+			return targetFor(hoverNode);
+		}, true);
 
 		breadcrumb = new HBox(4);
 		breadcrumb.setPadding(new Insets(10, 14, 10, 14));
@@ -326,6 +348,7 @@ public final class DiskView {
 			if (e.getButton() == MouseButton.PRIMARY)
 				copyHeaderPath();
 		});
+		pathContextMenu.install(rightHeader, e -> targetFor(viewRoot));
 
 		rightHeaderInfo = new Label("  —  scanning…");
 		rightHeaderInfo.setStyle(
@@ -656,6 +679,15 @@ public final class DiskView {
 						}
 					}
 				});
+				// Right-click should act on the row under the cursor, not the prior selection. If
+				// that row isn't already selected, snap selection to it before the menu shows so the
+				// highlight matches what the menu will operate on. Already-selected (incl. multi-
+				// select) rows are left alone, matching common file-manager behaviour.
+				addEventFilter(ContextMenuEvent.CONTEXT_MENU_REQUESTED, e -> {
+					if (!isEmpty() && !isSelected())
+						getTableView().getSelectionModel().clearAndSelect(getIndex());
+				});
+				pathContextMenu.install(this, e -> targetFor(getItem()));
 			}
 
 			@Override
@@ -1175,6 +1207,10 @@ public final class DiskView {
 		return System.getProperty("os.name", "").toLowerCase().contains("mac");
 	}
 
+	private static boolean isWindows() {
+		return System.getProperty("os.name", "").toLowerCase().contains("win");
+	}
+
 	private static boolean isFdaGranted() {
 		// Open TCC.db directly: without FDA the syscall fails immediately with EPERM.
 		// The directory listing this used to do can succeed in edge cases even without
@@ -1410,13 +1446,83 @@ public final class DiskView {
 	private void copyHeaderPath() {
 		if (currentHeaderPath == null)
 			return;
-		ClipboardContent content = new ClipboardContent();
-		content.putString(currentHeaderPath.toString());
-		Clipboard.getSystemClipboard().setContent(content);
+		copyPathToClipboard(currentHeaderPath);
 		Timeline flash = new Timeline(new KeyFrame(Duration.ZERO, new KeyValue(headerFlash.opacityProperty(), 0.0)),
 				new KeyFrame(Duration.millis(90), new KeyValue(headerFlash.opacityProperty(), 0.45)),
 				new KeyFrame(Duration.millis(550), new KeyValue(headerFlash.opacityProperty(), 0.0)));
 		flash.play();
+	}
+
+	private void copyPathToClipboard(Path p) {
+		ClipboardContent content = new ClipboardContent();
+		content.putString(p.toString());
+		Clipboard.getSystemClipboard().setContent(content);
+	}
+
+	/**
+	 * Open the OS file browser at {@code target}. Directories open in place; files are revealed in their containing
+	 * folder where the platform supports it (macOS {@code open -R}, Windows {@code explorer /select}), and fall back to
+	 * opening the parent directory on Linux.
+	 */
+	private void revealPath(PathTarget target) {
+		Path p = target.path();
+		if (p == null)
+			return;
+		try {
+			if (target.isDirectory()) {
+				if (isMac()) {
+					new ProcessBuilder("open", p.toString()).start();
+				} else {
+					// TODO(awt-free): replace with xdg-open / explorer.exe so AWT isn't pulled in.
+					java.awt.Desktop.getDesktop().open(p.toFile());
+				}
+			} else if (isMac()) {
+				new ProcessBuilder("open", "-R", p.toString()).start();
+			} else if (isWindows()) {
+				new ProcessBuilder("explorer.exe", "/select," + p.toString()).start();
+			} else {
+				Path parent = p.getParent();
+				if (parent != null) {
+					// TODO(awt-free): use xdg-open on Linux so AWT isn't pulled in.
+					java.awt.Desktop.getDesktop().open(parent.toFile());
+				}
+			}
+		} catch (Exception ignored) {
+			// No fatal handling; if the platform doesn't support it, do nothing.
+		}
+	}
+
+	/** Resolves the {@link PathTarget} for a table {@link Entry}, or {@code null} when the row has no on-disk path. */
+	private PathTarget targetFor(Entry entry) {
+		if (entry == null)
+			return null;
+		if (entry.isDirectory())
+			return targetFor(entry.dirNode());
+		Path base = (viewRoot != null) ? viewRoot.path() : null;
+		if (base == null)
+			return null;
+		Path filePath = base.resolve(entry.name());
+		return new PathTarget(filePath, false, () -> stage(entryToStaged(entry)));
+	}
+
+	/**
+	 * Resolves the {@link PathTarget} for a {@link DirectoryNode}; synthetic Hidden / aggregate nodes yield null. Real
+	 * directories get a stage action unless they are the scan root (refusing to let a single right-click queue the
+	 * entire disk for deletion). File-sector nodes (large files / "Smaller files" aggregate) are surfaced as
+	 * non-directory targets, so right-clicking a big file in the sunburst behaves the same as right-clicking it in the
+	 * table.
+	 */
+	private PathTarget targetFor(DirectoryNode node) {
+		if (node == null || node.path() == null)
+			return null;
+		boolean isDir = !node.isFileSector();
+		Runnable stageAction;
+		if (isDir) {
+			stageAction = (node == scanRoot) ? null : () -> stage(dirToStaged(node));
+		} else {
+			stageAction = () -> stage(new StagedItem(false, node.path(), node.totalBytes(), null, node.parent()));
+		}
+		return new PathTarget(node.path(), isDir, stageAction);
 	}
 
 	private static List<Entry> listFiles(Path dir) {
@@ -2679,6 +2785,10 @@ public final class DiskView {
 	private void handleMouseMove(double mx, double my) {
 		if (scanRoot == null || animating)
 			return;
+		// Freeze the highlight while the path context menu is open so the sector under the
+		// right-click stays selected as the user moves the cursor over the menu items.
+		if (pathContextMenu.isShowing())
+			return;
 
 		boolean wasHub = hoveringHub;
 		boolean wasFree = hoveringFreeSpace;
@@ -2840,10 +2950,11 @@ public final class DiskView {
 			l.setOnMouseEntered(e -> l.setStyle(crumbStyle(false, true)));
 			l.setOnMouseExited(e -> l.setStyle(crumbStyle(false, false)));
 			l.setOnMouseClicked(e -> {
-				if (!animating)
+				if (e.getButton() == MouseButton.PRIMARY && !animating)
 					navigateUpTo(node);
 			});
 		}
+		pathContextMenu.install(l, e -> targetFor(node));
 		return l;
 	}
 
@@ -3015,6 +3126,155 @@ public final class DiskView {
 		static Entry forFile(String name, long size) {
 			return new Entry(false, name, size, null);
 		}
+	}
+
+	/**
+	 * What the context menu acts on: an on-disk path, whether it's a directory (so "Open Location" can choose between
+	 * "open the folder" and "reveal the file in its parent"), and a {@link Runnable} that knows how to stage this
+	 * specific target for deletion. The stage action is supplied by the resolver because it needs domain context the
+	 * menu doesn't have (size, parent node, file vs directory). {@code null} stage action → menu item is disabled (e.g.
+	 * the scan root, which we refuse to stage as a footgun guard).
+	 */
+	private record PathTarget(Path path, boolean isDirectory, Runnable stageAction) {
+	}
+
+	/** Resolves the target for a context-menu request. Returning {@code null} suppresses the menu. */
+	@FunctionalInterface
+	private interface PathTargetResolver {
+		PathTarget resolve(ContextMenuEvent event);
+	}
+
+	/**
+	 * Reusable per-{@link DiskView} context menu for "things that represent a path." One instance is wired into every
+	 * call site via {@link #install}; each site supplies a resolver that maps the right-click event to its current
+	 * {@link PathTarget}. The resolved target is captured on show so the {@link MenuItem} actions, which fire later,
+	 * still know what was clicked.
+	 */
+	private final class PathContextMenu {
+		private final ContextMenu menu = new ContextMenu();
+		/**
+		 * Disabled header item naming the target of the menu. JavaFX renders disabled items in a muted style, which
+		 * reads naturally as a "you are operating on…" label and answers the "what does this menu act on?" question
+		 * even after the on-canvas highlight is gone.
+		 */
+		private final MenuItem headerItem = new MenuItem();
+		// Path-section items.
+		private final MenuItem openItem = new MenuItem("Open Location");
+		private final MenuItem copyItem = new MenuItem("Copy Path");
+		private final MenuItem stageItem = new MenuItem("Stage for Removal");
+		// View-section items (canvas only) — same semantics as the keyboard shortcuts so they
+		// stay discoverable for users who don't memorize hotkeys.
+		private final MenuItem helpItem = new MenuItem("Show Keyboard Shortcuts");
+		private final MenuItem rescanItem = new MenuItem("Re-scan");
+		private final MenuItem toggleUnitsItem = new MenuItem("Toggle Size Units");
+		private final MenuItem toggleVizItem = new MenuItem("Toggle Visualization");
+		private final MenuItem quitItem = new MenuItem("Quit");
+		private PathTarget pending;
+		/**
+		 * Wall-clock nanos of the last hide, used to swallow the immediate re-open caused by right-clicking again to
+		 * dismiss: ContextMenu auto-hides on the new mouse press, and the OS then fires a fresh CONTEXT_MENU_REQUESTED
+		 * that would otherwise reopen the menu at the same spot. If a request lands within
+		 * {@link #TOGGLE_DEBOUNCE_NANOS} of the hide, we treat it as the closing half of a toggle and ignore it.
+		 */
+		private long lastHideNanos;
+		private static final long TOGGLE_DEBOUNCE_NANOS = 150_000_000L; // 150 ms
+
+		PathContextMenu() {
+			headerItem.setDisable(true);
+			menu.setOnHidden(e -> lastHideNanos = System.nanoTime());
+			openItem.setOnAction(e -> {
+				if (pending != null)
+					revealPath(pending);
+			});
+			copyItem.setOnAction(e -> {
+				if (pending != null && pending.path() != null)
+					copyPathToClipboard(pending.path());
+			});
+			stageItem.setOnAction(e -> {
+				if (pending != null && pending.stageAction() != null)
+					pending.stageAction().run();
+			});
+			helpItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "toggle-help");
+				toggleHelp();
+			});
+			rescanItem.setOnAction(e -> {
+				if (!deleting) {
+					emitUserAction("ContextMenu", "rescan");
+					rescan();
+				}
+			});
+			toggleUnitsItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "toggle-units");
+				SizeFormat.toggle();
+				refreshAfterUnitChange();
+			});
+			toggleVizItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "toggle-mode");
+				toggleRenderMode();
+			});
+			quitItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "quit");
+				se.hirt.diskspace.App.requestQuit();
+			});
+		}
+
+		boolean isShowing() {
+			return menu.isShowing();
+		}
+
+		void install(Node node, PathTargetResolver resolver) {
+			install(node, resolver, false);
+		}
+
+		/**
+		 * @param viewActions
+		 * 		when {@code true}, append the view-level actions (Help, Rescan, Toggle Units, Toggle Visualization, Quit).
+		 * 		Used by the canvas, where there's no other obvious place to surface these actions for mouse-only users.
+		 */
+		void install(Node node, PathTargetResolver resolver, boolean viewActions) {
+			node.setOnContextMenuRequested(e -> {
+				if (System.nanoTime() - lastHideNanos < TOGGLE_DEBOUNCE_NANOS) {
+					// Right-click-to-dismiss: swallow the OS-generated re-open that follows the
+					// auto-hide so the user isn't trapped having to pick an action.
+					e.consume();
+					return;
+				}
+				PathTarget t = resolver.resolve(e);
+				boolean hasPath = (t != null && t.path() != null);
+				if (!hasPath && !viewActions) {
+					menu.hide();
+					return;
+				}
+				menu.getItems().clear();
+				if (hasPath) {
+					pending = t;
+					headerItem.setText(shortLabel(t.path()));
+					stageItem.setDisable(t.stageAction() == null);
+					menu.getItems()
+							.addAll(headerItem, new SeparatorMenuItem(), openItem, copyItem, new SeparatorMenuItem(),
+									stageItem);
+				} else {
+					pending = null;
+				}
+				if (viewActions) {
+					if (hasPath)
+						menu.getItems().add(new SeparatorMenuItem());
+					menu.getItems()
+							.addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, new SeparatorMenuItem(),
+									quitItem);
+				}
+				menu.show(node, e.getScreenX(), e.getScreenY());
+				e.consume();
+			});
+		}
+	}
+
+	private static String shortLabel(Path p) {
+		if (p == null)
+			return "";
+		Path name = p.getFileName();
+		return name != null ? name.toString() : p.toString();
 	}
 
 	/**

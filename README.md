@@ -18,7 +18,8 @@ toggle.
 
 ### Option A: Native Binary (recommended)
 
-Download the binary for your platform from the [Releases page](https://github.com/thegreystone/diskspace/releases/latest):
+Download the binary for your platform from
+the [Releases page](https://github.com/thegreystone/diskspace/releases/latest):
 
 | Platform                                | File                                           |
 |-----------------------------------------|------------------------------------------------|
@@ -94,7 +95,8 @@ mvn javafx:run
 | `Q`       | Quit DiskSpace.                                                                                    |
 
 You can also click any segment of the breadcrumb in the top-left to jump directly to that ancestor, or click the center
-hub to reset all the way back to the scan root.
+hub to reset all the way back to the scan root. Click the path label above the file table to copy the current view's
+full path to the clipboard — a brief highlight confirms the copy.
 
 ## Building from Source
 
