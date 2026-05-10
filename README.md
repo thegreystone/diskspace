@@ -7,8 +7,10 @@
 [![GraalVM Native](https://img.shields.io/badge/GraalVM-native--image-orange)](https://www.graalvm.org/)
 [![License: BSD-3](https://img.shields.io/badge/License-BSD--3-green)](https://opensource.org/licenses/BSD-3-Clause)
 
-A cross-platform disk space visualizer providing a sunburst view of where your space went. Distributed as native
-binaries as well as runnable with Java.
+A cross-platform disk space visualizer that shows where your space went, with two complementary views: a **sunburst**
+(hierarchical radial layout, good for spotting depth-imbalanced subtrees and proportional weight at a glance) and a
+**squarified-treemap heatmap** (good for finding the largest individual cells across the whole tree). Press `V` to
+toggle.
 
 ![DiskSpace sunburst view, drilled into Program Files](docs/screenshots/diskspace.png)
 
@@ -16,8 +18,7 @@ binaries as well as runnable with Java.
 
 ### Option A: Native Binary (recommended)
 
-No Java installation required. Download the binary for your platform from
-the [Releases page](https://github.com/thegreystone/diskspace/releases/latest):
+Download the binary for your platform from the [Releases page](https://github.com/thegreystone/diskspace/releases/latest):
 
 | Platform                                | File                                           |
 |-----------------------------------------|------------------------------------------------|
