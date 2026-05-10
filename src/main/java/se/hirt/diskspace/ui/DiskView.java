@@ -1498,23 +1498,46 @@ public final class DiskView {
 		if (p == null)
 			return;
 		try {
-			if (target.isDirectory()) {
-				openUri(p);
-			} else if (isMac()) {
-				new ProcessBuilder("open", "-R", p.toString()).start();
-			} else if (isWindows()) {
-				new ProcessBuilder("explorer.exe", "/select," + p.toString()).start();
-			} else {
-				Path parent = p.getParent();
-				if (parent != null)
-					openUri(parent);
+			switch (target.kind()) {
+			case DIRECTORY, AGGREGATE -> openDirectory(p);
+			case FILE -> {
+				if (isMac()) {
+					new ProcessBuilder("open", "-R", p.toString()).start();
+				} else if (isWindows()) {
+					// Pass /select, and the path as separate args. ProcessBuilder joins them with
+					// a space when building the Windows command line, and explorer.exe accepts
+					// that form reliably. The concatenated single-arg form (/select,<path>) is
+					// quirkier — when explorer can't parse it cleanly it silently falls back to
+					// the user's Documents folder, which looks like the feature is broken.
+					new ProcessBuilder("explorer.exe", "/select,", p.toString()).start();
+				} else {
+					Path parent = p.getParent();
+					if (parent != null)
+						openDirectory(parent);
+				}
+			}
 			}
 		} catch (Exception ignored) {
 			// No fatal handling; if the platform doesn't support it, do nothing.
 		}
 	}
 
-	private static void openUri(Path p) {
+	/**
+	 * Open a folder in the system file manager. On Windows we shell out to {@code explorer.exe}
+	 * with the raw path: {@link javafx.application.HostServices#showDocument} sends a
+	 * {@code file:///…/} URI through {@code ShellExecute}, which doesn't reliably navigate to a
+	 * folder and tends to fall back to Documents. On macOS/Linux {@code HostServices} works
+	 * fine (LSOpen / xdg-open).
+	 */
+	private static void openDirectory(Path p) {
+		if (isWindows()) {
+			try {
+				new ProcessBuilder("explorer.exe", p.toString()).start();
+			} catch (Exception ignored) {
+				// Best-effort; if the platform doesn't support it, do nothing.
+			}
+			return;
+		}
 		var hs = se.hirt.diskspace.App.hostServices();
 		if (hs != null)
 			hs.showDocument(p.toUri().toString());
@@ -1526,8 +1549,17 @@ public final class DiskView {
 	 * user in a folder view (revealing files in their parent).
 	 */
 	private static void openPath(PathTarget target) {
-		if (target != null && target.path() != null)
-			openUri(target.path());
+		if (target == null || target.path() == null)
+			return;
+		Path p = target.path();
+		if (target.kind() == TargetKind.DIRECTORY) {
+			openDirectory(p);
+			return;
+		}
+		// Files: route through HostServices so the registered app handles the file type.
+		var hs = se.hirt.diskspace.App.hostServices();
+		if (hs != null)
+			hs.showDocument(p.toUri().toString());
 	}
 
 	/** Resolves the {@link PathTarget} for a table {@link Entry}, or {@code null} when the row has no on-disk path. */
@@ -1540,27 +1572,34 @@ public final class DiskView {
 		if (base == null)
 			return null;
 		Path filePath = base.resolve(entry.name());
-		return new PathTarget(filePath, false, () -> stage(entryToStaged(entry)));
+		return new PathTarget(filePath, TargetKind.FILE, () -> stage(entryToStaged(entry)));
 	}
 
 	/**
-	 * Resolves the {@link PathTarget} for a {@link DirectoryNode}; synthetic Hidden / aggregate nodes yield null. Real
-	 * directories get a stage action unless they are the scan root (refusing to let a single right-click queue the
-	 * entire disk for deletion). File-sector nodes (large files / "Smaller files" aggregate) are surfaced as
-	 * non-directory targets, so right-clicking a big file in the sunburst behaves the same as right-clicking it in the
-	 * table.
+	 * Resolves the {@link PathTarget} for a {@link DirectoryNode}; synthetic Hidden nodes yield null. Real directories
+	 * get a stage action unless they are the scan root (refusing to let a single right-click queue the entire disk for
+	 * deletion). File-sector nodes (large files / "Smaller files" aggregate) are surfaced as non-directory targets, so
+	 * right-clicking a big file in the sunburst behaves the same as right-clicking it in the table.
+	 *
+	 * <p>The "Smaller files" aggregate is special: it carries no on-disk path of its own (synthesised post-scan), so
+	 * the natural target for "Open Location" is the parent directory where those small files actually live. Staging
+	 * is disabled because removing an aggregate has no concrete meaning — there's no single file or folder to delete.
 	 */
 	private PathTarget targetFor(DirectoryNode node) {
-		if (node == null || node.path() == null)
+		if (node == null)
 			return null;
-		boolean isDir = !node.isFileSector();
-		Runnable stageAction;
-		if (isDir) {
-			stageAction = (node == scanRoot) ? null : () -> stage(dirToStaged(node));
-		} else {
-			stageAction = () -> stage(new StagedItem(false, node.path(), node.totalBytes(), null, node.parent()));
+		if (node.path() == null) {
+			if (node.isFileSector() && node.parent() != null && node.parent().path() != null) {
+				return new PathTarget(node.parent().path(), TargetKind.AGGREGATE, null);
+			}
+			return null;
 		}
-		return new PathTarget(node.path(), isDir, stageAction);
+		if (node.isFileSector()) {
+			return new PathTarget(node.path(), TargetKind.FILE,
+					() -> stage(new StagedItem(false, node.path(), node.totalBytes(), null, node.parent())));
+		}
+		Runnable stageAction = (node == scanRoot) ? null : () -> stage(dirToStaged(node));
+		return new PathTarget(node.path(), TargetKind.DIRECTORY, stageAction);
 	}
 
 	private static List<Entry> listFiles(Path dir) {
@@ -3159,13 +3198,31 @@ public final class DiskView {
 	}
 
 	/**
-	 * What the context menu acts on: an on-disk path, whether it's a directory (so "Open Location" can choose between
-	 * "open the folder" and "reveal the file in its parent"), and a {@link Runnable} that knows how to stage this
-	 * specific target for deletion. The stage action is supplied by the resolver because it needs domain context the
-	 * menu doesn't have (size, parent node, file vs directory). {@code null} stage action → menu item is disabled (e.g.
-	 * the scan root, which we refuse to stage as a footgun guard).
+	 * Kind of thing the menu is acting on. Determines which actions the menu shows and how
+	 * "Open"-style actions interpret the path:
+	 * <ul>
+	 *   <li>{@link #DIRECTORY} — a real on-disk folder. Menu shows {@code Open} only.</li>
+	 *   <li>{@link #FILE} — a real on-disk file. Menu shows {@code Open} (default app) and
+	 *       {@code Open Location} (reveals in the parent folder).</li>
+	 *   <li>{@link #AGGREGATE} — a synthetic node with no path of its own (currently the
+	 *       "Smaller files" sector). The {@link PathTarget#path} is set to the parent directory
+	 *       so {@code Open Location} can take the user there; {@code Open} is omitted because
+	 *       there's no single thing to launch.</li>
+	 * </ul>
 	 */
-	private record PathTarget(Path path, boolean isDirectory, Runnable stageAction) {
+	private enum TargetKind {DIRECTORY, FILE, AGGREGATE}
+
+	/**
+	 * What the context menu acts on: an on-disk path, the {@link TargetKind} (which controls menu shape and
+	 * "Open"-style action semantics), and a {@link Runnable} that knows how to stage this specific target for
+	 * deletion. The stage action is supplied by the resolver because it needs domain context the menu doesn't have
+	 * (size, parent node, file vs directory). {@code null} stage action → menu item is disabled (e.g. the scan root,
+	 * which we refuse to stage as a footgun guard, or aggregates which have no concrete delete target).
+	 */
+	private record PathTarget(Path path, TargetKind kind, Runnable stageAction) {
+		boolean isDirectory() {
+			return kind == TargetKind.DIRECTORY;
+		}
 	}
 
 	/** Resolves the target for a context-menu request. Returning {@code null} suppresses the menu. */
@@ -3214,16 +3271,18 @@ public final class DiskView {
 		private static final long TOGGLE_DEBOUNCE_NANOS = 150_000_000L; // 150 ms
 
 		/**
-		 * Bubble-phase handler installed on the menu's own scene while the menu is shown. JavaFX's
-		 * MenuItem skin consumes left-clicks on items (to fire the action), so this handler only
-		 * runs on clicks that <em>weren't</em> on an actionable item: right-clicks on items,
-		 * left-clicks on the menu's padding / header / border, and clicks on the disabled
-		 * "header" naming the target. In every such case the user clearly didn't want to pick an
-		 * action — dismiss the menu so they're not stuck waiting to make a choice.
+		 * Bubble-phase handler installed on the menu's own scene while the menu is shown. Listens
+		 * for {@code MOUSE_RELEASED} (not {@code MOUSE_PRESSED}) so the MenuItem skin gets to fire
+		 * the item's action on release first — by the time this handler runs, the menu is already
+		 * hidden and the {@code isShowing()} guard makes it a no-op. For clicks that <em>didn't</em>
+		 * land on an actionable item — right-clicks on items, left-clicks on the menu's padding /
+		 * header / border — nothing dismisses the menu, so this handler does it explicitly.
 		 */
 		private final javafx.event.EventHandler<javafx.scene.input.MouseEvent> menuMissDismiss = e -> {
-			menu.hide();
-			e.consume();
+			if (menu.isShowing()) {
+				menu.hide();
+				e.consume();
+			}
 		};
 
 		PathContextMenu() {
@@ -3231,12 +3290,12 @@ public final class DiskView {
 			menu.setOnShown(e -> {
 				javafx.scene.Scene s = menu.getScene();
 				if (s != null)
-					s.addEventHandler(javafx.scene.input.MouseEvent.MOUSE_PRESSED, menuMissDismiss);
+					s.addEventHandler(javafx.scene.input.MouseEvent.MOUSE_RELEASED, menuMissDismiss);
 			});
 			menu.setOnHidden(e -> {
 				javafx.scene.Scene s = menu.getScene();
 				if (s != null)
-					s.removeEventHandler(javafx.scene.input.MouseEvent.MOUSE_PRESSED, menuMissDismiss);
+					s.removeEventHandler(javafx.scene.input.MouseEvent.MOUSE_RELEASED, menuMissDismiss);
 				lastHideNanos = System.nanoTime();
 			});
 			openItem.setOnAction(e -> {
@@ -3316,19 +3375,29 @@ public final class DiskView {
 					pending = t;
 					headerItem.setText(shortLabel(t.path()));
 					stageItem.setDisable(t.stageAction() == null);
-					menu.getItems().addAll(headerItem, new SeparatorMenuItem(), openItem);
-					if (!t.isDirectory())
-						menu.getItems().add(openLocationItem);
+					menu.getItems().addAll(headerItem, new SeparatorMenuItem());
+					switch (t.kind()) {
+					case DIRECTORY -> menu.getItems().add(openItem);
+					case FILE -> menu.getItems().addAll(openItem, openLocationItem);
+					case AGGREGATE -> menu.getItems().add(openLocationItem);
+					}
 					menu.getItems().addAll(copyItem, new SeparatorMenuItem(), stageItem);
 				} else {
 					pending = null;
 				}
 				if (viewActions) {
-					if (hasPath)
+					if (hasPath) {
+						// Sector menu: keep it tight. Re-scan and Toggle Visualization stay because
+						// they're the most likely "I want to do something to the view from here"
+						// follow-ups; Help / Toggle Units / Quit live on the empty-canvas menu.
 						menu.getItems().add(new SeparatorMenuItem());
-					menu.getItems()
-							.addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, new SeparatorMenuItem(),
-									quitItem);
+						menu.getItems().addAll(rescanItem, toggleVizItem);
+					} else {
+						// Empty-canvas menu: full set of view-level actions for mouse-only users.
+						menu.getItems()
+								.addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, new SeparatorMenuItem(),
+										quitItem);
+					}
 				}
 				menu.show(node, e.getScreenX(), e.getScreenY());
 				e.consume();
