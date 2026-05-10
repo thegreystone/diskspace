@@ -98,6 +98,16 @@ public final class DiskView {
 	private static final long LIVE_REFRESH_INTERVAL_NANOS = 100_000_000L; // 10 Hz
 	private static final long ANIM_DURATION_NANOS = 350_000_000L;        // 350 ms
 
+	/**
+	 * Inline background reset prepended to every table cell's {@code setStyle}. Modena's default
+	 * {@code .table-cell} paints a two-layer background ({@code -fx-table-cell-border-color},
+	 * {@code -fx-background}) with matching insets {@code 0, 0 0 1 0}. We replace the colors with
+	 * a single transparent layer AND reset insets so the layer count matches — without that
+	 * insets are stale and modena's selection variant ends up still painting through. With both
+	 * cleared, the row tint set by the row factory shows at full width.
+	 */
+	private static final String CELL_TRANSPARENT_BG = "-fx-background-color: transparent; -fx-background-insets: 0; ";
+
 	private final SplitPane root;
 	private final StackPane outerRoot;
 	private final StackPane helpOverlay;
@@ -423,6 +433,19 @@ public final class DiskView {
 		// dispatchTopLevelKey.
 		root.setFocusTraversable(true);
 		root.addEventHandler(KeyEvent.KEY_PRESSED, this::dispatchTopLevelKey);
+		// Manual auto-hide for the path context menu. PopupWindow's built-in autoHide reliably
+		// fires when the click target lands on a recycled node (e.g. a TableRow that gets
+		// rebuilt as the selection model changes), but stays put when the click is on the same
+		// persistent node that owns the menu — the canvas is the textbook case. We mirror the
+		// auto-hide behaviour here so any press inside the DiskView root closes the menu, and
+		// consume the press so the underlying handler (drill, navigate) doesn't also fire — the
+		// click was clearly meant as "dismiss," not "do something else."
+		root.addEventFilter(javafx.scene.input.MouseEvent.MOUSE_PRESSED, e -> {
+			if (pathContextMenu.isShowing()) {
+				pathContextMenu.hide();
+				e.consume();
+			}
+		});
 
 		// Help overlay floats on top of the live visualization. The split pane keeps
 		// running underneath (scan progress, redraws, etc.); the overlay is just a
@@ -597,7 +620,7 @@ public final class DiskView {
 				if (empty || item == null) {
 					setText(null);
 					setGraphic(null);
-					setStyle("");
+					setStyle(CELL_TRANSPARENT_BG);
 					return;
 				}
 				Entry e = (getTableRow() == null) ? null : getTableRow().getItem();
@@ -609,7 +632,8 @@ public final class DiskView {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
 					setText(item);
-					setStyle("-fx-font-style: italic; -fx-text-fill: " + css(scheme.textMuted()) + ";");
+					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(scheme.textMuted())
+							+ ";");
 				} else if (node != null && node.path() == null) {
 					// Synthetic Hidden node — keep the color swatch so the row maps visually
 					// to its sunburst sector, but render the text italic muted to signal it
@@ -617,28 +641,30 @@ public final class DiskView {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
 					setText(item);
-					setStyle("-fx-font-style: italic; -fx-text-fill: " + css(scheme.textMuted()) + ";");
+					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(scheme.textMuted())
+							+ ";");
 				} else if (node != null) {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
 					switch (node.state()) {
 					case QUEUED -> {
 						setText(item + "  <queued>");
-						setStyle("-fx-font-weight: bold; -fx-text-fill: " + css(scheme.textMuted().darker()) + ";");
+						setStyle(CELL_TRANSPARENT_BG + "-fx-font-weight: bold; -fx-text-fill: " + css(
+								scheme.textMuted().darker()) + ";");
 					}
 					case SCANNING -> {
 						setText(item + "  <scanning>");
-						setStyle("-fx-font-weight: bold; -fx-opacity: 0.75;");
+						setStyle(CELL_TRANSPARENT_BG + "-fx-font-weight: bold; -fx-opacity: 0.75;");
 					}
 					default -> {
 						setText(item);
-						setStyle("-fx-font-weight: bold;");
+						setStyle(CELL_TRANSPARENT_BG + "-fx-font-weight: bold;");
 					}
 					}
 				} else {
 					setGraphic(null);
 					setText(item);
-					setStyle("");
+					setStyle(CELL_TRANSPARENT_BG);
 				}
 			}
 		});
@@ -653,10 +679,11 @@ public final class DiskView {
 				super.updateItem(item, empty);
 				if (empty || item == null) {
 					setText(null);
-					setStyle("");
+					setStyle(CELL_TRANSPARENT_BG);
 				} else {
 					setText(item);
-					setStyle("-fx-font-family: 'Consolas', 'Menlo', monospace; -fx-alignment: CENTER-RIGHT;");
+					setStyle(CELL_TRANSPARENT_BG
+							+ "-fx-font-family: 'Consolas', 'Menlo', monospace; -fx-alignment: CENTER-RIGHT;");
 				}
 			}
 		});
@@ -708,7 +735,7 @@ public final class DiskView {
 				Entry item = getItem();
 				String bg;
 				if (isSelected()) {
-					bg = css(scheme.accent().deriveColor(0, 1.0, 1.0, 0.30));
+					bg = css(scheme.accent().deriveColor(0, 1.0, 1.0, 0.55));
 				} else if (isHover() && item != null) {
 					// Hover lands between selection and alternation in visual weight, so
 					// the user can see exactly which row a click would target without it
@@ -1460,8 +1487,10 @@ public final class DiskView {
 	}
 
 	/**
-	 * Open the OS file browser at {@code target}. Directories open in place; files are revealed in their containing
-	 * folder where the platform supports it (macOS {@code open -R}, Windows {@code explorer /select}), and fall back to
+	 * Open the OS file browser at {@code target}. Directories open in place via JavaFX's
+	 * {@link javafx.application.HostServices} (which routes through the platform-native launcher
+	 * without initialising AWT). Files are revealed in their containing folder where the platform
+	 * supports it (macOS {@code open -R}, Windows {@code explorer /select}), and fall back to
 	 * opening the parent directory on Linux.
 	 */
 	private void revealPath(PathTarget target) {
@@ -1470,26 +1499,35 @@ public final class DiskView {
 			return;
 		try {
 			if (target.isDirectory()) {
-				if (isMac()) {
-					new ProcessBuilder("open", p.toString()).start();
-				} else {
-					// TODO(awt-free): replace with xdg-open / explorer.exe so AWT isn't pulled in.
-					java.awt.Desktop.getDesktop().open(p.toFile());
-				}
+				openUri(p);
 			} else if (isMac()) {
 				new ProcessBuilder("open", "-R", p.toString()).start();
 			} else if (isWindows()) {
 				new ProcessBuilder("explorer.exe", "/select," + p.toString()).start();
 			} else {
 				Path parent = p.getParent();
-				if (parent != null) {
-					// TODO(awt-free): use xdg-open on Linux so AWT isn't pulled in.
-					java.awt.Desktop.getDesktop().open(parent.toFile());
-				}
+				if (parent != null)
+					openUri(parent);
 			}
 		} catch (Exception ignored) {
 			// No fatal handling; if the platform doesn't support it, do nothing.
 		}
+	}
+
+	private static void openUri(Path p) {
+		var hs = se.hirt.diskspace.App.hostServices();
+		if (hs != null)
+			hs.showDocument(p.toUri().toString());
+	}
+
+	/**
+	 * "Open" semantics: hand the path to the OS's default handler — the registered app for a file,
+	 * the file manager for a directory. Distinct from {@link #revealPath} which always lands the
+	 * user in a folder view (revealing files in their parent).
+	 */
+	private static void openPath(PathTarget target) {
+		if (target != null && target.path() != null)
+			openUri(target.path());
 	}
 
 	/** Resolves the {@link PathTarget} for a table {@link Entry}, or {@code null} when the row has no on-disk path. */
@@ -3002,21 +3040,9 @@ public final class DiskView {
 	}
 
 	private void openInExplorer() {
-		DirectoryNode target = (hoverNode != null) ? hoverNode : viewRoot;
-		if (target == null || target.path() == null)
-			return;
-		try {
-			if (isMac()) {
-				// Desktop.open() from JavaFX on macOS silently fails — AWT and JavaFX
-				// contend for the AppKit main thread. Shell out to `open` instead.
-				new ProcessBuilder("open", target.path().toString()).start();
-			} else {
-				// TODO(awt-free): use xdg-open on Linux / explorer on Windows so AWT isn't pulled in.
-				java.awt.Desktop.getDesktop().open(target.path().toFile());
-			}
-		} catch (Exception ignored) {
-			// No fatal handling; if the platform doesn't support it, do nothing.
-		}
+		PathTarget pt = targetFor((hoverNode != null) ? hoverNode : viewRoot);
+		if (pt != null)
+			revealPath(pt);
 	}
 
 	// ---- helpers ---------------------------------------------------------
@@ -3055,7 +3081,11 @@ public final class DiskView {
 	}
 
 	private static String css(Color c) {
-		return String.format("rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255),
+		// Locale.ROOT forces "." as the decimal separator. Without it, locales such as Swedish
+		// or German render the alpha as "0,550", and the CSS string becomes
+		// "rgba(122,211,217,0,550)" — five commas, which JavaFX parses by taking the first four
+		// tokens, so alpha silently becomes 0 (transparent).
+		return String.format(java.util.Locale.ROOT, "rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255),
 				(int) Math.round(c.getGreen() * 255), (int) Math.round(c.getBlue() * 255), c.getOpacity());
 	}
 
@@ -3158,8 +3188,12 @@ public final class DiskView {
 		 * even after the on-canvas highlight is gone.
 		 */
 		private final MenuItem headerItem = new MenuItem();
-		// Path-section items.
-		private final MenuItem openItem = new MenuItem("Open Location");
+		// Path-section items. {@link #openItem} (Open) opens the path in its default handler — the
+		// folder for directories, the registered app for files. {@link #openLocationItem} reveals a
+		// file in its containing folder; redundant for directories, so only added to the menu when
+		// the target is a file.
+		private final MenuItem openItem = new MenuItem("Open");
+		private final MenuItem openLocationItem = new MenuItem("Open Location");
 		private final MenuItem copyItem = new MenuItem("Copy Path");
 		private final MenuItem stageItem = new MenuItem("Stage for Removal");
 		// View-section items (canvas only) — same semantics as the keyboard shortcuts so they
@@ -3179,10 +3213,37 @@ public final class DiskView {
 		private long lastHideNanos;
 		private static final long TOGGLE_DEBOUNCE_NANOS = 150_000_000L; // 150 ms
 
+		/**
+		 * Bubble-phase handler installed on the menu's own scene while the menu is shown. JavaFX's
+		 * MenuItem skin consumes left-clicks on items (to fire the action), so this handler only
+		 * runs on clicks that <em>weren't</em> on an actionable item: right-clicks on items,
+		 * left-clicks on the menu's padding / header / border, and clicks on the disabled
+		 * "header" naming the target. In every such case the user clearly didn't want to pick an
+		 * action — dismiss the menu so they're not stuck waiting to make a choice.
+		 */
+		private final javafx.event.EventHandler<javafx.scene.input.MouseEvent> menuMissDismiss = e -> {
+			menu.hide();
+			e.consume();
+		};
+
 		PathContextMenu() {
 			headerItem.setDisable(true);
-			menu.setOnHidden(e -> lastHideNanos = System.nanoTime());
+			menu.setOnShown(e -> {
+				javafx.scene.Scene s = menu.getScene();
+				if (s != null)
+					s.addEventHandler(javafx.scene.input.MouseEvent.MOUSE_PRESSED, menuMissDismiss);
+			});
+			menu.setOnHidden(e -> {
+				javafx.scene.Scene s = menu.getScene();
+				if (s != null)
+					s.removeEventHandler(javafx.scene.input.MouseEvent.MOUSE_PRESSED, menuMissDismiss);
+				lastHideNanos = System.nanoTime();
+			});
 			openItem.setOnAction(e -> {
+				if (pending != null)
+					openPath(pending);
+			});
+			openLocationItem.setOnAction(e -> {
 				if (pending != null)
 					revealPath(pending);
 			});
@@ -3223,6 +3284,10 @@ public final class DiskView {
 			return menu.isShowing();
 		}
 
+		void hide() {
+			menu.hide();
+		}
+
 		void install(Node node, PathTargetResolver resolver) {
 			install(node, resolver, false);
 		}
@@ -3251,9 +3316,10 @@ public final class DiskView {
 					pending = t;
 					headerItem.setText(shortLabel(t.path()));
 					stageItem.setDisable(t.stageAction() == null);
-					menu.getItems()
-							.addAll(headerItem, new SeparatorMenuItem(), openItem, copyItem, new SeparatorMenuItem(),
-									stageItem);
+					menu.getItems().addAll(headerItem, new SeparatorMenuItem(), openItem);
+					if (!t.isDirectory())
+						menu.getItems().add(openLocationItem);
+					menu.getItems().addAll(copyItem, new SeparatorMenuItem(), stageItem);
 				} else {
 					pending = null;
 				}
