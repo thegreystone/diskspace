@@ -42,7 +42,10 @@ jobs:
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '21'
-          distribution: 'graalvm-community'
+          # macOS + Windows on Oracle GraalVM, Linux on Community — see release.yml
+          # for the rationale (JFR JNI symbols on darwin CE; libjvm.a layout mismatch
+          # on Oracle Linux tarball).
+          distribution: ${{ runner.os == 'Linux' && 'graalvm-community' || 'graalvm' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 
@@ -58,6 +61,11 @@ jobs:
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+
+      # Workaround for gluonhq/substrate#1318: see scripts/ header for details.
+      - name: Patch GraalVM static-libs layout (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/patch-graalvm-static-libs-linux.sh
 
       - name: Native build
         run: mvn -B -Pnative gluonfx:build

@@ -77,6 +77,22 @@ public final class DiskView {
 	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(DiskView.class.getName());
 
 	/**
+	 * Set the first time any JFR-event interaction throws a {@link LinkageError} or other {@link Throwable} — typically
+	 * an {@link UnsatisfiedLinkError} from {@code jdk.jfr.internal.JVM.isExcluded} when the produced native-image
+	 * binary was built against a GraalVM distribution whose Substrate VM didn't link the JFR JNI symbols (CE without
+	 * {@code --enable-monitoring=jfr}, and Gluon Substrate even with it, per gluonhq/substrate#1354). Once set, all
+	 * subsequent JFR interactions short-circuit so a non-functional FlightRecorder doesn't kill scanning.
+	 */
+	private static volatile boolean jfrBroken;
+
+	private static void markJfrBroken(Throwable t) {
+		if (jfrBroken)
+			return;
+		jfrBroken = true;
+		LOG.log(java.util.logging.Level.WARNING, "JFR disabled for this session — events will be skipped", t);
+	}
+
+	/**
 	 * Session-only "don't ask again" flag for the FDA prompt. Deliberately not persisted: an occasional user who clicks
 	 * "skip" today and upgrades macOS in six months would otherwise get silently incomplete scans, with no way to
 	 * recover the prompt short of editing preferences. Forgetting on quit means the worst case is one extra dialog per
@@ -1284,12 +1300,19 @@ public final class DiskView {
 		// be correlated to the scan in JMC. Generated even when JFR isn't recording —
 		// the cost is one ThreadLocalRandom.nextLong + a couple of field assignments.
 		currentScanId = java.util.concurrent.ThreadLocalRandom.current().nextLong();
-		ScanEvent se = new ScanEvent();
-		se.scanId = currentScanId;
-		se.root = target.root().toString();
-		se.strategy = Scanner.strategyLabelFor(target);
-		se.begin();
-		currentScanEvent = se;
+		if (!jfrBroken) {
+			try {
+				ScanEvent se = new ScanEvent();
+				se.scanId = currentScanId;
+				se.root = target.root().toString();
+				se.strategy = Scanner.strategyLabelFor(target);
+				se.begin();
+				currentScanEvent = se;
+			} catch (Throwable t) {
+				markJfrBroken(t);
+				currentScanEvent = null;
+			}
+		}
 
 		scanner.scan(target.root(), new Scanner.ScanListener() {
 			@Override
@@ -1375,12 +1398,16 @@ public final class DiskView {
 		if (se == null)
 			return;
 		currentScanEvent = null;
-		se.fileCount = result != null ? result.totalFileCount() : progressFiles;
-		se.totalBytes = result != null ? result.totalBytes() : progressBytes;
-		se.permissionDeniedCount = lastPermDeniedCount;
-		se.outcome = outcome;
-		se.end();
-		se.commit();
+		try {
+			se.fileCount = result != null ? result.totalFileCount() : progressFiles;
+			se.totalBytes = result != null ? result.totalBytes() : progressBytes;
+			se.permissionDeniedCount = lastPermDeniedCount;
+			se.outcome = outcome;
+			se.end();
+			se.commit();
+		} catch (Throwable t) {
+			markJfrBroken(t);
+		}
 	}
 
 	// ---- table refresh ---------------------------------------------------
@@ -2222,21 +2249,35 @@ public final class DiskView {
 	private void redraw() {
 		// JFR Render event spans the entire layout+draw work. Fields filled at commit time
 		// since width/height/mode could in principle change across the body (defensive).
-		RenderEvent renderEvent = new RenderEvent();
 		String trigger = pendingRedrawTrigger;
 		pendingRedrawTrigger = "auto";
-		renderEvent.trigger = trigger;
-		renderEvent.scanId = currentScanId;
-		renderEvent.begin();
+		RenderEvent renderEvent = null;
+		if (!jfrBroken) {
+			try {
+				renderEvent = new RenderEvent();
+				renderEvent.trigger = trigger;
+				renderEvent.scanId = currentScanId;
+				renderEvent.begin();
+			} catch (Throwable t) {
+				markJfrBroken(t);
+				renderEvent = null;
+			}
+		}
 		try {
 			doRedraw();
 		} finally {
-			renderEvent.mode = currentMode.name();
-			renderEvent.widthPx = (int) canvas.getWidth();
-			renderEvent.heightPx = (int) canvas.getHeight();
-			renderEvent.nodeCount = progressFiles;
-			renderEvent.end();
-			renderEvent.commit();
+			if (renderEvent != null) {
+				try {
+					renderEvent.mode = currentMode.name();
+					renderEvent.widthPx = (int) canvas.getWidth();
+					renderEvent.heightPx = (int) canvas.getHeight();
+					renderEvent.nodeCount = progressFiles;
+					renderEvent.end();
+					renderEvent.commit();
+				} catch (Throwable t) {
+					markJfrBroken(t);
+				}
+			}
 			vizEventRenderCount++;
 		}
 	}
@@ -3504,12 +3545,18 @@ public final class DiskView {
 	 * with no stack trace are essentially a timestamp write.
 	 */
 	private void emitUserAction(String key, String operation) {
-		UserActionEvent e = new UserActionEvent();
-		e.key = key;
-		e.operation = operation;
-		e.mode = currentMode.name();
-		e.scanId = currentScanId;
-		e.commit();
+		if (jfrBroken)
+			return;
+		try {
+			UserActionEvent e = new UserActionEvent();
+			e.key = key;
+			e.operation = operation;
+			e.mode = currentMode.name();
+			e.scanId = currentScanId;
+			e.commit();
+		} catch (Throwable t) {
+			markJfrBroken(t);
+		}
 	}
 
 	/**
@@ -3553,12 +3600,19 @@ public final class DiskView {
 	 */
 	private void startVizEvent() {
 		vizEventRenderCount = 0;
-		VisualizationEvent e = new VisualizationEvent();
-		e.mode = currentMode.name();
-		e.disk = target.displayName();
-		e.scanId = currentScanId;
-		e.begin();
-		currentVizEvent = e;
+		if (jfrBroken)
+			return;
+		try {
+			VisualizationEvent e = new VisualizationEvent();
+			e.mode = currentMode.name();
+			e.disk = target.displayName();
+			e.scanId = currentScanId;
+			e.begin();
+			currentVizEvent = e;
+		} catch (Throwable t) {
+			markJfrBroken(t);
+			currentVizEvent = null;
+		}
 	}
 
 	/**
@@ -3567,11 +3621,15 @@ public final class DiskView {
 	 */
 	private void endVizEvent() {
 		VisualizationEvent e = currentVizEvent;
-		if (e != null) {
-			currentVizEvent = null;
+		if (e == null)
+			return;
+		currentVizEvent = null;
+		try {
 			e.renderCount = vizEventRenderCount;
 			e.end();
 			e.commit();
+		} catch (Throwable t) {
+			markJfrBroken(t);
 		}
 	}
 }

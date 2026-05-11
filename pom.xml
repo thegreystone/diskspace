@@ -33,7 +33,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     <groupId>se.hirt</groupId>
     <artifactId>diskspace</artifactId>
-    <version>0.2.7-SNAPSHOT</version>
+    <version>0.2.8-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <name>DiskSpace</name>
@@ -174,12 +174,50 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                             <nativeImageArgs>
                                 <!-- Cap the heap at 4 GB. Serial GC's stop-the-world full
                                      collections scale with heap size; without a cap, Substrate
-                                     ergonomics let the heap grow toward 80% of physical RAM,
-                                     which on a 64 GB machine means full GCs that pause for
-                                     seconds. 4 GB is comfortable for a multi-TB volume scan
-                                     (the DirectoryNode tree for ~4 M files is well under 1 GB)
-                                     and keeps worst-case Serial pauses bounded. -->
+                                     ergonomics let the heap grow toward 80% of physical RAM
+                                     (MaximumHeapSizePercent=80), which on a 64 GB machine
+                                     means full GCs that pause for seconds. 4 GB is comfortable
+                                     for a multi-TB volume scan (the DirectoryNode tree for
+                                     ~4 M files is well under 1 GB) and keeps worst-case Serial
+                                     pauses bounded. -->
                                 <arg>-R:MaxHeapSize=4g</arg>
+                                <!-- Pin the initial heap at 1 GB so a large scan doesn't trigger
+                                     a sequence of stop-the-world heap-expansion GCs as the
+                                     DirectoryNode tree grows from ~0 → ~hundreds of MB. Default
+                                     is 0 (no floor, heap starts at a few MB and grows under
+                                     pressure), which produced the visible mid-scan pauses. 1 GB
+                                     covers a typical home-directory scan in one shot; bigger
+                                     scans still grow naturally toward MaxHeapSize=4g, just
+                                     starting from a sensible floor instead of from a few MB.
+                                     Note on diagnosis: `-XX:PrintFlags=` reports these as 0
+                                     even when set — it prints option-definition defaults, not
+                                     effective values. The GC startup banner ("Maximum heap
+                                     size: …") is the authoritative readout, not PrintFlags. -->
+                                <arg>-R:MinHeapSize=1g</arg>
+                                <!-- Bake GC logging in by default so production builds can be
+                                     diagnosed without a custom build. Cost is ~300 bytes of
+                                     binary size (these flags flip defaults of already-compiled
+                                     Serial-GC logging paths; no extra code pulled in). Output
+                                     goes to stdout, which is /dev/null when the .app is launched
+                                     from Finder but visible when launched from a terminal:
+                                       /Applications/DiskSpace.app/Contents/MacOS/DiskSpace
+                                     Run that line in Terminal to see GC events live. The
+                                     `-R:+PrintGCTimeStamps` prefix on each line lets you
+                                     correlate pauses with scanner log timestamps. -->
+                                <arg>-R:+PrintGC</arg>
+                                <arg>-R:+VerboseGC</arg>
+                                <arg>-R:+PrintGCTimeStamps</arg>
+                                <!-- Enable Flight Recorder so production builds can capture
+                                     JFR recordings (App.maybeStartJfrRecording auto-starts one
+                                     when `-debug` is passed). On Oracle GraalVM 21+ Substrate
+                                     these flags both link the JFR JNI symbols AND produce a
+                                     working FlightRecorder. On Gluon Substrate they have
+                                     historically been accepted but produced no working engine
+                                     (gluonhq/substrate#1354) — that's why the prior `native-jfr`
+                                     profile carried a "currently a no-op" warning. DiskView's
+                                     defensive JFR guard handles the no-op case gracefully. -->
+                                <arg>--enable-monitoring=jfr</arg>
+                                <arg>-R:+FlightRecorder</arg>
                                 <!-- Quarantine the build-host JVM from other Java processes on
                                      the box. Without this, when a JMX/RMI client is running
                                      (e.g. JDK Mission Control, IntelliJ's RemoteMavenServer with
@@ -247,6 +285,15 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                      surface DAMediaSolidState. -->
                                 <arg>-Wl,-framework,DiskArbitration</arg>
                                 <arg>-Wl,-framework,IOKit</arg>
+                                <!-- libmanagement_ext provides com.sun.management.OperatingSystemImpl's
+                                     JNI methods (getFreeMemorySize0, getTotalMemorySize0, initialize0).
+                                     JFR pulls these in when `enable-monitoring=jfr` is on, but
+                                     Substrate's default macOS link line doesn't link this static lib.
+                                     Without it the link step fails with "Undefined symbols for
+                                     architecture arm64: _Java_com_sun_management_internal_…". The
+                                     .a lives in $GRAALVM_HOME/lib/static/darwin-aarch64/ and is on
+                                     the -L search path already, so the bare -l flag is enough. -->
+                                <arg>-lmanagement_ext</arg>
                             </linkerArgs>
                         </configuration>
                     </plugin>
@@ -255,14 +302,24 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         </profile>
 
         <!--
-          Diagnostic profile for the native build: layers GC logging on top of the `native`
-          profile so we can correlate UI freezes with collection events. Run together:
-            `mvn -Pnative,native-gc-log gluonfx:build`
-          Output: stdout of the produced .exe shows GC events. Drop this profile for
-          release builds — the chatter isn't useful to end users.
+          Linux-auto-activated. Same `-lmanagement_ext` story as native-mac: with
+          `enable-monitoring=jfr` on in the `native` profile, JFR pulls in
+          com.sun.management.OperatingSystemImpl whose JNI methods live in
+          libmanagement_ext.a, and Substrate's default Linux link line doesn't include
+          it. Without this entry the link step fails with
+            "undefined reference to `Java_com_sun_management_internal_OperatingSystemImpl_initialize0'"
+          on the Linux CI runner. The .a lives in $GRAALVM_HOME/lib/static/linux-amd64/
+          (or linux-aarch64/ when we ship that flavour) and Substrate's -L search path
+          already covers that directory, so the bare -l is enough.
         -->
         <profile>
-            <id>native-gc-log</id>
+            <id>native-linux</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                    <name>Linux</name>
+                </os>
+            </activation>
             <build>
                 <plugins>
                     <plugin>
@@ -270,61 +327,9 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         <artifactId>gluonfx-maven-plugin</artifactId>
                         <version>${gluonfx-maven-plugin.version}</version>
                         <configuration>
-                            <mainClass>${main.class}</mainClass>
-                            <nativeImageArgs>
-                                <arg>-R:MaxHeapSize=4g</arg>
-                                <!-- Bake runtime GC logging on by default in the produced exe.
-                                     -R: prefix means "set this as the default runtime arg"
-                                     rather than a build-time native-image option. -->
-                                <arg>-R:+PrintGC</arg>
-                                <arg>-R:+VerboseGC</arg>
-                                <arg>-R:+PrintGCTimeStamps</arg>
-                            </nativeImageArgs>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-
-        <!--
-          Intended to build the native exe with JFR (Java Flight Recorder) compiled in.
-          Pairs with the `native` profile:
-            `mvn -Pnative,native-jfr gluonfx:build`
-
-          STATUS: currently a no-op on Gluon Substrate. The build accepts every flag below
-          without warning, but the produced binary still throws
-            "Flight Recorder is not supported on this VM"
-          at runtime, both for the command-line StartFlightRecording forms and for the
-          programmatic JFR API in App.maybeStartJfrRecording(). Tracked at:
-            https://github.com/gluonhq/substrate/issues/1354
-          Minimal reproducer:
-            https://github.com/thegreystone/jfr-gluonfx-repro
-
-          JFR works fine on HotSpot today via the JVM debug-logging profile above (writes
-          diskspace.jfr), and is available in upstream GraalVM native-image since 21.2 (July
-          2021). This profile is kept in place so that once Gluon picks up upstream JFR
-          support the build line is already correct, no further wiring needed in App.java
-          or pom.xml. Drop the profile for release builds either way.
-        -->
-        <profile>
-            <id>native-jfr</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>com.gluonhq</groupId>
-                        <artifactId>gluonfx-maven-plugin</artifactId>
-                        <version>${gluonfx-maven-plugin.version}</version>
-                        <configuration>
-                            <mainClass>${main.class}</mainClass>
-                            <nativeImageArgs>
-                                <arg>-R:MaxHeapSize=4g</arg>
-                                <!-- The two flags an upstream native-image invocation would
-                                     use to enable JFR. Both are accepted by Gluon Substrate
-                                     today but produce no working JFR engine; see
-                                     https://github.com/gluonhq/substrate/issues/1354. -->
-                                <arg>--enable-monitoring=jfr</arg>
-                                <arg>-R:+FlightRecorder</arg>
-                            </nativeImageArgs>
+                            <linkerArgs>
+                                <arg>-lmanagement_ext</arg>
+                            </linkerArgs>
                         </configuration>
                     </plugin>
                 </plugins>
@@ -333,9 +338,9 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
         <!--
           Builds the native exe as a Windows console-subsystem binary so stdout/stderr stay
-          attached to the launching shell. Pairs with native-gc-log to actually see the GC
-          output:
-            `mvn -Pnative,native-gc-log,native-console gluonfx:build`
+          attached to the launching shell. GC logging is on by default in the `native`
+          profile, so a console build streams GC events live:
+            `mvn -Pnative,native-console gluonfx:build`
             target\gluonfx\x86_64-windows\DiskSpace.exe > stdout.txt 2>&1
           Side effect: a black console window pops up when launched from Explorer. Strictly
           a debug profile — never ship a console-subsystem build to end users.

@@ -28,7 +28,16 @@ jobs:
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '21'
-          distribution: 'graalvm-community'
+          # macOS + Windows use Oracle GraalVM: CE Substrate did not link the JFR JNI
+          # symbols (jdk.jfr.internal.JVM.isExcluded et al.) on darwin, breaking <clinit>
+          # of every jdk.jfr.Event subclass — that was the 0.2.7 regression. Windows
+          # Oracle builds fine and presumably wouldn't hit the same JFR gap on CE either,
+          # but we standardise on Oracle there too for symmetry with Mac.
+          # Linux stays on graalvm-community because the Oracle Linux tarball doesn't
+          # ship lib/svm/clibraries/linux-amd64/libjvm.a at the path Gluon Substrate 0.0.67
+          # expects (PosixTargetConfiguration.checkPlatformSpecificClibs fails pre-link).
+          # DiskView's defensive JFR guard backs us up if Linux CE has a JFR gap too.
+          distribution: ${{ runner.os == 'Linux' && 'graalvm-community' || 'graalvm' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 
@@ -48,6 +57,11 @@ jobs:
       - name: Set version from tag
         shell: bash
         run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
+
+      # Workaround for gluonhq/substrate#1318: see scripts/ header for details.
+      - name: Patch GraalVM static-libs layout (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/patch-graalvm-static-libs-linux.sh
 
       - name: Native build
         run: mvn -B -Pnative gluonfx:build
