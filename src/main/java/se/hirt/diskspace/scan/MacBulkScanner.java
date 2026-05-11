@@ -53,23 +53,22 @@ import java.util.logging.Logger;
  * {@code getattrlistbulk(2)}, which returns metadata (name + type + file ID + device ID + allocated size) for many
  * children in a single syscall instead of one {@code stat(2)} per entry. On APFS this collapses scan time roughly the
  * same way {@code MftScanner} does on Windows — the dominant cost in {@link ParallelDirectoryScanner} on macOS is
- * metadata-syscall round-trip, which this scanner amortises across ~500–800 entries per call (64 KB buffer / ~80–120
- * B per packed entry).
+ * metadata-syscall round-trip, which this scanner amortises across ~500–800 entries per call (64 KB buffer / ~80–120 B
+ * per packed entry).
  * <p>Architecture mirrors {@link ParallelDirectoryScanner}: a per-scan
  * {@link ForkJoinPool}, one {@link RecursiveAction} per directory, work-stealing for skewed trees. Each task opens its
  * own fd, drains it, closes it, then forks subtasks for child directories and waits via {@code invokeAll}. Concurrent
  * fd count is bounded by pool parallelism — well below macOS's default rlimit.
  * <p><b>Native-image only.</b> The {@code @CFunction} bindings in {@link Darwin}
- * resolve only when running as a built native-image; in JVM dev mode ({@code mvn javafx:run})
- * {@link #isAvailable()} returns false and {@code Scanner.forVolume(...)} falls back to
- * {@link ParallelDirectoryScanner}. The class is gated with {@code @Platforms(DARWIN)} so it does not exist on
- * non-Darwin native-image builds at all; cross-platform code reaches it only via
- * {@link se.hirt.diskspace.platform.Capabilities#NATIVE_SCANNER_PROVIDER}, whose static initializer dead-strips the
- * reference on non-matching platforms.
+ * resolve only when running as a built native-image; in JVM dev mode ({@code mvn javafx:run}) {@link #isAvailable()}
+ * returns false and {@code Scanner.forVolume(...)} falls back to {@link ParallelDirectoryScanner}. The class is gated
+ * with {@code @Platforms(DARWIN)} so it does not exist on non-Darwin native-image builds at all; cross-platform code
+ * reaches it only via {@link se.hirt.diskspace.platform.Capabilities#NATIVE_SCANNER_PROVIDER}, whose static initializer
+ * dead-strips the reference on non-matching platforms.
  * <p><b>Cross-mount detection.</b> The scan root's device ID is read up front via
  * {@code getattrlist(2)} (single-entry); each child entry's {@code ATTR_CMN_DEVID} is compared against it before
- * recursion, so we never descend into mounted volumes (iOS simulator data, disk images mounted under
- * {@code /Volumes}, etc.).
+ * recursion, so we never descend into mounted volumes (iOS simulator data, disk images mounted under {@code /Volumes},
+ * etc.).
  * <p><b>Hardlink dedup.</b> A concurrent set of seen file IDs gates both directory
  * descent (firmlinks / bind mounts) and file accounting (multi-hardlinked files reachable via more than one path).
  * Matches the dedup semantics of {@link ParallelDirectoryScanner}.
@@ -112,7 +111,7 @@ public final class MacBulkScanner implements Scanner {
 	 * @param parallelism
 	 * 		size of the per-scan ForkJoinPool. {@code 1} runs sequentially (right for spinning external HDDs); higher
 	 * 		values exploit metadata-throughput parallelism on SSDs. Same per-storage-profile mapping
-	 * 		{@link ParallelScannerProvider#parallelismFor(se.hirt.diskspace.model.StorageProfile)} uses.
+	 *        {@link ParallelScannerProvider#parallelismFor(se.hirt.diskspace.model.StorageProfile)} uses.
 	 */
 	public MacBulkScanner(int parallelism) {
 		if (parallelism < 1)
@@ -132,7 +131,8 @@ public final class MacBulkScanner implements Scanner {
 			long rootDev = readRootDevId(rootPath);
 			if (rootDev == ROOT_DEV_FAILED) {
 				if (!cancelled)
-					listener.onError(new RuntimeException("getattrlist(root) failed; cannot start bulk scan of " + rootPath));
+					listener.onError(
+							new RuntimeException("getattrlist(root) failed; cannot start bulk scan of " + rootPath));
 				return;
 			}
 			ScanContext ctx = new ScanContext(rootPath, root, listener, rootDev);
@@ -180,7 +180,10 @@ public final class MacBulkScanner implements Scanner {
 		final Path rootPath;
 		final DirectoryNode rootNode;
 		final ScanListener listener;
-		/** Unsigned 32-bit device ID of the scan root; per-entry DEVID is compared against this for cross-mount detection. */
+		/**
+		 * Unsigned 32-bit device ID of the scan root; per-entry DEVID is compared against this for cross-mount
+		 * detection.
+		 */
 		final long rootDev;
 		/** Inode-set for hardlink + firmlink dedup. Used for both files (multi-link) and directories (bind mounts). */
 		final Set<Long> seenFileIds = ConcurrentHashMap.newKeySet();
@@ -209,10 +212,10 @@ public final class MacBulkScanner implements Scanner {
 	}
 
 	/**
-	 * Reads the device ID of the scan root via a single-entry {@code getattrlist(2)}. The resulting unsigned dev_t
-	 * is compared (as an unsigned long) against each child's {@code ATTR_CMN_DEVID} in {@link DirScanTask} to decide
-	 * whether to recurse — same {@code rootDev} cross-mount guard {@link ParallelDirectoryScanner} implements via
-	 * Java NIO's {@code BasicFileAttributes.fileKey()}.
+	 * Reads the device ID of the scan root via a single-entry {@code getattrlist(2)}. The resulting unsigned dev_t is
+	 * compared (as an unsigned long) against each child's {@code ATTR_CMN_DEVID} in {@link DirScanTask} to decide
+	 * whether to recurse — same {@code rootDev} cross-mount guard {@link ParallelDirectoryScanner} implements via Java
+	 * NIO's {@code BasicFileAttributes.fileKey()}.
 	 */
 	private static long readRootDevId(Path path) {
 		Pointer alist = UnmanagedMemory.malloc(Darwin.ATTRLIST_SIZE_BYTES);
@@ -238,8 +241,8 @@ public final class MacBulkScanner implements Scanner {
 
 	/**
 	 * Fills the 24-byte {@code struct attrlist} at {@code alist} with the requested commonattr + fileattr bits and
-	 * zeroes for the other three groups. Called by both {@link #readRootDevId} and the per-directory worker setup
-	 * in {@link DirScanTask}.
+	 * zeroes for the other three groups. Called by both {@link #readRootDevId} and the per-directory worker setup in
+	 * {@link DirScanTask}.
 	 */
 	private static void writeAttrList(Pointer alist, int commonAttrs, int fileAttrs) {
 		alist.writeShort(0, (short) Darwin.ATTR_BIT_MAP_COUNT);
@@ -307,23 +310,20 @@ public final class MacBulkScanner implements Scanner {
 		}
 
 		/**
-		 * Drives the {@code getattrlistbulk} loop for {@code fd}. One attrlist + one 64 KB output buffer allocated
-		 * here per task; freed in finally. Both are per-task rather than per-thread because Substrate VM forbids
-		 * ThreadLocal-with-finalizer patterns and a pool here would just add complexity for a single-allocation
-		 * win.
+		 * Drives the {@code getattrlistbulk} loop for {@code fd}. One attrlist + one 64 KB output buffer allocated here
+		 * per task; freed in finally. Both are per-task rather than per-thread because Substrate VM forbids
+		 * ThreadLocal-with-finalizer patterns and a pool here would just add complexity for a single-allocation win.
 		 */
 		private void readDirEntries(int fd, List<DirScanTask> subTasks) {
 			Pointer alist = UnmanagedMemory.malloc(Darwin.ATTRLIST_SIZE_BYTES);
 			Pointer buf = UnmanagedMemory.malloc(BULK_BUFFER_SIZE);
 			try {
-				int commonAttrs = Darwin.ATTR_CMN_RETURNED_ATTRS | Darwin.ATTR_CMN_NAME | Darwin.ATTR_CMN_DEVID
-						| Darwin.ATTR_CMN_OBJTYPE | Darwin.ATTR_CMN_FILEID;
+				int commonAttrs = Darwin.ATTR_CMN_RETURNED_ATTRS | Darwin.ATTR_CMN_NAME | Darwin.ATTR_CMN_DEVID | Darwin.ATTR_CMN_OBJTYPE | Darwin.ATTR_CMN_FILEID;
 				int fileAttrs = Darwin.ATTR_FILE_ALLOCSIZE;
 				writeAttrList(alist, commonAttrs, fileAttrs);
 
 				while (!cancelled) {
-					int count = Darwin.getattrlistbulk(fd, alist, buf, BULK_BUFFER_SIZE,
-							Darwin.FSOPT_PACK_INVAL_ATTRS);
+					int count = Darwin.getattrlistbulk(fd, alist, buf, BULK_BUFFER_SIZE, Darwin.FSOPT_PACK_INVAL_ATTRS);
 					if (count == 0)
 						break;  // end of directory
 					if (count < 0) {

@@ -108,9 +108,9 @@ public final class App extends Application {
 		if (Boolean.getBoolean("diskspace.skipElevationPrompt"))
 			return;
 		String confirmationText = """
-				DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as administrator. Without elevation it falls back to the directory-walking scanner.
-				
-				Restart as administrator now?""";
+								  DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as administrator. Without elevation it falls back to the directory-walking scanner.
+								  
+								  Restart as administrator now?""";
 		Alert alert = new Alert(AlertType.CONFIRMATION, confirmationText, ButtonType.YES, ButtonType.NO);
 		alert.setHeaderText("Run as administrator for faster scanning?");
 		alert.setTitle("DiskSpace");

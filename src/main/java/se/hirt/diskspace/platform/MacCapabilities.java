@@ -32,12 +32,7 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import se.hirt.diskspace.model.StorageProfile;
 import se.hirt.diskspace.model.Volume;
-import se.hirt.diskspace.scan.MacBulkScanner;
-import se.hirt.diskspace.scan.MacStorageProbe;
-import se.hirt.diskspace.scan.ParallelScannerProvider;
-import se.hirt.diskspace.scan.ScanStrategy;
-import se.hirt.diskspace.scan.Scanner;
-import se.hirt.diskspace.scan.ScannerProvider;
+import se.hirt.diskspace.scan.*;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -76,16 +71,16 @@ public final class MacCapabilities {
 	}
 
 	/**
-	 * Bulk-syscall scanner provider — wraps {@link MacBulkScanner} as a {@link ScannerProvider} so cross-platform
-	 * code in {@code Scanner.forVolume} selects it generically. Matches {@link ScanStrategy#AUTO} only; we don't add a
+	 * Bulk-syscall scanner provider — wraps {@link MacBulkScanner} as a {@link ScannerProvider} so cross-platform code
+	 * in {@code Scanner.forVolume} selects it generically. Matches {@link ScanStrategy#AUTO} only; we don't add a
 	 * dedicated "BULK" strategy because the scanner is strictly faster than {@link ParallelScannerProvider} on local
 	 * Mac volumes and there's no real reason for the user to manually pick it. {@code canScan} excludes
 	 * {@link StorageProfile#NETWORK} so latency-bound network filesystems fall through to the parallel walker's
 	 * high-fan-out path (parallelism=16) — getattrlistbulk over NFS/SMB still amortises calls but doesn't hide
 	 * round-trip the way many concurrent in-flight requests do.
 	 * <p>Parallelism for each scan is derived from the volume's storage profile via
-	 * {@link ParallelScannerProvider#parallelismFor(StorageProfile)} so the bulk scanner respects the same HDD=1,
-	 * SSD=8 mapping the cross-platform parallel scanner uses.
+	 * {@link ParallelScannerProvider#parallelismFor(StorageProfile)} so the bulk scanner respects the same HDD=1, SSD=8
+	 * mapping the cross-platform parallel scanner uses.
 	 */
 	public static ScannerProvider bulkScannerProvider() {
 		return new ScannerProvider() {
@@ -119,8 +114,7 @@ public final class MacCapabilities {
 			@Override
 			public String description(Volume volume, ScanStrategy preference) {
 				int p = ParallelScannerProvider.parallelismFor(volume.storageProfile());
-				return "Reads directory metadata in bulk via getattrlistbulk(2) — ~500–800 entries per syscall instead of one stat per file — and recurses on a ForkJoinPool sized to the storage profile ("
-						+ p + " readers).";
+				return "Reads directory metadata in bulk via getattrlistbulk(2) — ~500–800 entries per syscall instead of one stat per file — and recurses on a ForkJoinPool sized to the storage profile (" + p + " readers).";
 			}
 		};
 	}

@@ -32,16 +32,15 @@ package se.hirt.diskspace.scan;
  * User preference for scan strategy. {@link Scanner#forVolume(se.hirt.diskspace.model.Volume)} resolves the actual
  * scanner to instantiate based on this preference and the volume's capabilities.
  * <p>S in the picker cycles through these values in declared order
- * ({@link #AUTO} → {@link #BULK} → {@link #MFT} → {@link #PARALLEL} → {@link #SEQUENTIAL} → {@link #AUTO}),
- * skipping any whose primary provider isn't registered on the current platform — so on macOS the cycle reads
- * AUTO → BULK → PARALLEL → SEQUENTIAL (MFT skipped) and on Windows it reads AUTO → MFT → PARALLEL → SEQUENTIAL
- * (BULK skipped).
+ * ({@link #AUTO} → {@link #BULK} → {@link #MFT} → {@link #PARALLEL} → {@link #SEQUENTIAL} → {@link #AUTO}), skipping
+ * any whose primary provider isn't registered on the current platform — so on macOS the cycle reads AUTO → BULK →
+ * PARALLEL → SEQUENTIAL (MFT skipped) and on Windows it reads AUTO → MFT → PARALLEL → SEQUENTIAL (BULK skipped).
  */
 public enum ScanStrategy {
 	/**
 	 * Pick the fastest implementation available for each volume. NTFS on Windows with admin privilege gets the MFT
-	 * scanner; local volumes on macOS get the getattrlistbulk-based bulk scanner; everything else gets parallel
-	 * walking sized to the storage profile.
+	 * scanner; local volumes on macOS get the getattrlistbulk-based bulk scanner; everything else gets parallel walking
+	 * sized to the storage profile.
 	 */
 	AUTO,
 	/**
@@ -56,8 +55,8 @@ public enum ScanStrategy {
 	 */
 	MFT,
 	/**
-	 * Force parallel directory walking with the per-profile pool size (HDD=1, SSD=8, NETWORK=16). Skips MFT / BULK
-	 * even when available — useful for A/B comparison.
+	 * Force parallel directory walking with the per-profile pool size (HDD=1, SSD=8, NETWORK=16). Skips MFT / BULK even
+	 * when available — useful for A/B comparison.
 	 */
 	PARALLEL,
 	/**

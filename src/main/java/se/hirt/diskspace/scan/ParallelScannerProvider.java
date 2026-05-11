@@ -42,9 +42,9 @@ import se.hirt.diskspace.model.Volume;
  * drives we haven't classified.
  * <p>{@link #matchesPreference} returns true for AUTO / PARALLEL / SEQUENTIAL but NOT for MFT or
  * BULK — those are "primarily" the platform-native scanners' job, and {@link ScannerProviders#providerFor} falls back
- * to AUTO automatically when the user forced one on a volume that can't actually serve it, at which point this
- * provider is selected. {@link #description} branches on the preference so the tooltip honestly says "X not available
- * — falling back" in that case.
+ * to AUTO automatically when the user forced one on a volume that can't actually serve it, at which point this provider
+ * is selected. {@link #description} branches on the preference so the tooltip honestly says "X not available — falling
+ * back" in that case.
  */
 public final class ParallelScannerProvider implements ScannerProvider {
 
@@ -76,7 +76,8 @@ public final class ParallelScannerProvider implements ScannerProvider {
 		if (preference == ScanStrategy.MFT || preference == ScanStrategy.BULK) {
 			String forced = preference == ScanStrategy.MFT ? "MFT" : "Bulk";
 			int p = parallelismFor(volume.storageProfile());
-			return p == 1 ? forced + " not available for this volume — falling back to single-threaded directory walking."
+			return p == 1
+					? forced + " not available for this volume — falling back to single-threaded directory walking."
 					: forced + " not available for this volume — falling back to parallel walking (" + p + " readers, sized to the storage profile).";
 		}
 		int p = parallelismFor(volume, preference);

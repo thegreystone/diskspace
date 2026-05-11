@@ -31,8 +31,8 @@ package se.hirt.diskspace.ui.theme;
 import javafx.scene.paint.Color;
 
 public record ColorScheme(Color background, Color surface, Color textPrimary, Color textMuted, Color accent,
-                          Color capacityTrack, Color capacityFillLow, Color capacityFillMid, Color capacityFillHigh,
-                          String stylesheet) {
+						  Color capacityTrack, Color capacityFillLow, Color capacityFillMid, Color capacityFillHigh,
+						  String stylesheet) {
 
 	public static final ColorScheme DARK = new ColorScheme(Color.web("#000000"), Color.web("#121214"),
 			Color.web("#EDEDED"), Color.web("#7A7A82"), Color.web("#7AD3D9"), Color.web("#1F1F23"),

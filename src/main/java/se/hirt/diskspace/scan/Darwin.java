@@ -85,13 +85,13 @@ public final class Darwin {
 	// ── getattrlist / getattrlistbulk constants ───────────────────────────
 
 	/**
-	 * Number of {@code attrgroup_t} fields in {@code struct attrlist}. Always 5 on macOS:
-	 * {@code commonattr}, {@code volattr}, {@code dirattr}, {@code fileattr}, {@code forkattr}.
+	 * Number of {@code attrgroup_t} fields in {@code struct attrlist}. Always 5 on macOS: {@code commonattr},
+	 * {@code volattr}, {@code dirattr}, {@code fileattr}, {@code forkattr}.
 	 */
 	public static final int ATTR_BIT_MAP_COUNT = 5;
 	/**
-	 * Size of {@code struct attrlist} in bytes: {@code u_short bitmapcount + u_int16_t reserved + 5 × attrgroup_t} =
-	 * 2 + 2 + 20 = 24.
+	 * Size of {@code struct attrlist} in bytes: {@code u_short bitmapcount + u_int16_t reserved + 5 × attrgroup_t} = 2
+	 * + 2 + 20 = 24.
 	 */
 	public static final int ATTRLIST_SIZE_BYTES = 24;
 
@@ -99,8 +99,8 @@ public final class Darwin {
 	public static final int FSOPT_NOFOLLOW = 0x00000001;
 	/**
 	 * {@code FSOPT_PACK_INVAL_ATTRS} — pack invalid attributes in the buffer with zeros instead of skipping them, so
-	 * every entry has the same fixed layout. Mandatory for sane parsing; without it the per-entry offsets shift
-	 * based on which attrs apply (file vs. directory).
+	 * every entry has the same fixed layout. Mandatory for sane parsing; without it the per-entry offsets shift based
+	 * on which attrs apply (file vs. directory).
 	 */
 	public static final int FSOPT_PACK_INVAL_ATTRS = 0x00000008;
 
@@ -110,10 +110,10 @@ public final class Darwin {
 	public static final int ATTR_CMN_OBJTYPE = 0x00000008;
 	public static final int ATTR_CMN_FILEID = 0x02000000;
 	/**
-	 * {@code ATTR_CMN_RETURNED_ATTRS} — when requested, the first attribute in the buffer is an
-	 * {@code attribute_set_t} (5 × uint32 = 20 bytes) indicating which attributes were actually populated. With
-	 * {@link #FSOPT_PACK_INVAL_ATTRS} that's everything we asked for, but we include the bit anyway so the layout
-	 * is well-defined (and so we could drop {@code FSOPT_PACK_INVAL_ATTRS} later if we want a more compact buffer).
+	 * {@code ATTR_CMN_RETURNED_ATTRS} — when requested, the first attribute in the buffer is an {@code attribute_set_t}
+	 * (5 × uint32 = 20 bytes) indicating which attributes were actually populated. With {@link #FSOPT_PACK_INVAL_ATTRS}
+	 * that's everything we asked for, but we include the bit anyway so the layout is well-defined (and so we could drop
+	 * {@code FSOPT_PACK_INVAL_ATTRS} later if we want a more compact buffer).
 	 */
 	public static final int ATTR_CMN_RETURNED_ATTRS = 0x80000000;
 
@@ -132,9 +132,9 @@ public final class Darwin {
 	// ── POSIX open / close / errno (libSystem) ────────────────────────────
 
 	/**
-	 * {@code int open(const char *path, int flags)}. Returns a new file descriptor on success or -1 on failure;
-	 * on failure, {@link #__error} returns the address of the errno value. We bind the 2-argument form only —
-	 * a {@code mode_t} third argument is only required when {@code O_CREAT} or {@code O_TMPFILE} is in {@code flags},
+	 * {@code int open(const char *path, int flags)}. Returns a new file descriptor on success or -1 on failure; on
+	 * failure, {@link #__error} returns the address of the errno value. We bind the 2-argument form only — a
+	 * {@code mode_t} third argument is only required when {@code O_CREAT} or {@code O_TMPFILE} is in {@code flags},
 	 * neither of which we use.
 	 */
 	@CFunction(value = "open", transition = Transition.NO_TRANSITION)
@@ -147,9 +147,9 @@ public final class Darwin {
 	public static native int close(int fd);
 
 	/**
-	 * {@code int *__error(void)}. Returns the address of the thread-local errno integer. On Darwin, the
-	 * {@code errno} macro in C headers expands to {@code (*__error())}; we mirror that by reading via the
-	 * returned pointer. Stable libSystem symbol since Mac OS X 10.0.
+	 * {@code int *__error(void)}. Returns the address of the thread-local errno integer. On Darwin, the {@code errno}
+	 * macro in C headers expands to {@code (*__error())}; we mirror that by reading via the returned pointer. Stable
+	 * libSystem symbol since Mac OS X 10.0.
 	 */
 	@CFunction(value = "__error", transition = Transition.NO_TRANSITION)
 	public static native CIntPointer __error();
@@ -157,21 +157,22 @@ public final class Darwin {
 	// ── getattrlist / getattrlistbulk (libSystem) ─────────────────────────
 
 	/**
-	 * {@code int getattrlist(const char *path, struct attrlist *alist, void *attrBuf, size_t attrBufSize, unsigned
-	 * long options)}. Returns 0 on success, -1 on error. Single-entry version of {@link #getattrlistbulk}; used by
-	 * the bulk scanner to read the scan root's device ID once at startup so we can detect mount-point crossings as
-	 * children are enumerated.
+	 * {@code int getattrlist(const char *path, struct attrlist *alist, void *attrBuf, size_t attrBufSize, unsigned long
+	 * options)}. Returns 0 on success, -1 on error. Single-entry version of {@link #getattrlistbulk}; used by the bulk
+	 * scanner to read the scan root's device ID once at startup so we can detect mount-point crossings as children are
+	 * enumerated.
 	 */
 	@CFunction(value = "getattrlist", transition = Transition.NO_TRANSITION)
-	public static native int getattrlist(CCharPointer path, PointerBase alist, PointerBase buf, long bufSize, long options);
+	public static native int getattrlist(
+			CCharPointer path, PointerBase alist, PointerBase buf, long bufSize, long options);
 
 	/**
 	 * {@code int getattrlistbulk(int dirfd, struct attrlist *alist, void *attrBuf, size_t attrBufSize, uint64_t
 	 * options)}. Returns the number of entries packed into {@code attrBuf} (&gt; 0), 0 on end-of-directory, or -1 on
 	 * error. Each entry is a variable-length record starting with a {@code uint32 entry_length}; subsequent entries
-	 * follow contiguously. With {@link #FSOPT_PACK_INVAL_ATTRS}, the per-entry fixed-attribute area has the same
-	 * layout regardless of file vs. directory — see the parser in {@code MacBulkScanner} for the offsets we depend
-	 * on. Apple added this syscall in macOS 10.10 (Yosemite); always available on our minimum target (12).
+	 * follow contiguously. With {@link #FSOPT_PACK_INVAL_ATTRS}, the per-entry fixed-attribute area has the same layout
+	 * regardless of file vs. directory — see the parser in {@code MacBulkScanner} for the offsets we depend on. Apple
+	 * added this syscall in macOS 10.10 (Yosemite); always available on our minimum target (12).
 	 */
 	@CFunction(value = "getattrlistbulk", transition = Transition.NO_TRANSITION)
 	public static native int getattrlistbulk(int dirfd, PointerBase alist, PointerBase buf, long bufSize, long options);
