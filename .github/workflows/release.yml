@@ -28,7 +28,14 @@ jobs:
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '21'
-          distribution: 'graalvm-community'
+          # Oracle GraalVM (not 'graalvm-community'): the CE Substrate VM does not link
+          # the JFR JNI symbols (jdk.jfr.internal.JVM.isExcluded et al.) by default,
+          # which fails <clinit> of every jdk.jfr.Event subclass at runtime — see
+          # se.hirt.diskspace.ui.DiskView$VisualizationEvent (regression shipped in 0.2.7).
+          # Oracle GraalVM links them, so jdk.jfr.Event subclasses initialise cleanly.
+          # DiskView also has a defensive guard that tolerates a missing FlightRecorder,
+          # but using Oracle GraalVM keeps the JFR-event correlation working in JMC.
+          distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 

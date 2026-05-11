@@ -42,7 +42,9 @@ jobs:
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '21'
-          distribution: 'graalvm-community'
+          # Oracle GraalVM (not 'graalvm-community') so CI matches release.yml — see
+          # the matching comment there for the JFR-JNI-symbol rationale.
+          distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 

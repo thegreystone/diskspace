@@ -242,18 +242,20 @@ public final class App extends Application {
 	 * <p>We drive the JFR API instead of {@code -XX:StartFlightRecording=...} because
 	 * Substrate VM (GraalVM 21 LTS) doesn't honour that command-line flag in native-image mode — both the {@code -XX:}
 	 * runtime form and the {@code -R:} build-time baked-in form are silently no-ops.
-	 * <p>On HotSpot the API path works as expected. On Gluon Substrate native images the
-	 * API is also broken right now: {@code new Recording().start()} throws "Flight Recorder is not supported on this
-	 * VM" even when {@code --enable-monitoring=jfr} was passed at build time (our {@code native-jfr} profile). Tracked
-	 * at
-	 * <a href="https://github.com/gluonhq/substrate/issues/1354">gluonhq/substrate#1354</a>;
+	 * <p>On HotSpot and on Oracle GraalVM 21+ Substrate (our CI distribution),
+	 * the API path Just Works once the build has {@code --enable-monitoring=jfr} +
+	 * {@code -R:+FlightRecorder} (set in the {@code native} profile) plus {@code -lmanagement_ext} in the link step
+	 * (set in {@code native-mac}, since JFR pulls in {@code com.sun.management.OperatingSystemImpl}'s JNI methods
+	 * which aren't on Substrate's default macOS link line). The Gluon-distributed GraalVM build used to ship a
+	 * broken FlightRecorder engine (see
+	 * <a href="https://github.com/gluonhq/substrate/issues/1354">gluonhq/substrate#1354</a>,
 	 * minimal reproducer at
-	 * <a href="https://github.com/thegreystone/jfr-gluonfx-repro">thegreystone/jfr-gluonfx-repro</a>.
-	 * The catch block below swallows that exception, so once Gluon picks up the upstream fix this code path will Just
-	 * Work in native binaries too.
-	 * <p>If JFR isn't compiled into the binary (default {@code native} build), the
-	 * {@code Recording} call throws and we swallow it — JFR is strictly opt-in. Dump-on-exit is enabled so the file
-	 * appears when the user closes the app normally.
+	 * <a href="https://github.com/thegreystone/jfr-gluonfx-repro">thegreystone/jfr-gluonfx-repro</a>);
+	 * we sidestep that by building with Oracle GraalVM directly.
+	 * <p>The catch block remains as a defence-in-depth measure: if a build ever
+	 * ships without JFR compiled in (a different Substrate distribution, a different graalvmHome on a contributor's
+	 * box), {@code new Recording()} throws and we swallow it — JFR is strictly opt-in. Dump-on-exit is enabled so the
+	 * file appears when the user closes the app normally.
 	 */
 	private static void maybeStartJfrRecording() {
 		String filename = System.getProperty("diskspace.jfr.file");
