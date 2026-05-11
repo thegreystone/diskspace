@@ -40,10 +40,10 @@ import se.hirt.diskspace.model.Volume;
  * metadata readers, NETWORK is latency-bound and benefits from many in-flight requests. {@link ScanStrategy#SEQUENTIAL}
  * forces parallelism=1 regardless of profile — a debug knob useful for measuring the parallel speedup or for spinning
  * drives we haven't classified.
- * <p>{@link #matchesPreference} returns true for AUTO / PARALLEL / SEQUENTIAL but NOT for MFT —
- * MFT is "primarily" {@link MftScanner}'s job, and {@link ScannerProviders#providerFor} falls back to AUTO
- * automatically when the user forced MFT on a volume that can't actually do MFT, at which point this provider is
- * selected. {@link #description} branches on the preference so the tooltip honestly says "MFT not available — falling
+ * <p>{@link #matchesPreference} returns true for AUTO / PARALLEL / SEQUENTIAL but NOT for MFT or
+ * BULK — those are "primarily" the platform-native scanners' job, and {@link ScannerProviders#providerFor} falls back
+ * to AUTO automatically when the user forced one on a volume that can't actually serve it, at which point this provider
+ * is selected. {@link #description} branches on the preference so the tooltip honestly says "X not available — falling
  * back" in that case.
  */
 public final class ParallelScannerProvider implements ScannerProvider {
@@ -71,12 +71,14 @@ public final class ParallelScannerProvider implements ScannerProvider {
 
 	@Override
 	public String description(Volume volume, ScanStrategy preference) {
-		// User asked for MFT but ended up here via AUTO fallback in ScannerProviders.providerFor.
+		// User asked for MFT or BULK but ended up here via AUTO fallback in ScannerProviders.providerFor.
 		// Call out the fallback explicitly so the tooltip doesn't lie about what's running.
-		if (preference == ScanStrategy.MFT) {
+		if (preference == ScanStrategy.MFT || preference == ScanStrategy.BULK) {
+			String forced = preference == ScanStrategy.MFT ? "MFT" : "Bulk";
 			int p = parallelismFor(volume.storageProfile());
-			return p == 1 ? "MFT not available for this volume — falling back to single-threaded directory walking."
-					: "MFT not available for this volume — falling back to parallel walking (" + p + " readers, sized to the storage profile).";
+			return p == 1
+					? forced + " not available for this volume — falling back to single-threaded directory walking."
+					: forced + " not available for this volume — falling back to parallel walking (" + p + " readers, sized to the storage profile).";
 		}
 		int p = parallelismFor(volume, preference);
 		return switch (p) {
@@ -101,7 +103,7 @@ public final class ParallelScannerProvider implements ScannerProvider {
 	 * the SSD value — the common case is solid-state, and the only profile that loses badly to parallelism (HDD) is the
 	 * one we explicitly identify.
 	 */
-	static int parallelismFor(StorageProfile profile) {
+	public static int parallelismFor(StorageProfile profile) {
 		if (profile == null)
 			return 8;
 		return switch (profile) {
