@@ -58,6 +58,11 @@ jobs:
         shell: bash
         run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
 
+      # Workaround for gluonhq/substrate#1318: see scripts/ header for details.
+      - name: Patch GraalVM static-libs layout (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/patch-graalvm-static-libs-linux.sh
+
       - name: Native build
         run: mvn -B -Pnative gluonfx:build
 

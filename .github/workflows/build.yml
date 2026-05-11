@@ -62,6 +62,11 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # Workaround for gluonhq/substrate#1318: see scripts/ header for details.
+      - name: Patch GraalVM static-libs layout (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/patch-graalvm-static-libs-linux.sh
+
       - name: Native build
         run: mvn -B -Pnative gluonfx:build
 

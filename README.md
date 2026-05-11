@@ -127,6 +127,13 @@ The native binary will be at `target/gluonfx/<arch>-<os>/diskspace[.exe]`.
 `glass` at startup; see `DESIGN.md § 7.5` for details. The `gluonfx-maven-plugin` reads `GRAALVM_HOME` (not
 `JAVA_HOME`) — `build-native.ps1` overrides both.
 
+> **Linux only**: recent GraalVM 21.x builds moved their static libraries into a `glibc/` subdirectory that
+> `gluonfx-maven-plugin` 1.0.27 (Substrate 0.0.68) doesn't know about, so `gluonfx:build` fails at the link step
+> with `Missing library libjvm.a not in linkpath …/lib/svm/clibraries/linux-amd64`. Until upstream
+> ([gluonhq/substrate#1318](https://github.com/gluonhq/substrate/issues/1318)) ships a fix, run
+> `bash scripts/patch-graalvm-static-libs-linux.sh` once after installing/upgrading GraalVM — it symlinks the
+> libraries to the location Substrate expects. CI does this automatically.
+
 ## Mac Notes
 
 DiskSpace handles several APFS- and macOS-specific quirks. None of them require user intervention except where noted.
