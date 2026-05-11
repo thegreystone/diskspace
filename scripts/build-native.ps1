@@ -19,6 +19,10 @@
 # instead, which correctly distinguishes "wrote to stderr" from "exited non-zero".
 $ErrorActionPreference = 'Continue'
 
+# Run from the repo root no matter where the user invoked the script from,
+# so `mvn` finds pom.xml.
+Set-Location (Join-Path $PSScriptRoot '..')
+
 $vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 if (-not (Test-Path $vcvars)) {
     Write-Host "vcvars64.bat not found at $vcvars" -ForegroundColor Red
