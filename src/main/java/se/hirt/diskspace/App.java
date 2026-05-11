@@ -29,6 +29,7 @@
 package se.hirt.diskspace;
 
 import javafx.application.Application;
+import javafx.application.HostServices;
 import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
@@ -63,9 +64,22 @@ public final class App extends Application {
 
 	private static volatile MainWindow mainWindow;
 	private static volatile boolean shuttingDown;
+	/**
+	 * JavaFX-provided launcher for opening URIs through the platform's native handler — internally
+	 * routes through {@code LSOpenCFURLRef} on macOS, {@code ShellExecute} on Windows, and
+	 * {@code xdg-open} on Linux. We stash it here so any UI code can reach it without dragging in
+	 * AWT's {@code Desktop} (which would initialise AppKit on macOS and clash with JavaFX's main
+	 * thread). Set in {@link #start} before the first window is shown.
+	 */
+	private static volatile HostServices hostServices;
+
+	public static HostServices hostServices() {
+		return hostServices;
+	}
 
 	@Override
 	public void start(Stage stage) {
+		hostServices = getHostServices();
 		ColorScheme scheme = ColorScheme.DARK;
 
 		MainWindow main = new MainWindow(scheme);

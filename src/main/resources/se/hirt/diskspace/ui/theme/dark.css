@@ -200,6 +200,91 @@
     -fx-background-color: #7AD3D944;
 }
 
+/* ---------------- TableView ---------------- */
+
+/* Scope-override the selection-bar variables for TableView only. Modena propagates
+ * -fx-background = -fx-selection-bar (or -fx-selection-bar-non-focused, when the
+ * table isn't the focus owner — the more common case after a click) onto selected
+ * rows, and then its high-specificity cell rules paint each cell with that
+ * variable. The row factory in DiskView paints its own translucent tint inline,
+ * so we don't want modena's cell paint to fight it — making the variables
+ * transparent collapses modena's chain to a no-op for TableView.
+ *
+ * Other controls (ListView, TreeView, ComboBox dropdowns) use the global
+ * -fx-selection-bar from .root above and are unaffected. */
+.table-view {
+    -fx-selection-bar: transparent;
+    -fx-selection-bar-non-focused: transparent;
+}
+
+
+/* DiskView's row factory paints the row's selection / hover / alt-row tint
+ * inline on the TableRow. By default modena uses high-specificity rules that
+ * paint cells (and rows) with their own backgrounds, masking the row tint.
+ *
+ * Modena's actual selectors are deeply-nested — e.g. for selected cells it uses
+ *
+ *   .table-view > .virtual-flow > .clipped-container > .sheet >
+ *           .table-row-cell .table-cell:selected
+ *
+ * with specificity ~70. To win the cascade we either need !important or a
+ * selector with matching specificity. We mirror modena's chain verbatim below:
+ * an author stylesheet beats the user-agent stylesheet at equal specificity, so
+ * these rules will reliably override modena. */
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:selected,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:focused,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:focused,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:selected,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:focused:selected {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+/* Same approach for the row itself — modena sets -fx-background on selected
+ * rows, and the row's modena rule then paints with that. We'd rather only the
+ * inline setStyle from the row factory paint, so neutralize modena's row
+ * background variants. */
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:odd,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:hover,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:selected,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:focused:selected {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+/* Focused-table variants — modena has a separate :focused chain for both rows
+ * and cells. Mirror those too so an actively-focused TableView selection still
+ * lets the row tint through. */
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:selected,
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:selected,
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:focused:selected {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:selected,
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:focused:selected {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+/* TableView column header — modena gives it a chunky gradient that doesn't
+ * match the rest of the theme. Flatten it. */
+.table-view .column-header,
+.table-view .column-header-background,
+.table-view .column-header-background .filler {
+    -fx-background-color: #121214;
+    -fx-border-color: transparent;
+}
+
+.table-view .column-header .label {
+    -fx-text-fill: #B5B5BD;
+}
+
 /* ---------------- Tooltip & ContextMenu ---------------- */
 
 .tooltip {
