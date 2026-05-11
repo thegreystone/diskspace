@@ -302,6 +302,41 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         </profile>
 
         <!--
+          Linux-auto-activated. Same `-lmanagement_ext` story as native-mac: with
+          `enable-monitoring=jfr` on in the `native` profile, JFR pulls in
+          com.sun.management.OperatingSystemImpl whose JNI methods live in
+          libmanagement_ext.a, and Substrate's default Linux link line doesn't include
+          it. Without this entry the link step fails with
+            "undefined reference to `Java_com_sun_management_internal_OperatingSystemImpl_initialize0'"
+          on the Linux CI runner. The .a lives in $GRAALVM_HOME/lib/static/linux-amd64/
+          (or linux-aarch64/ when we ship that flavour) and Substrate's -L search path
+          already covers that directory, so the bare -l is enough.
+        -->
+        <profile>
+            <id>native-linux</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                    <name>Linux</name>
+                </os>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.gluonhq</groupId>
+                        <artifactId>gluonfx-maven-plugin</artifactId>
+                        <version>${gluonfx-maven-plugin.version}</version>
+                        <configuration>
+                            <linkerArgs>
+                                <arg>-lmanagement_ext</arg>
+                            </linkerArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
           Builds the native exe as a Windows console-subsystem binary so stdout/stderr stay
           attached to the launching shell. GC logging is on by default in the `native`
           profile, so a console build streams GC events live:
