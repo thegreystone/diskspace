@@ -93,9 +93,11 @@ public final class PickerView {
 		});
 
 		// Discreet scan-strategy indicator on the right of the bottom row. Click or press S
-		// to cycle through AUTO → MFT → PARALLEL → SEQUENTIAL. Tooltip explains the choice;
-		// row tooltips regenerate on hover so per-disk strategy text picks up the change
-		// automatically.
+		// to cycle through AUTO → BULK → MFT → PARALLEL → SEQUENTIAL, skipping the strategies
+		// whose primary provider isn't registered on this platform (so on macOS the visible
+		// cycle is AUTO → BULK → PARALLEL → SEQUENTIAL and on Windows it's AUTO → MFT →
+		// PARALLEL → SEQUENTIAL). Tooltip explains the current choice; row tooltips regenerate
+		// on hover so per-disk strategy text picks up the change automatically.
 		Label strategyLabel = new Label();
 		strategyLabel.setStyle("-fx-text-fill: " + toCss(
 				scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-cursor: hand; -fx-padding: 0 0 0 12;");
@@ -145,7 +147,8 @@ public final class PickerView {
 		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
 
 		// Esc toggles the help overlay; U toggles size units; S cycles the scan-strategy
-		// preference (AUTO → MFT → PARALLEL → SEQUENTIAL). Filter at root so shortcuts fire
+		// preference (AUTO → BULK → MFT → PARALLEL → SEQUENTIAL, skipping platform-unavailable
+		// strategies). Filter at root so shortcuts fire
 		// regardless of which descendant currently has focus (button, scroll viewport, etc).
 		// The same dispatch is also exposed via dispatchTopLevelKey so MainWindow can route
 		// shortcuts in here when focus has fled to the TabPane header.
@@ -214,7 +217,7 @@ public final class PickerView {
 		int row = 0;
 		addHelpRow(grid, row++, "Esc", "Show / hide this help");
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
-		addHelpRow(grid, row++, "S", "Cycle scan strategy (Auto / MFT / Parallel / Sequential)");
+		addHelpRow(grid, row++, "S", "Cycle scan strategy (Auto / Bulk / MFT / Parallel / Sequential)");
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label sub = new Label("After picking a disk");
@@ -372,17 +375,21 @@ public final class PickerView {
 		sb.append("Scan strategy: ").append(s.label()).append("\n\n");
 		switch (s) {
 		case AUTO -> sb.append("Pick the fastest available scanner per disk.\n")
-				.append("NTFS on Windows with admin uses the MFT scanner; everything\n")
+				.append("NTFS on Windows with admin uses the MFT scanner;\n")
+				.append("local volumes on macOS use the bulk scanner; everything\n")
 				.append("else falls back to parallel walking sized to the profile.");
+		case BULK -> sb.append("Force the macOS bulk scanner (getattrlistbulk).\n")
+				.append("Falls back to parallel walking on non-Mac builds or\n")
+				.append("network volumes where per-syscall amortisation loses.");
 		case MFT -> sb.append("Force the MFT scanner. Falls back to parallel walking\n")
 				.append("when the volume isn't NTFS or the process isn't elevated.");
 		case PARALLEL -> sb.append("Always use the parallel directory-walking scanner with\n")
-				.append("per-profile pool size (HDD=1, SSD=8, network=16). Skips MFT\n")
-				.append("even when available — useful for A/B comparison.");
+				.append("per-profile pool size (HDD=1, SSD=8, network=16). Skips\n")
+				.append("MFT / Bulk even when available — useful for A/B comparison.");
 		case SEQUENTIAL -> sb.append("Force single-threaded directory walking. Mostly a\n")
 				.append("debug knob for measuring the speedup parallelism gives us.");
 		}
-		sb.append("\n\nClick or press S to cycle (Auto → MFT → Parallel → Sequential).");
+		sb.append("\n\nClick or press S to cycle through the strategies available on this platform.");
 		return sb.toString();
 	}
 

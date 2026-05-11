@@ -137,6 +137,23 @@ public final class StorageProfileProbe {
 		if (needsProbe.isEmpty())
 			return results;
 
+		// Native-image fast path: Win32 ioctls (Windows) or Disk Arbitration (macOS).
+		// Either way, pure platform API, no subprocess spawn — single-digit ms per volume
+		// vs ~200–500 ms for diskutil and ~2.4 s for PowerShell. Falls through to the
+		// per-OS JVM-mode fallback when no native probe is registered for this build
+		// (mvn javafx:run, or platforms without a Capabilities.STORAGE_PROBE wired up).
+		if (Capabilities.STORAGE_PROBE.isAvailable()) {
+			long startNanos = System.nanoTime();
+			Map<Path, StorageProfile> nativeResults = Capabilities.STORAGE_PROBE.probeAll(needsProbe);
+			long ms = (System.nanoTime() - startNanos) / 1_000_000L;
+			LOG.fine(() -> "probeMany: native classified " + nativeResults.size() + " volumes in " + ms + "ms");
+			for (Map.Entry<Path, StorageProfile> e : nativeResults.entrySet()) {
+				CACHE.put(e.getKey().toAbsolutePath().toString(), e.getValue());
+				results.put(e.getKey(), e.getValue());
+			}
+			return results;
+		}
+
 		String os = System.getProperty("os.name", "").toLowerCase();
 		if (os.contains("win")) {
 			results.putAll(probeWindowsBatch(needsProbe));
@@ -292,23 +309,10 @@ public final class StorageProfileProbe {
 	 * classification, {@code diag: X …} lines are logged at FINE for troubleshooting.
 	 */
 	private static Map<Path, StorageProfile> probeWindowsBatch(List<Volume> volumes) {
-		// Native-image fast path: 3 ioctls per drive (~5-10ms each) vs. ~2.4s for one
-		// PowerShell process doing the WMI/CIM round-trip. About 25× faster on a typical
-		// machine, no admin needed, and the same SSD/HDD/NETWORK classification as the
-		// PowerShell path produces. JVM dev mode falls through to PowerShell because the
-		// @CFunction bindings only resolve in native-image builds — Capabilities.STORAGE_PROBE
-		// reports unavailable there.
-		if (Capabilities.STORAGE_PROBE.isAvailable()) {
-			long startNanos = System.nanoTime();
-			Map<Path, StorageProfile> results = Capabilities.STORAGE_PROBE.probeAll(volumes);
-			for (Map.Entry<Path, StorageProfile> e : results.entrySet()) {
-				CACHE.put(e.getKey().toAbsolutePath().toString(), e.getValue());
-			}
-			long ms = (System.nanoTime() - startNanos) / 1_000_000L;
-			LOG.fine(() -> "  windows native: classified " + results.size() + " drives in " + ms + "ms");
-			return results;
-		}
-
+		// JVM-dev-mode-only path. The native-image fast path (Win32 ioctls) is dispatched
+		// from probeMany via Capabilities.STORAGE_PROBE before this method is reached, so
+		// by the time we get here we know we're on a HotSpot run that can't bind
+		// @CFunction symbols and have to fall back to PowerShell + WMI.
 		Map<Path, StorageProfile> results = new LinkedHashMap<>();
 		Map<String, Path> driveToPath = new LinkedHashMap<>();
 		for (Volume v : volumes) {

@@ -11,9 +11,20 @@
 # by glass` at startup of the produced exe. GraalVM 22 still accepts 0x10002. GraalVM 21 LTS
 # is the LTS-supported landing pad.
 
-$ErrorActionPreference = 'Stop'
+# Use 'Continue' (not 'Stop'): Maven and native-image both write progress to stderr,
+# and with $ErrorActionPreference = 'Stop' PowerShell treats every native-process stderr
+# line as a terminating error. The script would bail mid-build (or right after a
+# successful "BUILD SUCCESS" while the link step was still finalising artifacts) and
+# leave nothing in target/gluonfx. We do an explicit $LASTEXITCODE check after mvn
+# instead, which correctly distinguishes "wrote to stderr" from "exited non-zero".
+$ErrorActionPreference = 'Continue'
 
 $vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+if (-not (Test-Path $vcvars)) {
+    Write-Host "vcvars64.bat not found at $vcvars" -ForegroundColor Red
+    Write-Host "Install Visual Studio 2022 Community with the 'Desktop development with C++' workload, or edit \$vcvars in this script to point at your install." -ForegroundColor Yellow
+    exit 1
+}
 
 # Locate the latest installed GraalVM 21.x under C:\Java\JDKs.
 $graal = Get-ChildItem "C:\Java\JDKs" -Directory -Filter "graalvm-jdk-21*" -ErrorAction SilentlyContinue |
