@@ -66,7 +66,28 @@ import java.util.*;
 
 public final class DiskView {
 
-	public enum RenderMode {SUNBURST, HEATMAP}
+	public enum RenderMode {
+		SUNBURST("Sunburst",
+				"Hierarchical radial layout. Good for spotting depth-imbalanced subtrees and proportional weight at a glance."),
+		HEATMAP("Squarified Treemap",
+				"Squarified-treemap heatmap. Good for finding the largest individual cells across the whole tree.");
+
+		private final String displayName;
+		private final String description;
+
+		RenderMode(String displayName, String description) {
+			this.displayName = displayName;
+			this.description = description;
+		}
+
+		public String displayName() {
+			return displayName;
+		}
+
+		public String description() {
+			return description;
+		}
+	}
 
 	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(DiskView.class.getName());
 
@@ -157,8 +178,8 @@ public final class DiskView {
 	 */
 	private final SunburstVisualization sunburst = new SunburstVisualization();
 	private final HeatmapVisualization heatmap = new HeatmapVisualization();
-	private Visualization currentVisualization = sunburst;
-	private RenderMode currentMode = RenderMode.SUNBURST;
+	private Visualization currentVisualization;
+	private RenderMode currentMode;
 	/**
 	 * JFR event spanning the duration the user spends in a single visualization mode. Begun in the constructor,
 	 * committed + replaced on every {@link #toggleRenderMode}, finally committed in {@link #shutdown}. Lets JMC's flame
@@ -231,13 +252,19 @@ public final class DiskView {
 
 	/**
 	 * Resolves the display colour of every {@link DirectoryNode}. Wraps palette + scheme + family-inheritance rules so
-	 * the canvas painters and the table cell factory stay in lockstep. Lifecycle managed here:
-	 * {@link NodeColorResolverImpl#setScanRoot} on (re)scan start, {@link NodeColorResolverImpl#onScanComplete} on scan
-	 * completion, {@link NodeColorResolverImpl#stabilizeFinalizedTopLevels} per live tick.
+	 * the canvas painters and the table cell factory stay in lockstep. Concrete implementation comes from the
+	 * configured {@link ColoringMode} (see {@link se.hirt.diskspace.settings.Settings#defaultColoringMode()}), so the
+	 * surrounding view only talks to the {@link NodeColorResolver} interface. Lifecycle managed here:
+	 * {@link NodeColorResolver#setScanRoot} on (re)scan start, {@link NodeColorResolver#onScanComplete} on scan
+	 * completion, {@link NodeColorResolver#stabilizeFinalizedTopLevels} per live tick.
 	 * <p>Assigned in the constructor body so {@code scheme} (also constructor-assigned) is non-null when the
-	 * resolver captures it.
+	 * resolver captures it. Non-final because the {@code C} keybinding swaps it for a fresh resolver from the next
+	 * registered {@link ColoringMode} — see {@link #cycleColoringMode()}. The host's {@code colors()} callback reads
+	 * the field on every call, so swapping is enough to redirect all colour lookups.
 	 */
-	private final NodeColorResolverImpl nodeColors;
+	private NodeColorResolver nodeColors;
+	/** Current coloring mode — tracked separately so {@link #cycleColoringMode()} can walk the registry. */
+	private ColoringMode currentColoringMode;
 
 	private final Scanner scanner;
 	private final AnimationTimer liveTicker;
@@ -248,8 +275,15 @@ public final class DiskView {
 	public DiskView(Volume target, ColorScheme scheme) {
 		this.target = target;
 		this.scheme = scheme;
-		this.nodeColors = new NodeColorResolverImpl(scheme, this::sortedRank);
+		// Build the resolver from the persisted coloring mode. New tabs honour the saved choice;
+		// the C keybinding can swap it later in this tab — see cycleColoringMode().
+		this.currentColoringMode = se.hirt.diskspace.settings.Settings.get().defaultColoringMode();
+		this.nodeColors = currentColoringMode.createResolver(scheme, this::sortedRank);
 		this.scanner = Scanner.forVolume(target);
+		// Honour the persisted "default visualization" preference for newly opened tabs.
+		// Existing tabs retain whatever mode they were in — only new constructions consult Settings.
+		this.currentMode = se.hirt.diskspace.settings.Settings.get().defaultVisualization();
+		this.currentVisualization = (this.currentMode == RenderMode.SUNBURST) ? sunburst : heatmap;
 		// Visualization host — visualisations call back here for redraws + colour lookup. Wiring this up before
 		// they're used downstream (they're constructed via field initialisers above).
 		VisualizationHost vizHost = new VisualizationHost() {
@@ -581,6 +615,11 @@ public final class DiskView {
 		case V -> {
 			emitUserAction("V", "toggle-mode");
 			toggleRenderMode();
+			e.consume();
+		}
+		case C -> {
+			emitUserAction("C", "cycle-coloring");
+			cycleColoringMode();
 			e.consume();
 		}
 		default -> { /* let it bubble */ }
@@ -1814,6 +1853,7 @@ public final class DiskView {
 		addHelpRow(grid, row++, "R", "Re-scan the current disk");
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
 		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
+		addHelpRow(grid, row++, "C", "Cycle coloring mode");
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label title = new Label("Keyboard Shortcuts");
@@ -1868,6 +1908,38 @@ public final class DiskView {
 		// Reclaim focus so subsequent keypresses route through this view's handler.
 		root.requestFocus();
 		redrawWith("mode-change");
+	}
+
+	/**
+	 * Cycle to the next registered {@link ColoringMode} in this tab. In-session only — matches {@code V}
+	 * (visualization) and {@code U} (size unit). Preferences still owns the persisted default. A fresh resolver is
+	 * built so the new mode's caches don't inherit colours computed under the old recipe; current scan / hidden-node
+	 * state is replayed onto it so the next render finds the resolver fully primed.
+	 */
+	private void cycleColoringMode() {
+		java.util.List<ColoringMode> all = ColoringModes.all();
+		if (all.size() < 2)
+			return;
+		int idx = 0;
+		for (int i = 0; i < all.size(); i++) {
+			if (all.get(i).id().equals(currentColoringMode.id())) {
+				idx = i;
+				break;
+			}
+		}
+		ColoringMode next = all.get((idx + 1) % all.size());
+		currentColoringMode = next;
+		NodeColorResolver fresh = next.createResolver(scheme, this::sortedRank);
+		// Replay lifecycle state so the new resolver matches what the old one was holding.
+		fresh.setScanRoot(scanRoot);
+		fresh.setHiddenNode(hiddenNode);
+		if (!scanning && scanRoot != null) {
+			fresh.onScanComplete();
+		}
+		nodeColors = fresh;
+		// Table swatches are repainted from the cell factory on the next refresh; the canvas needs an explicit redraw.
+		table.refresh();
+		redrawWith("coloring-change");
 	}
 
 	/**
@@ -2302,6 +2374,7 @@ public final class DiskView {
 		private final MenuItem rescanItem = new MenuItem("Re-scan");
 		private final MenuItem toggleUnitsItem = new MenuItem("Toggle Size Units");
 		private final MenuItem toggleVizItem = new MenuItem("Toggle Visualization");
+		private final MenuItem preferencesItem = new MenuItem("Preferences…");
 		private final MenuItem quitItem = new MenuItem("Quit");
 		private PathTarget pending;
 		/**
@@ -2376,6 +2449,10 @@ public final class DiskView {
 				emitUserAction("ContextMenu", "toggle-mode");
 				toggleRenderMode();
 			});
+			preferencesItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "preferences");
+				PreferencesDialog.show();
+			});
 			quitItem.setOnAction(e -> {
 				emitUserAction("ContextMenu", "quit");
 				se.hirt.diskspace.App.requestQuit();
@@ -2437,9 +2514,12 @@ public final class DiskView {
 						menu.getItems().addAll(rescanItem, toggleVizItem);
 					} else {
 						// Empty-canvas menu: full set of view-level actions for mouse-only users.
+						// Preferences sits in its own section above Quit per the app's menu hierarchy:
+						// it's the only entry that mutates persisted state, so the separators flag it
+						// as distinct from the transient view-toggle actions above it.
 						menu.getItems()
 								.addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, new SeparatorMenuItem(),
-										quitItem);
+										preferencesItem, new SeparatorMenuItem(), quitItem);
 					}
 				}
 				menu.show(node, e.getScreenX(), e.getScreenY());

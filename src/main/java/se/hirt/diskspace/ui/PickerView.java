@@ -30,10 +30,7 @@ package se.hirt.diskspace.ui;
 
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
-import javafx.scene.control.Button;
-import javafx.scene.control.Label;
-import javafx.scene.control.ScrollPane;
-import javafx.scene.control.Tooltip;
+import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.*;
@@ -146,6 +143,10 @@ public final class PickerView {
 		root = new StackPane(body, helpOverlay);
 		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
 
+		// Mouse-only parity with the keyboard shortcuts above. Disk-specific actions (Re-scan,
+		// Toggle Visualization) don't appear because there's no scan running yet in the picker.
+		installContextMenu();
+
 		// Esc toggles the help overlay; U toggles size units; S cycles the scan-strategy
 		// preference (AUTO → BULK → MFT → PARALLEL → SEQUENTIAL, skipping platform-unavailable
 		// strategies). Filter at root so shortcuts fire
@@ -199,6 +200,41 @@ public final class PickerView {
 			toggleStrategy.run();
 			e.consume();
 		}
+	}
+
+	/**
+	 * Right-click anywhere in the picker offers the keyboard-shortcut actions plus Preferences and Quit. Disk-specific
+	 * things (Re-scan, Toggle Visualization) intentionally don't appear — they need a scan target that doesn't exist
+	 * yet at this stage.
+	 */
+	private void installContextMenu() {
+		MenuItem helpItem = new MenuItem("Show Keyboard Shortcuts");
+		helpItem.setOnAction(e -> toggleHelp());
+
+		MenuItem toggleUnitsItem = new MenuItem("Toggle Size Units");
+		toggleUnitsItem.setOnAction(e -> {
+			SizeFormat.toggle();
+			for (Runnable r : sizeRefreshers)
+				r.run();
+		});
+
+		MenuItem cycleStrategyItem = new MenuItem("Cycle Scan Strategy");
+		cycleStrategyItem.setOnAction(e -> toggleStrategy.run());
+
+		MenuItem preferencesItem = new MenuItem("Preferences…");
+		preferencesItem.setOnAction(e -> PreferencesDialog.show());
+
+		MenuItem quitItem = new MenuItem("Quit");
+		quitItem.setOnAction(e -> se.hirt.diskspace.App.requestQuit());
+
+		ContextMenu menu = new ContextMenu();
+		menu.getItems().addAll(helpItem, toggleUnitsItem, cycleStrategyItem, new SeparatorMenuItem(), preferencesItem,
+				new SeparatorMenuItem(), quitItem);
+
+		root.setOnContextMenuRequested(e -> {
+			menu.show(root, e.getScreenX(), e.getScreenY());
+			e.consume();
+		});
 	}
 
 	private void toggleHelp() {
