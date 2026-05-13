@@ -118,7 +118,11 @@ public final class PreferencesDialog {
 
 			@Override
 			public ColoringMode fromString(String string) {
-				return ColoringModes.byId(string);
+				for (ColoringMode m : ColoringModes.all()) {
+					if (m.displayName().equals(string))
+						return m;
+				}
+				return ColoringModes.defaultMode();
 			}
 		});
 		coloringChoice.setValue(settings.defaultColoringMode());

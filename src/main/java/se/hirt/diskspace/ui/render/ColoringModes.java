@@ -29,6 +29,7 @@
 package se.hirt.diskspace.ui.render;
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Registry of available {@link ColoringMode} implementations. List order is display order in the Preferences picker —
@@ -53,11 +54,16 @@ public final class ColoringModes {
 		return MODES.get(0);
 	}
 
-	/** Lookup by stable id. Falls back to {@link #defaultMode()} if no registered mode matches. */
+	/**
+	 * Lookup by stable id. Falls back to {@link #defaultMode()} if no registered mode matches. Input is normalised
+	 * ({@code trim()} + {@code toLowerCase(Locale.ROOT)}) before comparison so hand-edited settings files survive
+	 * common typos like surrounding whitespace or capitalisation drift.
+	 */
 	public static ColoringMode byId(String id) {
 		if (id != null) {
+			String normalised = id.trim().toLowerCase(Locale.ROOT);
 			for (ColoringMode m : MODES) {
-				if (m.id().equals(id))
+				if (m.id().equals(normalised))
 					return m;
 			}
 		}

@@ -55,8 +55,9 @@ import java.util.logging.Logger;
  * </ul>
  * <p>File format is a plain {@link Properties} text file so users can hand-edit it if they want,
  * and so the format survives without a JSON dependency.
- * <p>Missing file = first launch; we return defaults and create the file on first {@link #save()}.
- * Malformed entries fall back to defaults silently — a stale enum name shouldn't break startup.
+ * <p>Missing file = first launch; we return defaults and create the file on first {@link #save()}. Malformed
+ * entries (unknown enum values from a hand-edited file or a downgraded build) fall back to the default and log
+ * a {@code WARNING} so the bad key is discoverable — a stale value shouldn't break startup.
  */
 public final class Settings {
 
