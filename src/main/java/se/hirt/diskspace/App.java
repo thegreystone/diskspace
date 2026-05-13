@@ -196,6 +196,9 @@ public final class App extends Application {
 						(System.nanoTime() - MAIN_START_NANOS) / 1_000_000));
 		installShutdownNoiseFilter();
 		maybeStartJfrRecording();
+		// SizeFormat is a process-wide singleton — restore the persisted unit before any UI is built
+		// so the first scan's formatting matches the user's preference instead of the DECIMAL default.
+		se.hirt.diskspace.ui.SizeFormat.setMode(se.hirt.diskspace.settings.Settings.get().defaultSizeUnit());
 		launch(args);
 	}
 
@@ -211,8 +214,9 @@ public final class App extends Application {
 	 * ignores unknown CLI arguments.
 	 * <p>Use:
 	 * <pre>
-	 *   DiskSpace.exe -debug                    (native binary)
-	 *   mvn javafx:run -Dexec.args="-debug"     (JVM dev)
+	 *   DiskSpace.exe -debug                     (native binary)
+	 *   mvn javafx:run -Djavafx.args="-debug"    (JVM dev — javafx-maven-plugin reads `javafx.args`,
+	 *                                             NOT `exec.args` which belongs to the exec plugin)
 	 * </pre>
 	 */
 	private static void applyDebugFlagIfPresent(String[] args) {
@@ -260,12 +264,25 @@ public final class App extends Application {
 		if (filename == null)
 			return;
 		try {
-			jdk.jfr.Recording r = new jdk.jfr.Recording();
+			// Use the "profile" preset (method profiling at higher rates, lock contention, TLAB allocations)
+			// rather than JFR's default ("continuous") settings. -debug is opt-in and short-lived, so the
+			// extra few percent CPU is worth the much richer data when someone is actually investigating a
+			// performance issue. Configuration.getConfiguration loads the preset shipped with the JDK; if it
+			// can't be loaded for some reason, fall back to default settings rather than failing the recording.
+			jdk.jfr.Recording r;
+			try {
+				r = new jdk.jfr.Recording(jdk.jfr.Configuration.getConfiguration("profile"));
+			} catch (Throwable presetErr) {
+				Logger.getLogger("se.hirt.diskspace")
+						.fine(() -> "JFR 'profile' preset unavailable, falling back to default: " + presetErr);
+				r = new jdk.jfr.Recording();
+			}
 			r.setName("diskspace");
 			r.setDestination(java.nio.file.Paths.get(filename).toAbsolutePath());
 			r.setDumpOnExit(true);
 			r.start();
-			Logger.getLogger("se.hirt.diskspace").info(() -> "JFR recording started -> " + r.getDestination());
+			jdk.jfr.Recording finalR = r;
+			Logger.getLogger("se.hirt.diskspace").info(() -> "JFR recording started -> " + finalR.getDestination());
 		} catch (Throwable t) {
 			// JFR not compiled into this binary (default native build does not include
 			// --enable-monitoring=jfr) or the runtime rejected the request. Either way,

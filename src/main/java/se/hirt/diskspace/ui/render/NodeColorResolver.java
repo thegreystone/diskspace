@@ -36,15 +36,33 @@ import se.hirt.diskspace.model.DirectoryNode;
  * heatmap cell) and the table swatch in the right-hand pane, so centralising the lookup keeps them in lockstep.
  * <p>Concrete implementations encapsulate palette + scheme + family-inheritance rules. The renderers don't need to
  * know any of that — they call {@link #colorFor} and paint.</p>
+ * <p>Resolvers are owned by a {@code DiskView} for the lifetime of one scan target. The lifecycle hooks below let an
+ * implementation cache results without going stale across rescans and live-scan ticks. They default to no-op so simple
+ * stateless palettes don't need to override anything.</p>
  */
 public interface NodeColorResolver {
 
 	/**
 	 * @param node
 	 * 		the node to colour; never {@code null}
-	 * @return the fill color for {@code node}'s sector / cell. The scan root returns the scheme's surface colour (used
-	 * 		by the sunburst hub); file sectors get the palette's grey family; deeper descendants inherit hue from their
-	 * 		family root.
+	 * @return the fill color for {@code node}'s sector / cell. The scan root typically returns the scheme's surface
+	 * 		colour (used by the sunburst hub).
 	 */
 	Color colorFor(DirectoryNode node);
+
+	/** Called on (re)scan start and on shutdown (with {@code null}). Default: no-op. */
+	default void setScanRoot(DirectoryNode root) {
+	}
+
+	/** Called when the synthetic "Hidden" node is injected, or with {@code null} on teardown. Default: no-op. */
+	default void setHiddenNode(DirectoryNode hidden) {
+	}
+
+	/** Called when the in-flight scan finishes successfully. Default: no-op. */
+	default void onScanComplete() {
+	}
+
+	/** Called once per live-scan tick so resolvers can drop caches for any top-level folder that just finalised. */
+	default void stabilizeFinalizedTopLevels() {
+	}
 }
