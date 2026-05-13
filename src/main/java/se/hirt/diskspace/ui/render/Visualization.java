@@ -36,7 +36,6 @@ import se.hirt.diskspace.model.DirectoryNode;
  * animation state — different visualisations animate differently (sunburst lerps annular sectors, a heatmap might
  * cross-fade cells, a voronoi could morph cell centroids), and that knowledge belongs <em>inside</em> the
  * visualization, not in the surrounding view.
- *
  * <p>Lifecycle:
  * <ol>
  *   <li>{@link #attach} is called once after construction so the visualization can capture the host callbacks.</li>
@@ -50,7 +49,6 @@ import se.hirt.diskspace.model.DirectoryNode;
  *   <li>{@link #shutdown} is called when the visualization is detached so it can stop animation timers and
  *       release JFR / other resources.</li>
  * </ol>
- *
  * <p>{@link #isAnimating} is queried by the host to gate input — clicks and hover should be ignored while a
  * transition is mid-flight, otherwise the user can drill into a sector that's still moving and confuse the
  * animator.</p>
@@ -70,8 +68,10 @@ public interface Visualization {
 	 * Notify the visualization that the view root has changed (drill-in or drill-out). The visualization decides
 	 * whether to animate the transition.
 	 *
-	 * @param previous the view root before the change, or {@code null} on first attachment
-	 * @param current  the new view root
+	 * @param previous
+	 * 		the view root before the change, or {@code null} on first attachment
+	 * @param current
+	 * 		the new view root
 	 */
 	void viewRootChanged(DirectoryNode previous, DirectoryNode current);
 

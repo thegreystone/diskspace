@@ -31,8 +31,8 @@ package se.hirt.diskspace.ui.render;
 import se.hirt.diskspace.model.DirectoryNode;
 
 /**
- * Result of a {@link Visualization#hitTest} query. Sealed so callers can exhaustively switch on the variants without
- * a default branch — adding a new variant becomes a compile-time prompt to revisit every consumer.
+ * Result of a {@link Visualization#hitTest} query. Sealed so callers can exhaustively switch on the variants without a
+ * default branch — adding a new variant becomes a compile-time prompt to revisit every consumer.
  */
 public sealed interface HitResult permits HitResult.OnNode, HitResult.Special {
 

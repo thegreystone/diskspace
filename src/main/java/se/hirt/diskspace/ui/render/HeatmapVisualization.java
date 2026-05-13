@@ -43,12 +43,11 @@ import java.util.List;
 
 /**
  * Heatmap (squarified-treemap) visualization. Renders the directory tree as nested rectangles whose area is
- * proportional to {@code totalBytes()}, packed via the Bruls/Huijgen/van Wijk squarify algorithm to keep aspect
- * ratios close to square.
- *
+ * proportional to {@code totalBytes()}, packed via the Bruls/Huijgen/van Wijk squarify algorithm to keep aspect ratios
+ * close to square.
  * <p>No animation — treemap layouts shuffle every rectangle on drill, so a coordinate-by-coordinate interpolation
- * doesn't visually map to anything coherent. {@link #viewRootChanged} is a no-op; {@link #isAnimating} always
- * returns {@code false}.</p>
+ * doesn't visually map to anything coherent. {@link #viewRootChanged} is a no-op; {@link #isAnimating} always returns
+ * {@code false}.</p>
  */
 public final class HeatmapVisualization implements Visualization {
 
@@ -191,10 +190,11 @@ public final class HeatmapVisualization implements Visualization {
 
 	/**
 	 * Squarified treemap (Bruls/Huijgen/van Wijk). Items are pixel-area-scaled via {@code scale}. Walks items in
-	 * size-desc order, packing them into rows along the rectangle's short side until adding the next item would
-	 * worsen the row's worst aspect ratio, then commits the row and continues on the remaining strip.
+	 * size-desc order, packing them into rows along the rectangle's short side until adding the next item would worsen
+	 * the row's worst aspect ratio, then commits the row and continues on the remaining strip.
 	 */
-	private void squarify(GraphicsContext g, List<TreemapItem> items, double x, double y, double w, double h,
+	private void squarify(
+			GraphicsContext g, List<TreemapItem> items, double x, double y, double w, double h,
 			double scale, int depth, RenderContext ctx) {
 		if (items.isEmpty() || w < 1 || h < 1)
 			return;
@@ -252,7 +252,8 @@ public final class HeatmapVisualization implements Visualization {
 		return Math.max((w2 * max) / s2, s2 / (w2 * min));
 	}
 
-	private void layoutRow(GraphicsContext g, List<TreemapItem> row, double x, double y, double w, double h,
+	private void layoutRow(
+			GraphicsContext g, List<TreemapItem> row, double x, double y, double w, double h,
 			double scale, boolean rowAlongTop, int depth, RenderContext ctx) {
 		double rowSum = 0;
 		for (TreemapItem t : row)
@@ -281,8 +282,9 @@ public final class HeatmapVisualization implements Visualization {
 		}
 	}
 
-	private void drawTreemapCell(GraphicsContext g, TreemapItem item, double x, double y, double w, double h,
-			int depth, RenderContext ctx) {
+	private void drawTreemapCell(
+			GraphicsContext g, TreemapItem item, double x, double y, double w, double h, int depth,
+			RenderContext ctx) {
 		// Sub-pixel cull. Anything thinner than 1 px on either axis can't render visibly (Canvas's fillRect will
 		// antialias to nothing) and we'd still pay for getNodeColor, hover-state derivation, fillRect, and a
 		// rects.add hit-test entry. JFR flagged the recursive squarify/drawTreemapCell chain as the FX-thread
@@ -374,7 +376,8 @@ public final class HeatmapVisualization implements Visualization {
 		}
 	}
 
-	private void drawTreemapLabel(GraphicsContext g, double x, double y, double w, String name, long bytes,
+	private void drawTreemapLabel(
+			GraphicsContext g, double x, double y, double w, String name, long bytes,
 			Color fillBase) {
 		Color textColor = textOn(fillBase);
 		g.setFill(textColor);
@@ -455,8 +458,8 @@ public final class HeatmapVisualization implements Visualization {
 	// ---- value types ----------------------------------------------------
 
 	/**
-	 * Hit-test rect for the heatmap. {@code node == null} means the rectangle is the free-space or unaccounted
-	 * virtual entry at scan root.
+	 * Hit-test rect for the heatmap. {@code node == null} means the rectangle is the free-space or unaccounted virtual
+	 * entry at scan root.
 	 */
 	private record RectHit(DirectoryNode node, double x, double y, double w, double h, boolean unaccounted,
 						   boolean freeSpace) {
@@ -467,8 +470,7 @@ public final class HeatmapVisualization implements Visualization {
 
 	/**
 	 * Heatmap item — a directory child or a virtual entry (free / unaccounted) used while building the squarified
-	 * layout. {@code bytes} drives the layout area; {@code color} is the resolved fill before alpha/hover
-	 * modulation.
+	 * layout. {@code bytes} drives the layout area; {@code color} is the resolved fill before alpha/hover modulation.
 	 */
 	private record TreemapItem(DirectoryNode node, long bytes, Color color, boolean unaccounted, boolean freeSpace) {
 	}

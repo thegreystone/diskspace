@@ -41,7 +41,8 @@ public interface VisualizationHost {
 	 * Request a redraw. A visualization calls this from its own animation loop to advance interpolated frames, or
 	 * whenever it has updated its internal state and needs the host to repaint.
 	 *
-	 * @param trigger short label for telemetry — surfaces in the JFR render event so painters can be attributed.
+	 * @param trigger
+	 * 		short label for telemetry — surfaces in the JFR render event so painters can be attributed.
 	 */
 	void requestRedraw(String trigger);
 

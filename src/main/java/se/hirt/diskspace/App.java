@@ -65,11 +65,10 @@ public final class App extends Application {
 	private static volatile MainWindow mainWindow;
 	private static volatile boolean shuttingDown;
 	/**
-	 * JavaFX-provided launcher for opening URIs through the platform's native handler — internally
-	 * routes through {@code LSOpenCFURLRef} on macOS, {@code ShellExecute} on Windows, and
-	 * {@code xdg-open} on Linux. We stash it here so any UI code can reach it without dragging in
-	 * AWT's {@code Desktop} (which would initialise AppKit on macOS and clash with JavaFX's main
-	 * thread). Set in {@link #start} before the first window is shown.
+	 * JavaFX-provided launcher for opening URIs through the platform's native handler — internally routes through
+	 * {@code LSOpenCFURLRef} on macOS, {@code ShellExecute} on Windows, and {@code xdg-open} on Linux. We stash it here
+	 * so any UI code can reach it without dragging in AWT's {@code Desktop} (which would initialise AppKit on macOS and
+	 * clash with JavaFX's main thread). Set in {@link #start} before the first window is shown.
 	 */
 	private static volatile HostServices hostServices;
 
@@ -243,11 +242,10 @@ public final class App extends Application {
 	 * Substrate VM (GraalVM 21 LTS) doesn't honour that command-line flag in native-image mode — both the {@code -XX:}
 	 * runtime form and the {@code -R:} build-time baked-in form are silently no-ops.
 	 * <p>On HotSpot and on Oracle GraalVM 21+ Substrate (our CI distribution),
-	 * the API path Just Works once the build has {@code --enable-monitoring=jfr} +
-	 * {@code -R:+FlightRecorder} (set in the {@code native} profile) plus {@code -lmanagement_ext} in the link step
-	 * (set in {@code native-mac}, since JFR pulls in {@code com.sun.management.OperatingSystemImpl}'s JNI methods
-	 * which aren't on Substrate's default macOS link line). The Gluon-distributed GraalVM build used to ship a
-	 * broken FlightRecorder engine (see
+	 * the API path Just Works once the build has {@code --enable-monitoring=jfr} + {@code -R:+FlightRecorder} (set in
+	 * the {@code native} profile) plus {@code -lmanagement_ext} in the link step (set in {@code native-mac}, since JFR
+	 * pulls in {@code com.sun.management.OperatingSystemImpl}'s JNI methods which aren't on Substrate's default macOS
+	 * link line). The Gluon-distributed GraalVM build used to ship a broken FlightRecorder engine (see
 	 * <a href="https://github.com/gluonhq/substrate/issues/1354">gluonhq/substrate#1354</a>,
 	 * minimal reproducer at
 	 * <a href="https://github.com/thegreystone/jfr-gluonfx-repro">thegreystone/jfr-gluonfx-repro</a>);

@@ -32,19 +32,19 @@ import javafx.scene.paint.Color;
 import se.hirt.diskspace.model.DirectoryNode;
 
 /**
- * Resolves the display color of a {@link DirectoryNode}. The same colour is used by both the canvas (sunburst sector
- * / heatmap cell) and the table swatch in the right-hand pane, so centralising the lookup keeps them in lockstep.
- *
+ * Resolves the display color of a {@link DirectoryNode}. The same colour is used by both the canvas (sunburst sector /
+ * heatmap cell) and the table swatch in the right-hand pane, so centralising the lookup keeps them in lockstep.
  * <p>Concrete implementations encapsulate palette + scheme + family-inheritance rules. The renderers don't need to
  * know any of that — they call {@link #colorFor} and paint.</p>
  */
 public interface NodeColorResolver {
 
 	/**
-	 * @param node the node to colour; never {@code null}
-	 * @return the fill color for {@code node}'s sector / cell. The scan root returns the scheme's surface colour
-	 * (used by the sunburst hub); file sectors get the palette's grey family; deeper descendants inherit hue
-	 * from their family root.
+	 * @param node
+	 * 		the node to colour; never {@code null}
+	 * @return the fill color for {@code node}'s sector / cell. The scan root returns the scheme's surface colour (used
+	 * 		by the sunburst hub); file sectors get the palette's grey family; deeper descendants inherit hue from their
+	 * 		family root.
 	 */
 	Color colorFor(DirectoryNode node);
 }

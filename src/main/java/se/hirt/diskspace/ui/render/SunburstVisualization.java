@@ -42,33 +42,24 @@ import se.hirt.diskspace.model.Volume;
 import se.hirt.diskspace.scan.Scanner;
 import se.hirt.diskspace.ui.SizeFormat;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Sunburst visualization. Renders the directory tree as a polar chart — concentric rings, one per depth level, each
  * ring sliced into angular sectors proportional to {@code totalBytes()}. Owns its own animation state and timer:
  * drill-in/drill-out transitions interpolate sector positions over {@value #ANIM_DURATION_MS} ms.
- *
  * <p>The hub (centre disc) shows the title and size of the currently-focused node — either the {@link
- * RenderContext#viewRoot}, the {@link RenderContext#hoverNode}, or the special free-space / unaccounted regions.
- * During an active scan the hub also displays the scanner's progress overrides from {@link
- * RenderContext#hubState}.</p>
+ * RenderContext#viewRoot}, the {@link RenderContext#hoverNode}, or the special free-space / unaccounted regions. During
+ * an active scan the hub also displays the scanner's progress overrides from {@link RenderContext#hubState}.</p>
  */
 public final class SunburstVisualization implements Visualization {
 
 	// ---- ring geometry --------------------------------------------------
 
 	/**
-	 * First {@value} rings render at full thickness ({@code normalW}); after that, up to {@link #THIN_RINGS}
-	 * additional rings render at {@link #THIN_RING_FACTOR} × normalW so deep trees still fit on screen without
-	 * collapsing the outer halo.
+	 * First {@value} rings render at full thickness ({@code normalW}); after that, up to {@link #THIN_RINGS} additional
+	 * rings render at {@link #THIN_RING_FACTOR} × normalW so deep trees still fit on screen without collapsing the
+	 * outer halo.
 	 */
 	private static final int NORMAL_RINGS = 5;
 	private static final int THIN_RINGS = 4;
@@ -143,11 +134,12 @@ public final class SunburstVisualization implements Visualization {
 	}
 
 	/**
-	 * Kick off a drill-in/drill-out animation. The before-layout and after-layout maps are pre-computed by the
-	 * host using {@link #computeLayout} so we can lerp between them. The visualization runs its own timer; on
-	 * each tick it asks the host to redraw, and the next render paints the interpolated frame.
+	 * Kick off a drill-in/drill-out animation. The before-layout and after-layout maps are pre-computed by the host
+	 * using {@link #computeLayout} so we can lerp between them. The visualization runs its own timer; on each tick it
+	 * asks the host to redraw, and the next render paints the interpolated frame.
 	 */
-	public void beginAnimation(DirectoryNode oldViewRoot, DirectoryNode newViewRoot, Map<DirectoryNode, Layout> oldL,
+	public void beginAnimation(
+			DirectoryNode oldViewRoot, DirectoryNode newViewRoot, Map<DirectoryNode, Layout> oldL,
 			Map<DirectoryNode, Layout> newL) {
 		animOldViewRoot = oldViewRoot;
 		animNewViewRoot = newViewRoot;
@@ -234,8 +226,8 @@ public final class SunburstVisualization implements Visualization {
 	}
 
 	/**
-	 * Compute the layout map for {@code rootForView}. Public so the host can pre-compute before/after layouts and
-	 * hand them to {@link #beginAnimation}.
+	 * Compute the layout map for {@code rootForView}. Public so the host can pre-compute before/after layouts and hand
+	 * them to {@link #beginAnimation}.
 	 */
 	public Map<DirectoryNode, Layout> computeLayout(DirectoryNode rootForView, double w, double h, RenderContext ctx) {
 		Map<DirectoryNode, Layout> out = new HashMap<>();
@@ -277,7 +269,8 @@ public final class SunburstVisualization implements Visualization {
 	 * their proportional positions; we just skip the {@link Layout} allocation and the recursion for invisible
 	 * sectors.
 	 */
-	private void layoutChildrenInto(DirectoryNode parent, int depth, double startDeg, double sweepDeg,
+	private void layoutChildrenInto(
+			DirectoryNode parent, int depth, double startDeg, double sweepDeg,
 			Map<DirectoryNode, Layout> out, double normalW, double thinW, RenderContext ctx) {
 		if (depth > MAX_DEPTH)
 			return;
@@ -340,7 +333,8 @@ public final class SunburstVisualization implements Visualization {
 
 	// ---- drawing --------------------------------------------------------
 
-	private void drawLayout(GraphicsContext g, double cx, double cy, double normalW, double thinW,
+	private void drawLayout(
+			GraphicsContext g, double cx, double cy, double normalW, double thinW,
 			Map<DirectoryNode, Layout> layout, RenderContext ctx) {
 		// Render outer rings first so any anti-aliasing edges are overdrawn cleanly by the inner rings.
 		List<Map.Entry<DirectoryNode, Layout>> entries = new ArrayList<>(layout.entrySet());
@@ -398,15 +392,16 @@ public final class SunburstVisualization implements Visualization {
 			double freeSweep = 360.0 - usedSweep;
 			if (freeSweep > MIN_VISIBLE_SWEEP_DEG) {
 				double freeStart = startAngle + usedSweep;
-				Color freeColor =
-						ctx.hoveringFreeSpace() ? host.scheme().capacityTrack().brighter() : host.scheme().capacityTrack();
+				Color freeColor = ctx.hoveringFreeSpace() ? host.scheme().capacityTrack().brighter()
+						: host.scheme().capacityTrack();
 				drawAnnularSector(g, cx, cy, r1, r2, freeStart, freeSweep, freeColor);
 				sectors.add(new SectorRect(null, 1, freeStart, freeSweep, r1, r2, false));
 			}
 		}
 	}
 
-	private void drawAnimatedFrame(GraphicsContext g, double cx, double cy, double normalW, double thinW,
+	private void drawAnimatedFrame(
+			GraphicsContext g, double cx, double cy, double normalW, double thinW,
 			RenderContext ctx) {
 		long elapsed = System.nanoTime() - animStartNanos;
 		double t = Math.min(1.0, elapsed / (double) ANIM_DURATION_NANOS);
@@ -474,7 +469,8 @@ public final class SunburstVisualization implements Visualization {
 		}
 	}
 
-	private void drawAnnularSector(GraphicsContext g, double cx, double cy, double r1, double r2, double startDeg,
+	private void drawAnnularSector(
+			GraphicsContext g, double cx, double cy, double r1, double r2, double startDeg,
 			double sweepDeg, Color fill) {
 		double a1 = Math.toRadians(startDeg);
 		double a2 = Math.toRadians(startDeg + sweepDeg);
@@ -506,7 +502,8 @@ public final class SunburstVisualization implements Visualization {
 			subtitle = SizeFormat.format(target.usableBytes());
 		} else if (ctx.hoveringUnaccounted()) {
 			title = "Other";
-			subtitle = SizeFormat.format(Math.max(0, target.usedBytes() - (scanRoot != null ? scanRoot.totalBytes() : 0)));
+			subtitle = SizeFormat.format(
+					Math.max(0, target.usedBytes() - (scanRoot != null ? scanRoot.totalBytes() : 0)));
 		} else {
 			DirectoryNode focus;
 			if (ctx.hoveringHub()) {
@@ -638,8 +635,8 @@ public final class SunburstVisualization implements Visualization {
 	// ---- value types ----------------------------------------------------
 
 	/**
-	 * Layout entry for one sunburst sector. {@code depth} is fractional so the drill animation can interpolate
-	 * ring radii smoothly between depth steps.
+	 * Layout entry for one sunburst sector. {@code depth} is fractional so the drill animation can interpolate ring
+	 * radii smoothly between depth steps.
 	 */
 	public record Layout(double depth, double startDeg, double sweepDeg, Color color) {
 	}
@@ -650,8 +647,8 @@ public final class SunburstVisualization implements Visualization {
 	}
 
 	/**
-	 * Hit-test entry recorded during draw. {@code unaccounted=true} flags the special "Other" arc segment, which
-	 * has no associated node; otherwise {@code node==null} means free-space arc.
+	 * Hit-test entry recorded during draw. {@code unaccounted=true} flags the special "Other" arc segment, which has no
+	 * associated node; otherwise {@code node==null} means free-space arc.
 	 */
 	private record SectorRect(DirectoryNode node, int depth, double startDeg, double sweepDeg, double r1, double r2,
 							  boolean unaccounted) {

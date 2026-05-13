@@ -33,25 +33,38 @@ import se.hirt.diskspace.model.Volume;
 import se.hirt.diskspace.scan.Scanner;
 
 /**
- * Per-frame, read-only snapshot of "what to draw." Built by the view (DiskView) once per render pulse and handed to
- * the active {@link Visualization}. Excludes anything animation-related — each visualization tracks its own animation
- * state internally.
+ * Per-frame, read-only snapshot of "what to draw." Built by the view (DiskView) once per render pulse and handed to the
+ * active {@link Visualization}. Excludes anything animation-related — each visualization tracks its own animation state
+ * internally.
  *
- * @param scanRoot              root of the scan tree
- * @param viewRoot              currently drilled-in node; same as {@code scanRoot} when at the top level
- * @param hiddenNode            the synthetic "Hidden" child of {@code scanRoot}, or {@code null}; visualisations may
- *                              pin it to the end of a sort regardless of size so it doesn't shift around mid-scan
- * @param hoverNode             the {@link DirectoryNode} the cursor is over, or {@code null}
- * @param hoveringHub           cursor is over the centre hub
- * @param hoveringFreeSpace     cursor is over the free-space arc / cell
- * @param hoveringUnaccounted   cursor is over the "Unaccounted" arc / cell
- * @param target                the {@link Volume} being visualised — used for capacity figures
- * @param scanning              {@code true} while a scan is in flight; visualisations may pulse a progress indicator
- * @param progressFiles         file count seen so far in the active scan
- * @param progressBytes         bytes seen so far in the active scan
- * @param progressPath          path currently being scanned, for the hub progress tail; may be {@code null}
- * @param hubState              scanner-supplied overrides for the sunburst hub (title / subtitle / progress arc),
- *                              snapshot at render time; never {@code null}, may be {@link Scanner.HubState#DEFAULT}
+ * @param scanRoot
+ * 		root of the scan tree
+ * @param viewRoot
+ * 		currently drilled-in node; same as {@code scanRoot} when at the top level
+ * @param hiddenNode
+ * 		the synthetic "Hidden" child of {@code scanRoot}, or {@code null}; visualisations may pin it to the end of a sort
+ * 		regardless of size so it doesn't shift around mid-scan
+ * @param hoverNode
+ * 		the {@link DirectoryNode} the cursor is over, or {@code null}
+ * @param hoveringHub
+ * 		cursor is over the centre hub
+ * @param hoveringFreeSpace
+ * 		cursor is over the free-space arc / cell
+ * @param hoveringUnaccounted
+ * 		cursor is over the "Unaccounted" arc / cell
+ * @param target
+ * 		the {@link Volume} being visualised — used for capacity figures
+ * @param scanning
+ *        {@code true} while a scan is in flight; visualisations may pulse a progress indicator
+ * @param progressFiles
+ * 		file count seen so far in the active scan
+ * @param progressBytes
+ * 		bytes seen so far in the active scan
+ * @param progressPath
+ * 		path currently being scanned, for the hub progress tail; may be {@code null}
+ * @param hubState
+ * 		scanner-supplied overrides for the sunburst hub (title / subtitle / progress arc), snapshot at render time; never
+ *        {@code null}, may be {@link Scanner.HubState#DEFAULT}
  */
 public record RenderContext(DirectoryNode scanRoot, DirectoryNode viewRoot, DirectoryNode hiddenNode,
 							DirectoryNode hoverNode, boolean hoveringHub, boolean hoveringFreeSpace,

@@ -54,16 +54,8 @@ import se.hirt.diskspace.model.DirectoryNode;
 import se.hirt.diskspace.model.MacHiddenSpace;
 import se.hirt.diskspace.model.Volume;
 import se.hirt.diskspace.scan.Scanner;
-import se.hirt.diskspace.ui.render.HeatmapVisualization;
-import se.hirt.diskspace.ui.render.HitResult;
-import se.hirt.diskspace.ui.render.NodeColorResolver;
-import se.hirt.diskspace.ui.render.NodeColorResolverImpl;
-import se.hirt.diskspace.ui.render.RenderContext;
-import se.hirt.diskspace.ui.render.SunburstVisualization;
-import se.hirt.diskspace.ui.render.Visualization;
-import se.hirt.diskspace.ui.render.VisualizationHost;
+import se.hirt.diskspace.ui.render.*;
 import se.hirt.diskspace.ui.theme.ColorScheme;
-import se.hirt.diskspace.ui.theme.SectorPalette;
 
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -105,11 +97,10 @@ public final class DiskView {
 	private static final long LIVE_REFRESH_INTERVAL_NANOS = 100_000_000L; // 10 Hz
 
 	/**
-	 * Inline background reset prepended to every table cell's {@code setStyle}. Modena's default
-	 * {@code .table-cell} paints a two-layer background ({@code -fx-table-cell-border-color},
-	 * {@code -fx-background}) with matching insets {@code 0, 0 0 1 0}. We replace the colors with
-	 * a single transparent layer AND reset insets so the layer count matches — without that
-	 * insets are stale and modena's selection variant ends up still painting through. With both
+	 * Inline background reset prepended to every table cell's {@code setStyle}. Modena's default {@code .table-cell}
+	 * paints a two-layer background ({@code -fx-table-cell-border-color}, {@code -fx-background}) with matching insets
+	 * {@code 0, 0 0 1 0}. We replace the colors with a single transparent layer AND reset insets so the layer count
+	 * matches — without that insets are stale and modena's selection variant ends up still painting through. With both
 	 * cleared, the row tint set by the row factory shows at full width.
 	 */
 	private static final String CELL_TRANSPARENT_BG = "-fx-background-color: transparent; -fx-background-insets: 0; ";
@@ -160,9 +151,9 @@ public final class DiskView {
 	private volatile boolean deleting;
 
 	/**
-	 * Self-contained visualisations. Each owns its own rendering, hit-testing, animation state, and hit-test
-	 * cache; DiskView just builds a per-frame {@link RenderContext}, hands it to {@link #currentVisualization},
-	 * and asks it where the cursor landed.
+	 * Self-contained visualisations. Each owns its own rendering, hit-testing, animation state, and hit-test cache;
+	 * DiskView just builds a per-frame {@link RenderContext}, hands it to {@link #currentVisualization}, and asks it
+	 * where the cursor landed.
 	 */
 	private final SunburstVisualization sunburst = new SunburstVisualization();
 	private final HeatmapVisualization heatmap = new HeatmapVisualization();
@@ -240,8 +231,8 @@ public final class DiskView {
 
 	/**
 	 * Resolves the display colour of every {@link DirectoryNode}. Wraps palette + scheme + family-inheritance rules so
-	 * the canvas painters and the table cell factory stay in lockstep. Lifecycle managed here: {@link
-	 * NodeColorResolverImpl#setScanRoot} on (re)scan start, {@link NodeColorResolverImpl#onScanComplete} on scan
+	 * the canvas painters and the table cell factory stay in lockstep. Lifecycle managed here:
+	 * {@link NodeColorResolverImpl#setScanRoot} on (re)scan start, {@link NodeColorResolverImpl#onScanComplete} on scan
 	 * completion, {@link NodeColorResolverImpl#stabilizeFinalizedTopLevels} per live tick.
 	 * <p>Assigned in the constructor body so {@code scheme} (also constructor-assigned) is non-null when the
 	 * resolver captures it.
@@ -253,7 +244,6 @@ public final class DiskView {
 	private long lastTickNanos;
 
 	private final Deque<DirectoryNode> forwardStack = new ArrayDeque<>();
-
 
 	public DiskView(Volume target, ColorScheme scheme) {
 		this.target = target;
@@ -634,8 +624,8 @@ public final class DiskView {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
 					setText(item);
-					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(scheme.textMuted())
-							+ ";");
+					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(
+							scheme.textMuted()) + ";");
 				} else if (node != null && node.path() == null) {
 					// Synthetic Hidden node — keep the color swatch so the row maps visually
 					// to its sunburst sector, but render the text italic muted to signal it
@@ -643,8 +633,8 @@ public final class DiskView {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
 					setText(item);
-					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(scheme.textMuted())
-							+ ";");
+					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(
+							scheme.textMuted()) + ";");
 				} else if (node != null) {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
@@ -684,8 +674,8 @@ public final class DiskView {
 					setStyle(CELL_TRANSPARENT_BG);
 				} else {
 					setText(item);
-					setStyle(CELL_TRANSPARENT_BG
-							+ "-fx-font-family: 'Consolas', 'Menlo', monospace; -fx-alignment: CENTER-RIGHT;");
+					setStyle(
+							CELL_TRANSPARENT_BG + "-fx-font-family: 'Consolas', 'Menlo', monospace; -fx-alignment: CENTER-RIGHT;");
 				}
 			}
 		});
@@ -990,8 +980,8 @@ public final class DiskView {
 		double canvasW = canvas.getWidth();
 		double canvasH = canvas.getHeight();
 		RenderContext beforeCtx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes,
-				progressPath, scanner.hubState());
+				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
 		Map<DirectoryNode, SunburstVisualization.Layout> beforeLayout =
 				animateRemoval ? sunburst.computeLayout(viewRoot, canvasW, canvasH, beforeCtx) : null;
 		DirectoryNode previousViewRoot = viewRoot;
@@ -1050,10 +1040,10 @@ public final class DiskView {
 		// (shrink in place); surviving siblings whose sweeps grew (less weight in the parent) tween into their
 		// new wider positions.
 		RenderContext afterCtx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes,
-				progressPath, scanner.hubState());
-		Map<DirectoryNode, SunburstVisualization.Layout> afterLayout =
-				sunburst.computeLayout(viewRoot, canvasW, canvasH, afterCtx);
+				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
+		Map<DirectoryNode, SunburstVisualization.Layout> afterLayout = sunburst.computeLayout(viewRoot, canvasW,
+				canvasH, afterCtx);
 		sunburst.beginAnimation(previousViewRoot, viewRoot, beforeLayout, afterLayout);
 	}
 
@@ -1505,10 +1495,9 @@ public final class DiskView {
 
 	/**
 	 * Open the OS file browser at {@code target}. Directories open in place via JavaFX's
-	 * {@link javafx.application.HostServices} (which routes through the platform-native launcher
-	 * without initialising AWT). Files are revealed in their containing folder where the platform
-	 * supports it (macOS {@code open -R}, Windows {@code explorer /select}), and fall back to
-	 * opening the parent directory on Linux.
+	 * {@link javafx.application.HostServices} (which routes through the platform-native launcher without initialising
+	 * AWT). Files are revealed in their containing folder where the platform supports it (macOS {@code open -R},
+	 * Windows {@code explorer /select}), and fall back to opening the parent directory on Linux.
 	 */
 	private void revealPath(PathTarget target) {
 		Path p = target.path();
@@ -1540,11 +1529,10 @@ public final class DiskView {
 	}
 
 	/**
-	 * Open a folder in the system file manager. On Windows we shell out to {@code explorer.exe}
-	 * with the raw path: {@link javafx.application.HostServices#showDocument} sends a
-	 * {@code file:///…/} URI through {@code ShellExecute}, which doesn't reliably navigate to a
-	 * folder and tends to fall back to Documents. On macOS/Linux {@code HostServices} works
-	 * fine (LSOpen / xdg-open).
+	 * Open a folder in the system file manager. On Windows we shell out to {@code explorer.exe} with the raw path:
+	 * {@link javafx.application.HostServices#showDocument} sends a {@code file:///…/} URI through {@code ShellExecute},
+	 * which doesn't reliably navigate to a folder and tends to fall back to Documents. On macOS/Linux
+	 * {@code HostServices} works fine (LSOpen / xdg-open).
 	 */
 	private static void openDirectory(Path p) {
 		if (isWindows()) {
@@ -1561,9 +1549,9 @@ public final class DiskView {
 	}
 
 	/**
-	 * "Open" semantics: hand the path to the OS's default handler — the registered app for a file,
-	 * the file manager for a directory. Distinct from {@link #revealPath} which always lands the
-	 * user in a folder view (revealing files in their parent).
+	 * "Open" semantics: hand the path to the OS's default handler — the registered app for a file, the file manager for
+	 * a directory. Distinct from {@link #revealPath} which always lands the user in a folder view (revealing files in
+	 * their parent).
 	 */
 	private static void openPath(PathTarget target) {
 		if (target == null || target.path() == null)
@@ -1597,10 +1585,9 @@ public final class DiskView {
 	 * get a stage action unless they are the scan root (refusing to let a single right-click queue the entire disk for
 	 * deletion). File-sector nodes (large files / "Smaller files" aggregate) are surfaced as non-directory targets, so
 	 * right-clicking a big file in the sunburst behaves the same as right-clicking it in the table.
-	 *
 	 * <p>The "Smaller files" aggregate is special: it carries no on-disk path of its own (synthesised post-scan), so
-	 * the natural target for "Open Location" is the parent directory where those small files actually live. Staging
-	 * is disabled because removing an aggregate has no concrete meaning — there's no single file or folder to delete.
+	 * the natural target for "Open Location" is the parent directory where those small files actually live. Staging is
+	 * disabled because removing an aggregate has no concrete meaning — there's no single file or folder to delete.
 	 */
 	private PathTarget targetFor(DirectoryNode node) {
 		if (node == null)
@@ -1785,8 +1772,8 @@ public final class DiskView {
 		double w = canvas.getWidth();
 		double h = canvas.getHeight();
 		RenderContext before = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes,
-				progressPath, scanner.hubState());
+				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
 		Map<DirectoryNode, SunburstVisualization.Layout> oldL = sunburst.computeLayout(viewRoot, w, h, before);
 		DirectoryNode previousViewRoot = viewRoot;
 
@@ -1797,8 +1784,8 @@ public final class DiskView {
 		rebuildBreadcrumb();
 
 		RenderContext after = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes,
-				progressPath, scanner.hubState());
+				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
 		Map<DirectoryNode, SunburstVisualization.Layout> newL = sunburst.computeLayout(viewRoot, w, h, after);
 		sunburst.beginAnimation(previousViewRoot, viewRoot, oldL, newL);
 		// Make sure the root has focus so keyboard shortcuts work after a drill.
@@ -1963,7 +1950,6 @@ public final class DiskView {
 		return r != null ? r : 0;
 	}
 
-
 	// ---- rendering -------------------------------------------------------
 
 	/**
@@ -2023,9 +2009,8 @@ public final class DiskView {
 		// sizes shift as the scan progresses.
 		rankCache.clear();
 
-		RenderContext ctx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes,
-				progressPath, scanner.hubState());
+		RenderContext ctx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub, hoveringFreeSpace,
+				hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath, scanner.hubState());
 		try {
 			currentVisualization.render(g, w, h, ctx);
 		} catch (RuntimeException ex) {
@@ -2034,7 +2019,6 @@ public final class DiskView {
 			LOG.log(java.util.logging.Level.WARNING, currentMode + " render failed", ex);
 		}
 	}
-
 
 	// ---- interaction -----------------------------------------------------
 
@@ -2257,8 +2241,8 @@ public final class DiskView {
 	}
 
 	/**
-	 * Kind of thing the menu is acting on. Determines which actions the menu shows and how
-	 * "Open"-style actions interpret the path:
+	 * Kind of thing the menu is acting on. Determines which actions the menu shows and how "Open"-style actions
+	 * interpret the path:
 	 * <ul>
 	 *   <li>{@link #DIRECTORY} — a real on-disk folder. Menu shows {@code Open} only.</li>
 	 *   <li>{@link #FILE} — a real on-disk file. Menu shows {@code Open} (default app) and
@@ -2273,10 +2257,10 @@ public final class DiskView {
 
 	/**
 	 * What the context menu acts on: an on-disk path, the {@link TargetKind} (which controls menu shape and
-	 * "Open"-style action semantics), and a {@link Runnable} that knows how to stage this specific target for
-	 * deletion. The stage action is supplied by the resolver because it needs domain context the menu doesn't have
-	 * (size, parent node, file vs directory). {@code null} stage action → menu item is disabled (e.g. the scan root,
-	 * which we refuse to stage as a footgun guard, or aggregates which have no concrete delete target).
+	 * "Open"-style action semantics), and a {@link Runnable} that knows how to stage this specific target for deletion.
+	 * The stage action is supplied by the resolver because it needs domain context the menu doesn't have (size, parent
+	 * node, file vs directory). {@code null} stage action → menu item is disabled (e.g. the scan root, which we refuse
+	 * to stage as a footgun guard, or aggregates which have no concrete delete target).
 	 */
 	private record PathTarget(Path path, TargetKind kind, Runnable stageAction) {
 		boolean isDirectory() {
@@ -2330,12 +2314,12 @@ public final class DiskView {
 		private static final long TOGGLE_DEBOUNCE_NANOS = 150_000_000L; // 150 ms
 
 		/**
-		 * Bubble-phase handler installed on the menu's own scene while the menu is shown. Listens
-		 * for {@code MOUSE_RELEASED} (not {@code MOUSE_PRESSED}) so the MenuItem skin gets to fire
-		 * the item's action on release first — by the time this handler runs, the menu is already
-		 * hidden and the {@code isShowing()} guard makes it a no-op. For clicks that <em>didn't</em>
-		 * land on an actionable item — right-clicks on items, left-clicks on the menu's padding /
-		 * header / border — nothing dismisses the menu, so this handler does it explicitly.
+		 * Bubble-phase handler installed on the menu's own scene while the menu is shown. Listens for
+		 * {@code MOUSE_RELEASED} (not {@code MOUSE_PRESSED}) so the MenuItem skin gets to fire the item's action on
+		 * release first — by the time this handler runs, the menu is already hidden and the {@code isShowing()} guard
+		 * makes it a no-op. For clicks that <em>didn't</em> land on an actionable item — right-clicks on items,
+		 * left-clicks on the menu's padding / header / border — nothing dismisses the menu, so this handler does it
+		 * explicitly.
 		 */
 		private final javafx.event.EventHandler<javafx.scene.input.MouseEvent> menuMissDismiss = e -> {
 			if (menu.isShowing()) {

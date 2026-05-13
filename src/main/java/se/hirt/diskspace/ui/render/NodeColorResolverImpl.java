@@ -33,13 +33,7 @@ import se.hirt.diskspace.model.DirectoryNode;
 import se.hirt.diskspace.ui.theme.ColorScheme;
 import se.hirt.diskspace.ui.theme.SectorPalette;
 
-import java.util.ArrayDeque;
-import java.util.Collections;
-import java.util.Deque;
-import java.util.HashSet;
-import java.util.IdentityHashMap;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.function.ToIntFunction;
 
 /**
@@ -55,7 +49,6 @@ import java.util.function.ToIntFunction;
  *       continuation); higher-rank siblings drift lighter and slightly hue-shifted, creating the soft halo at the
  *       rim.</li>
  * </ul>
- *
  * <p>Caches the computed colour per node so a single render doesn't recompute the recursive parent chain N times.
  * The cache is invalidated when the scan completes (so final size-order ranks supersede mid-scan ones) and on
  * rescan.</p>
@@ -64,26 +57,26 @@ public final class NodeColorResolverImpl implements NodeColorResolver {
 
 	private final ColorScheme scheme;
 	/**
-	 * Sibling rank lookup. Supplied by the host because it shares a cache with the sunburst layout, which clears
-	 * its per-render cache at the start of every paint. Keeping rank lookup external avoids two competing caches
-	 * for the same data.
+	 * Sibling rank lookup. Supplied by the host because it shares a cache with the sunburst layout, which clears its
+	 * per-render cache at the start of every paint. Keeping rank lookup external avoids two competing caches for the
+	 * same data.
 	 */
 	private final ToIntFunction<DirectoryNode> rankOf;
 
 	private final Map<DirectoryNode, Color> colorCache = new IdentityHashMap<>();
 	/**
 	 * Maps each top-level family root to its allocated palette index. Allocation walks forward from
-	 * {@code name.hashCode() % paletteSize} to the first unclaimed bucket — keeps two top-level siblings whose
-	 * names hash identically from rendering in the same colour (e.g. "System" and "Applications" both hash to idx
-	 * 11 on JDK 25).
+	 * {@code name.hashCode() % paletteSize} to the first unclaimed bucket — keeps two top-level siblings whose names
+	 * hash identically from rendering in the same colour (e.g. "System" and "Applications" both hash to idx 11 on JDK
+	 * 25).
 	 */
 	private final Map<DirectoryNode, Integer> topLevelPaletteIdx = new IdentityHashMap<>();
 	/**
-	 * Top-level folders whose descendants have already been "stabilised" (their cached colours dropped on the
-	 * tick the folder finished). Membership prevents the stabilisation from re-running every tick.
+	 * Top-level folders whose descendants have already been "stabilised" (their cached colours dropped on the tick the
+	 * folder finished). Membership prevents the stabilisation from re-running every tick.
 	 */
-	private final Set<DirectoryNode> finalizedTopLevels =
-			Collections.newSetFromMap(new IdentityHashMap<DirectoryNode, Boolean>());
+	private final Set<DirectoryNode> finalizedTopLevels = Collections.newSetFromMap(
+			new IdentityHashMap<DirectoryNode, Boolean>());
 
 	private DirectoryNode scanRoot;
 	private DirectoryNode hiddenNode;
@@ -107,9 +100,9 @@ public final class NodeColorResolverImpl implements NodeColorResolver {
 	}
 
 	/**
-	 * Called when a scan completes: drop colours and the top-level palette allocation so the final size-order
-	 * picks the palette indices in size-descending order. A node briefly cached as rank-0 stays cached as rank-0
-	 * unless we invalidate; same for the top-level palette allocation.
+	 * Called when a scan completes: drop colours and the top-level palette allocation so the final size-order picks the
+	 * palette indices in size-descending order. A node briefly cached as rank-0 stays cached as rank-0 unless we
+	 * invalidate; same for the top-level palette allocation.
 	 */
 	public void onScanComplete() {
 		colorCache.clear();
@@ -117,10 +110,10 @@ public final class NodeColorResolverImpl implements NodeColorResolver {
 	}
 
 	/**
-	 * Per-tick maintenance for live scans. Detect any top-level folder that just transitioned to {@code DONE} and
-	 * drop its descendants' cached colours so the next render derives them against the now-final sort order. The
-	 * top-level node itself stays cached because its colour is hash-based via {@link #allocateTopLevelIdx}, not
-	 * rank-based — it doesn't shift during the scan.
+	 * Per-tick maintenance for live scans. Detect any top-level folder that just transitioned to {@code DONE} and drop
+	 * its descendants' cached colours so the next render derives them against the now-final sort order. The top-level
+	 * node itself stays cached because its colour is hash-based via {@link #allocateTopLevelIdx}, not rank-based — it
+	 * doesn't shift during the scan.
 	 */
 	public void stabilizeFinalizedTopLevels() {
 		if (scanRoot == null)
@@ -205,8 +198,8 @@ public final class NodeColorResolverImpl implements NodeColorResolver {
 	/**
 	 * Returns the palette index this top-level family will use, allocating on first access. Starts from
 	 * {@code name.hashCode() % paletteSize} and walks forward to the first index not already claimed by a
-	 * previously-allocated sibling — so two top-level siblings whose names happen to hash to the same bucket
-	 * can't render identical.
+	 * previously-allocated sibling — so two top-level siblings whose names happen to hash to the same bucket can't
+	 * render identical.
 	 */
 	private int allocateTopLevelIdx(DirectoryNode node) {
 		Integer cached = topLevelPaletteIdx.get(node);
