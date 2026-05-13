@@ -190,7 +190,8 @@ First Aid" can flag filesystem errors that inflate this bucket.
   `mvn -Pnative gluonfx:build` from there — the C++ toolchain must be on `PATH`.
 - **Window appears blank or fails to render**: confirm hardware acceleration / OpenGL drivers are installed. JavaFX
   falls back to software rendering, but it is slow.
-- **Linux native binary exits at startup with `Error initializing QuantumRenderer: no suitable pipeline found`**: JavaFX's
+- **Linux native binary exits at startup with `Error initializing QuantumRenderer: no suitable pipeline found`**:
+  JavaFX's
   hardware-qualifier check rejects what XWayland exposes on many Wayland desktops, and the GluonFX native image doesn't
   include the software Prism pipeline as a fallback, so the app fails to start. Bypass the qualifier check with
   `-Dprism.forceGPU=true`:

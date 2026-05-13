@@ -40,7 +40,6 @@ import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
-import javafx.geometry.VPos;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.canvas.Canvas;
@@ -49,19 +48,14 @@ import javafx.scene.control.*;
 import javafx.scene.input.*;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
-import javafx.scene.shape.ArcType;
 import javafx.scene.shape.Rectangle;
-import javafx.scene.shape.StrokeLineCap;
-import javafx.scene.text.Font;
-import javafx.scene.text.FontWeight;
-import javafx.scene.text.TextAlignment;
 import javafx.util.Duration;
 import se.hirt.diskspace.model.DirectoryNode;
 import se.hirt.diskspace.model.MacHiddenSpace;
 import se.hirt.diskspace.model.Volume;
 import se.hirt.diskspace.scan.Scanner;
+import se.hirt.diskspace.ui.render.*;
 import se.hirt.diskspace.ui.theme.ColorScheme;
-import se.hirt.diskspace.ui.theme.SectorPalette;
 
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
@@ -100,26 +94,13 @@ public final class DiskView {
 	 */
 	private static volatile boolean fdaPromptSkippedThisSession = false;
 
-	/**
-	 * First {@value} rings render at full thickness ({@code normalW}); after that, up to {@link #THIN_RINGS} additional
-	 * rings are squeezed in at {@link #THIN_RING_FACTOR} of the normal width so deep file structure stays visible
-	 * without dominating the layout.
-	 */
-	private static final int NORMAL_RINGS = 5;
-	private static final int THIN_RINGS = 4;
-	private static final int MAX_DEPTH = NORMAL_RINGS + THIN_RINGS;
-	private static final double THIN_RING_FACTOR = 0.2;
-	private static final double HUB_RADIUS = 78;
-	private static final double MIN_VISIBLE_SWEEP_DEG = 0.6;
 	private static final long LIVE_REFRESH_INTERVAL_NANOS = 100_000_000L; // 10 Hz
-	private static final long ANIM_DURATION_NANOS = 350_000_000L;        // 350 ms
 
 	/**
-	 * Inline background reset prepended to every table cell's {@code setStyle}. Modena's default
-	 * {@code .table-cell} paints a two-layer background ({@code -fx-table-cell-border-color},
-	 * {@code -fx-background}) with matching insets {@code 0, 0 0 1 0}. We replace the colors with
-	 * a single transparent layer AND reset insets so the layer count matches — without that
-	 * insets are stale and modena's selection variant ends up still painting through. With both
+	 * Inline background reset prepended to every table cell's {@code setStyle}. Modena's default {@code .table-cell}
+	 * paints a two-layer background ({@code -fx-table-cell-border-color}, {@code -fx-background}) with matching insets
+	 * {@code 0, 0 0 1 0}. We replace the colors with a single transparent layer AND reset insets so the layer count
+	 * matches — without that insets are stale and modena's selection variant ends up still painting through. With both
 	 * cleared, the row tint set by the row factory shows at full width.
 	 */
 	private static final String CELL_TRANSPARENT_BG = "-fx-background-color: transparent; -fx-background-insets: 0; ";
@@ -169,8 +150,14 @@ public final class DiskView {
 	private Button deleteStagedButton;
 	private volatile boolean deleting;
 
-	private final List<SectorRect> sectors = new ArrayList<>();
-	private final List<RectHit> rects = new ArrayList<>();
+	/**
+	 * Self-contained visualisations. Each owns its own rendering, hit-testing, animation state, and hit-test cache;
+	 * DiskView just builds a per-frame {@link RenderContext}, hands it to {@link #currentVisualization}, and asks it
+	 * where the cursor landed.
+	 */
+	private final SunburstVisualization sunburst = new SunburstVisualization();
+	private final HeatmapVisualization heatmap = new HeatmapVisualization();
+	private Visualization currentVisualization = sunburst;
 	private RenderMode currentMode = RenderMode.SUNBURST;
 	/**
 	 * JFR event spanning the duration the user spends in a single visualization mode. Begun in the constructor,
@@ -220,13 +207,6 @@ public final class DiskView {
 	private volatile DirectoryNode hiddenNode;
 
 	/**
-	 * Memoized sunburst color per node. Family root (immediate child of scanRoot) gets a palette pick by name; deeper
-	 * descendants inherit the parent's color, lightened and hue-shifted by sibling rank + depth so the largest-child
-	 * trunk reads as one ribbon while side branches fade outward. Cleared on every (re)scan.
-	 */
-	private final java.util.Map<DirectoryNode, Color> colorCache = new java.util.IdentityHashMap<>();
-
-	/**
 	 * Per-render cache of {@code parent → (child → rank)}. {@link #sortedRank(DirectoryNode)} fills the inner map by
 	 * sorting {@code parent.children()} by size once; subsequent calls for siblings of the same parent become O(1)
 	 * lookups instead of an O(K log K) sort each.
@@ -250,19 +230,14 @@ public final class DiskView {
 	private final java.util.Map<DirectoryNode, java.util.IdentityHashMap<DirectoryNode, Integer>> stableRankCache = new java.util.IdentityHashMap<>();
 
 	/**
-	 * Palette index claimed by each top-level family (immediate child of scanRoot). Allocated lazily with collision
-	 * avoidance so two top-level siblings can't end up on the same color even when their names hash to the same
-	 * bucket.
+	 * Resolves the display colour of every {@link DirectoryNode}. Wraps palette + scheme + family-inheritance rules so
+	 * the canvas painters and the table cell factory stay in lockstep. Lifecycle managed here:
+	 * {@link NodeColorResolverImpl#setScanRoot} on (re)scan start, {@link NodeColorResolverImpl#onScanComplete} on scan
+	 * completion, {@link NodeColorResolverImpl#stabilizeFinalizedTopLevels} per live tick.
+	 * <p>Assigned in the constructor body so {@code scheme} (also constructor-assigned) is non-null when the
+	 * resolver captures it.
 	 */
-	private final java.util.Map<DirectoryNode, Integer> topLevelPaletteIdx = new java.util.IdentityHashMap<>();
-
-	/**
-	 * Top-level folders whose scan has completed and whose descendant colors have been invalidated against final ranks.
-	 * Walked on every live tick so colors stabilize per-folder as each finishes, instead of all flipping at the end of
-	 * the scan.
-	 */
-	private final java.util.Set<DirectoryNode> finalizedTopLevels = java.util.Collections.newSetFromMap(
-			new java.util.IdentityHashMap<>());
+	private final NodeColorResolverImpl nodeColors;
 
 	private final Scanner scanner;
 	private final AnimationTimer liveTicker;
@@ -270,18 +245,31 @@ public final class DiskView {
 
 	private final Deque<DirectoryNode> forwardStack = new ArrayDeque<>();
 
-	private boolean animating;
-	private long animStartNanos;
-	private DirectoryNode animOldViewRoot;
-	private DirectoryNode animNewViewRoot;
-	private Map<DirectoryNode, Layout> animOld;
-	private Map<DirectoryNode, Layout> animNew;
-	private final AnimationTimer animTimer;
-
 	public DiskView(Volume target, ColorScheme scheme) {
 		this.target = target;
 		this.scheme = scheme;
+		this.nodeColors = new NodeColorResolverImpl(scheme, this::sortedRank);
 		this.scanner = Scanner.forVolume(target);
+		// Visualization host — visualisations call back here for redraws + colour lookup. Wiring this up before
+		// they're used downstream (they're constructed via field initialisers above).
+		VisualizationHost vizHost = new VisualizationHost() {
+			@Override
+			public void requestRedraw(String trigger) {
+				redrawWith(trigger);
+			}
+
+			@Override
+			public NodeColorResolver colors() {
+				return nodeColors;
+			}
+
+			@Override
+			public ColorScheme scheme() {
+				return scheme;
+			}
+		};
+		sunburst.attach(vizHost);
+		heatmap.attach(vizHost);
 
 		canvas = new Canvas();
 		Pane canvasHolder = new Pane(canvas);
@@ -420,27 +408,14 @@ public final class DiskView {
 				if (now - lastTickNanos < LIVE_REFRESH_INTERVAL_NANOS)
 					return;
 				lastTickNanos = now;
-				stabilizeFinalizedTopLevels();
+				nodeColors.stabilizeFinalizedTopLevels();
 				refreshTable();
 				if (!stagedItems.isEmpty()) {
 					stagingTable.refresh();
 					updateStagingFooter();
 				}
-				if (!animating)
+				if (!currentVisualization.isAnimating())
 					redrawWith("scan-update");
-			}
-		};
-
-		animTimer = new AnimationTimer() {
-			@Override
-			public void handle(long now) {
-				if (now - animStartNanos >= ANIM_DURATION_NANOS) {
-					animating = false;
-					stop();
-					redraw();
-					return;
-				}
-				redraw();
 			}
 		};
 
@@ -498,7 +473,8 @@ public final class DiskView {
 		} catch (RuntimeException ignored) {
 		}
 		try {
-			animTimer.stop();
+			sunburst.shutdown();
+			heatmap.shutdown();
 		} catch (RuntimeException ignored) {
 		}
 		try {
@@ -648,8 +624,8 @@ public final class DiskView {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
 					setText(item);
-					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(scheme.textMuted())
-							+ ";");
+					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(
+							scheme.textMuted()) + ";");
 				} else if (node != null && node.path() == null) {
 					// Synthetic Hidden node — keep the color swatch so the row maps visually
 					// to its sunburst sector, but render the text italic muted to signal it
@@ -657,8 +633,8 @@ public final class DiskView {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
 					setText(item);
-					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(scheme.textMuted())
-							+ ";");
+					setStyle(CELL_TRANSPARENT_BG + "-fx-font-style: italic; -fx-text-fill: " + css(
+							scheme.textMuted()) + ";");
 				} else if (node != null) {
 					swatch.setFill(getNodeColor(node));
 					setGraphic(swatch);
@@ -698,8 +674,8 @@ public final class DiskView {
 					setStyle(CELL_TRANSPARENT_BG);
 				} else {
 					setText(item);
-					setStyle(CELL_TRANSPARENT_BG
-							+ "-fx-font-family: 'Consolas', 'Menlo', monospace; -fx-alignment: CENTER-RIGHT;");
+					setStyle(
+							CELL_TRANSPARENT_BG + "-fx-font-family: 'Consolas', 'Menlo', monospace; -fx-alignment: CENTER-RIGHT;");
 				}
 			}
 		});
@@ -998,10 +974,16 @@ public final class DiskView {
 		if (deleted.isEmpty())
 			return;
 
-		// Snapshot the pre-delete layout so we can lerp from it to the post-delete layout.
-		// Only meaningful in sunburst mode — treemap layouts shuffle every rectangle.
-		boolean animateRemoval = currentMode == RenderMode.SUNBURST;
-		Map<DirectoryNode, Layout> beforeLayout = animateRemoval ? computeLayout(viewRoot) : null;
+		// Snapshot the pre-delete layout so we can lerp from it to the post-delete layout. Only meaningful in
+		// sunburst mode — treemap layouts shuffle every rectangle.
+		boolean animateRemoval = currentVisualization == sunburst;
+		double canvasW = canvas.getWidth();
+		double canvasH = canvas.getHeight();
+		RenderContext beforeCtx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
+				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
+		Map<DirectoryNode, SunburstVisualization.Layout> beforeLayout =
+				animateRemoval ? sunburst.computeLayout(viewRoot, canvasW, canvasH, beforeCtx) : null;
 		DirectoryNode previousViewRoot = viewRoot;
 
 		boolean filesListChanged = false;
@@ -1054,17 +1036,15 @@ public final class DiskView {
 			redraw();
 			return;
 		}
-		// Snapshot the post-delete layout and run the standard old→new tween. Deleted
-		// sectors are "in old only" (shrink in place); surviving siblings whose sweeps
-		// grew (less weight in the parent) tween into their new wider positions.
-		Map<DirectoryNode, Layout> afterLayout = computeLayout(viewRoot);
-		animOldViewRoot = previousViewRoot;
-		animNewViewRoot = viewRoot;
-		animOld = beforeLayout;
-		animNew = afterLayout;
-		animStartNanos = System.nanoTime();
-		animating = true;
-		animTimer.start();
+		// Snapshot the post-delete layout and run the standard old→new tween. Deleted sectors are "in old only"
+		// (shrink in place); surviving siblings whose sweeps grew (less weight in the parent) tween into their
+		// new wider positions.
+		RenderContext afterCtx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
+				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
+		Map<DirectoryNode, SunburstVisualization.Layout> afterLayout = sunburst.computeLayout(viewRoot, canvasW,
+				canvasH, afterCtx);
+		sunburst.beginAnimation(previousViewRoot, viewRoot, beforeLayout, afterLayout);
 	}
 
 	private static boolean isAncestorOrSame(DirectoryNode candidate, DirectoryNode target) {
@@ -1099,13 +1079,14 @@ public final class DiskView {
 		lastPermDeniedCount = 0;
 		cachedHidden = null;
 		hiddenNode = null;
-		colorCache.clear();
-		topLevelPaletteIdx.clear();
-		finalizedTopLevels.clear();
+		// Resets both caches on the resolver — old colours and palette allocations would otherwise carry over
+		// into the next scan tree.
+		nodeColors.setScanRoot(null);
+		nodeColors.setHiddenNode(null);
 		stableRankCache.clear();
 		currentFiles = List.of();
 		tableItems.clear();
-		sectors.clear();
+		sunburst.cancelAnimation();
 		rebuildBreadcrumb();
 		redrawWith("rescan");
 		startScan();
@@ -1326,6 +1307,7 @@ public final class DiskView {
 				injectHiddenInto(liveRoot);
 				Platform.runLater(() -> {
 					scanRoot = liveRoot;
+					nodeColors.setScanRoot(liveRoot);
 					viewRoot = liveRoot;
 					scanning = true;
 					refreshTable();
@@ -1363,13 +1345,11 @@ public final class DiskView {
 					liveTicker.stop();
 					stopStrategyPulse();
 					commitScanEvent(result, "complete");
-					// Drop colors that were memoized during the scan against stale child
-					// sort orders — a node briefly cached as rank-0 stays cached as rank-0
-					// until invalidated, even if siblings overtook it. Same for the
-					// top-level palette allocation: redo it in final-size order so the
+					// Drop colors that were memoized during the scan against stale child sort orders — a node
+					// briefly cached as rank-0 stays cached as rank-0 until invalidated, even if siblings
+					// overtook it. Same for the top-level palette allocation: redo it in final-size order so the
 					// largest top-level family gets its hashed index first.
-					colorCache.clear();
-					topLevelPaletteIdx.clear();
+					nodeColors.onScanComplete();
 					refreshTable();
 					redrawWith("scan-complete");
 				});
@@ -1515,10 +1495,9 @@ public final class DiskView {
 
 	/**
 	 * Open the OS file browser at {@code target}. Directories open in place via JavaFX's
-	 * {@link javafx.application.HostServices} (which routes through the platform-native launcher
-	 * without initialising AWT). Files are revealed in their containing folder where the platform
-	 * supports it (macOS {@code open -R}, Windows {@code explorer /select}), and fall back to
-	 * opening the parent directory on Linux.
+	 * {@link javafx.application.HostServices} (which routes through the platform-native launcher without initialising
+	 * AWT). Files are revealed in their containing folder where the platform supports it (macOS {@code open -R},
+	 * Windows {@code explorer /select}), and fall back to opening the parent directory on Linux.
 	 */
 	private void revealPath(PathTarget target) {
 		Path p = target.path();
@@ -1550,11 +1529,10 @@ public final class DiskView {
 	}
 
 	/**
-	 * Open a folder in the system file manager. On Windows we shell out to {@code explorer.exe}
-	 * with the raw path: {@link javafx.application.HostServices#showDocument} sends a
-	 * {@code file:///…/} URI through {@code ShellExecute}, which doesn't reliably navigate to a
-	 * folder and tends to fall back to Documents. On macOS/Linux {@code HostServices} works
-	 * fine (LSOpen / xdg-open).
+	 * Open a folder in the system file manager. On Windows we shell out to {@code explorer.exe} with the raw path:
+	 * {@link javafx.application.HostServices#showDocument} sends a {@code file:///…/} URI through {@code ShellExecute},
+	 * which doesn't reliably navigate to a folder and tends to fall back to Documents. On macOS/Linux
+	 * {@code HostServices} works fine (LSOpen / xdg-open).
 	 */
 	private static void openDirectory(Path p) {
 		if (isWindows()) {
@@ -1571,9 +1549,9 @@ public final class DiskView {
 	}
 
 	/**
-	 * "Open" semantics: hand the path to the OS's default handler — the registered app for a file,
-	 * the file manager for a directory. Distinct from {@link #revealPath} which always lands the
-	 * user in a folder view (revealing files in their parent).
+	 * "Open" semantics: hand the path to the OS's default handler — the registered app for a file, the file manager for
+	 * a directory. Distinct from {@link #revealPath} which always lands the user in a folder view (revealing files in
+	 * their parent).
 	 */
 	private static void openPath(PathTarget target) {
 		if (target == null || target.path() == null)
@@ -1607,10 +1585,9 @@ public final class DiskView {
 	 * get a stage action unless they are the scan root (refusing to let a single right-click queue the entire disk for
 	 * deletion). File-sector nodes (large files / "Smaller files" aggregate) are surfaced as non-directory targets, so
 	 * right-clicking a big file in the sunburst behaves the same as right-clicking it in the table.
-	 *
 	 * <p>The "Smaller files" aggregate is special: it carries no on-disk path of its own (synthesised post-scan), so
-	 * the natural target for "Open Location" is the parent directory where those small files actually live. Staging
-	 * is disabled because removing an aggregate has no concrete meaning — there's no single file or folder to delete.
+	 * the natural target for "Open Location" is the parent directory where those small files actually live. Staging is
+	 * disabled because removing an aggregate has no concrete meaning — there's no single file or folder to delete.
 	 */
 	private PathTarget targetFor(DirectoryNode node) {
 		if (node == null)
@@ -1713,6 +1690,7 @@ public final class DiskView {
 		DirectoryNode hidden = scanRootNode.addChild("Hidden", null);
 		hidden.markDone();
 		hiddenNode = hidden;
+		nodeColors.setHiddenNode(hidden);
 
 		DirectoryNode otherVols = hidden.addChild("Other volumes", null);
 		otherVols.addSyntheticBytes(h.otherVolumesBytes());
@@ -1777,9 +1755,9 @@ public final class DiskView {
 		if (clearForward)
 			forwardStack.clear();
 
-		if (currentMode == RenderMode.HEATMAP) {
-			// Treemap layouts shuffle every rectangle on drill, so a polar lerp doesn't apply.
-			// Swap the view root and repaint statically.
+		if (currentVisualization != sunburst) {
+			// Non-sunburst visualisations don't animate drills (the treemap layout would shuffle every
+			// rectangle, with no coherent visual map). Swap the view root and repaint statically.
 			viewRoot = newViewRoot;
 			hoverNode = null;
 			hoveringHub = false;
@@ -1790,13 +1768,14 @@ public final class DiskView {
 			return;
 		}
 
-		Map<DirectoryNode, Layout> oldL = computeLayout(viewRoot);
-		Map<DirectoryNode, Layout> newL = computeLayout(newViewRoot);
-
-		animOldViewRoot = viewRoot;
-		animNewViewRoot = newViewRoot;
-		animOld = oldL;
-		animNew = newL;
+		// Pre-compute the before- and after-layouts; the sunburst lerps between them.
+		double w = canvas.getWidth();
+		double h = canvas.getHeight();
+		RenderContext before = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
+				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
+		Map<DirectoryNode, SunburstVisualization.Layout> oldL = sunburst.computeLayout(viewRoot, w, h, before);
+		DirectoryNode previousViewRoot = viewRoot;
 
 		viewRoot = newViewRoot;
 		hoverNode = null;
@@ -1804,9 +1783,11 @@ public final class DiskView {
 		refreshTable();
 		rebuildBreadcrumb();
 
-		animStartNanos = System.nanoTime();
-		animating = true;
-		animTimer.start();
+		RenderContext after = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
+				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
+		Map<DirectoryNode, SunburstVisualization.Layout> newL = sunburst.computeLayout(viewRoot, w, h, after);
+		sunburst.beginAnimation(previousViewRoot, viewRoot, oldL, newL);
 		// Make sure the root has focus so keyboard shortcuts work after a drill.
 		root.requestFocus();
 	}
@@ -1875,159 +1856,26 @@ public final class DiskView {
 	private void toggleRenderMode() {
 		endVizEvent();
 		currentMode = (currentMode == RenderMode.SUNBURST) ? RenderMode.HEATMAP : RenderMode.SUNBURST;
+		// Cancel any in-flight animation on the outgoing visualisation; the new one draws statically (or kicks
+		// off its own animation if it wants to).
+		sunburst.cancelAnimation();
+		currentVisualization = (currentMode == RenderMode.SUNBURST) ? sunburst : heatmap;
 		startVizEvent();
 		hoverNode = null;
 		hoveringHub = false;
 		hoveringFreeSpace = false;
 		hoveringUnaccounted = false;
-		// Cancel any in-flight sunburst drill animation; the new mode draws statically.
-		if (animating) {
-			animating = false;
-			animTimer.stop();
-		}
 		// Reclaim focus so subsequent keypresses route through this view's handler.
 		root.requestFocus();
 		redrawWith("mode-change");
 	}
 
 	/**
-	 * Color for {@code node}'s sunburst sector. Used by both the canvas drawing path and the right-pane table swatch so
-	 * they stay in sync.
-	 * <p>Algorithm — DaisyDisk-style family inheritance:
-	 * <ul>
-	 *  <li>{@code scanRoot} → hub fill (no sector color).</li>
-	 *  <li>File sectors (large files, "Smaller files") → grey via
-	 *      {@link SectorPalette#forFileSector}, regardless of family.</li>
-	 *  <li>Family root (immediate child of {@code scanRoot}) → palette pick by name.</li>
-	 *  <li>Deeper descendants → parent's color, with a small hue shift, mild saturation
-	 *      pull-back, and lightening proportional to sibling rank + depth. The rank-0 child
-	 *      stays nearly identical to its parent (the "trunk"); higher-rank siblings drift
-	 *      lighter and slightly hue-shifted (visible as the soft halo at the rim).</li>
-	 * </ul>
+	 * Color for {@code node}'s sunburst sector. Delegates to {@link #nodeColors}, which centralises the
+	 * family-inheritance rules so the canvas drawing path and the right-pane table swatch stay in sync.
 	 */
 	Color getNodeColor(DirectoryNode node) {
-		if (node == null || node == scanRoot)
-			return scheme.surface();
-		Color cached = colorCache.get(node);
-		if (cached != null)
-			return cached;
-
-		Color computed;
-		if (node.isFileSector()) {
-			int d = depthFromScanRoot(node);
-			computed = SectorPalette.forFileSector(node.name(), Math.max(0, d - 1));
-		} else if (node.parent() == scanRoot || node.parent() == null) {
-			// Family root — pick from the palette by name, with collision avoidance so two
-			// top-level siblings whose names hash to the same bucket don't render in the
-			// same color (e.g. "System" and "Applications" both hash to idx 11 on JDK 25).
-			if ("Hidden".equals(node.name())) {
-				// Hidden has its own reserved grey via SectorPalette.forName.
-				computed = SectorPalette.forName("Hidden", 0);
-			} else {
-				computed = SectorPalette.atIndex(allocateTopLevelIdx(node), 0);
-			}
-		} else {
-			// Drive lightness off how much the child shrinks relative to its parent, not off
-			// depth. A child that takes ~100% of its parent (a true "trunk" continuation)
-			// keeps the parent's color exactly — without this the color washes toward white
-			// in deep single-folder chains. Side branches with low fraction lighten and
-			// hue-shift more, which is what creates the soft halo at the rim.
-			Color parentColor = getNodeColor(node.parent());
-			int rank = sortedRank(node);
-			DirectoryNode p = node.parent();
-			long parentBytes = p.totalBytes();
-			double frac = parentBytes > 0 ? Math.min(1.0, (double) node.totalBytes() / parentBytes) : 1.0;
-			double shrink = Math.max(0.0, 1.0 - frac);
-			// Trunk vs branch — two different regimes:
-			//
-			//  * Rank 0 (trunk): the largest-descendant chain. Apply a small baseline
-			//    darkening (5%) plus shrink-proportional darkening, so deep trunks visibly
-			//    deepen ring-by-ring like roots into ground, even when each step takes
-			//    ~100% of its parent. Saturation stays close to the parent's so warm
-			//    colors don't go muddy.
-			//
-			//  * Rank ≥ 1 (side branches): brightness has hard clipping at 1.0, so once
-			//    the brightFactor pushes past that, additional lightening does nothing.
-			//    Push saturation DOWN aggressively instead — that's what makes a branch
-			//    read as "pale / washed-out" relative to its parent rather than just
-			//    "still saturated yellow." Combined with the brightness lift, the result
-			//    is the cream/pastel halo at the rim.
-			double brightFactor;
-			double satFactor;
-			if (rank == 0) {
-				brightFactor = Math.max(0.65, 0.95 - shrink * 0.20);
-				satFactor = Math.max(0.88, 1.0 - shrink * 0.04);
-			} else {
-				brightFactor = Math.min(1.35, 1.0 + shrink * 0.20 + rank * 0.05);
-				satFactor = Math.max(0.30, 1.0 - shrink * 0.40 - rank * 0.04);
-			}
-			double hueShift = Math.min(20.0, rank * 5.0);
-			if (rank == 0) {
-				// Yellow-family trunks read as muddy/olive when darkened straight down. Pull
-				// the hue toward red (-8° at full shrink) so darker yellows go amber/orange
-				// — what the eye expects from "shaded yellow" in nature.
-				double pHue = parentColor.getHue();
-				if (pHue >= 30 && pHue <= 90) {
-					hueShift -= shrink * 8.0;
-				}
-			}
-			computed = parentColor.deriveColor(hueShift, satFactor, brightFactor, 1.0);
-		}
-		colorCache.put(node, computed);
-		return computed;
-	}
-
-	/**
-	 * Returns the palette index this top-level family will use, allocating on first access. Starts from
-	 * {@code name.hashCode() % paletteSize} and walks forward to the first index not already claimed by a
-	 * previously-allocated sibling — so two top-level siblings whose names happen to hash to the same bucket can't
-	 * render identical.
-	 */
-	private int allocateTopLevelIdx(DirectoryNode node) {
-		Integer cached = topLevelPaletteIdx.get(node);
-		if (cached != null)
-			return cached;
-		int n = SectorPalette.paletteSize();
-		java.util.Set<Integer> used = new java.util.HashSet<>(topLevelPaletteIdx.values());
-		int idx = Math.floorMod(node.name().hashCode(), n);
-		int tries = 0;
-		while (used.contains(idx) && tries < n) {
-			idx = (idx + 1) % n;
-			tries++;
-		}
-		topLevelPaletteIdx.put(node, idx);
-		return idx;
-	}
-
-	/**
-	 * Per-tick: detect any top-level folders that have just transitioned to {@code DONE} and drop their descendants'
-	 * cached colors. The next render re-derives those colors against the now-final sort order, so per-folder colors
-	 * stabilize *as that folder finishes* rather than all flipping at the very end of the scan.
-	 * <p>The top-level node itself is left in the cache because its color is hash-based via
-	 * {@link #allocateTopLevelIdx}, not rank-based — it doesn't shift during the scan.
-	 */
-	private void stabilizeFinalizedTopLevels() {
-		if (scanRoot == null)
-			return;
-		for (DirectoryNode c : scanRoot.children()) {
-			if (c == hiddenNode)
-				continue;
-			if (c.isDone() && finalizedTopLevels.add(c)) {
-				clearDescendantColors(c);
-			}
-		}
-	}
-
-	private void clearDescendantColors(DirectoryNode root) {
-		java.util.Deque<DirectoryNode> stack = new java.util.ArrayDeque<>();
-		for (DirectoryNode c : root.children())
-			stack.push(c);
-		while (!stack.isEmpty()) {
-			DirectoryNode n = stack.pop();
-			colorCache.remove(n);
-			for (DirectoryNode c : n.children())
-				stack.push(c);
-		}
+		return nodeColors.colorFor(node);
 	}
 
 	/**
@@ -2041,24 +1889,6 @@ public final class DiskView {
 	 * writers can shift values between the comparator's repeated calls on the same pair and break transitivity.
 	 */
 	private record SizedNode(DirectoryNode node, long size) {
-	}
-
-	/**
-	 * Sort comparator that puts {@link #hiddenNode} last and otherwise sorts by size desc. Used wherever scanRoot's
-	 * children are ordered so Hidden never moves position as the scan progresses or as users navigate.
-	 * <p>Held as a field (not a per-call factory) so the renderer reuses one instance across every
-	 * {@code layoutChildrenInto} call instead of allocating a fresh capturing lambda on each parent. The method
-	 * reference reads {@link #hiddenNode} at call time, so reassignments of the {@code hiddenNode} field (between
-	 * scans, via the picker) are still seen correctly.
-	 */
-	private final Comparator<SizedNode> hiddenLastSizeDesc = this::compareHiddenLastSizeDesc;
-
-	private int compareHiddenLastSizeDesc(SizedNode a, SizedNode b) {
-		boolean aHidden = (a.node == hiddenNode);
-		boolean bHidden = (b.node == hiddenNode);
-		if (aHidden != bHidden)
-			return aHidden ? 1 : -1;
-		return Long.compare(b.size, a.size);
 	}
 
 	/** Frozen-size snapshot of {@code nodes}. See {@link SizedNode} for the why. */
@@ -2120,121 +1950,6 @@ public final class DiskView {
 		return r != null ? r : 0;
 	}
 
-	/**
-	 * Inner radius of the ring at layout depth {@code depth}. Depths {@code <= NORMAL_RINGS} use full-width rings;
-	 * deeper depths use thin rings. Accepts fractional depths so the drill-in animation can interpolate radii
-	 * smoothly.
-	 */
-	private static double ringInnerR(double depth, double normalW, double thinW) {
-		if (depth <= 1)
-			return HUB_RADIUS;
-		double normalRings = Math.min(depth - 1, NORMAL_RINGS);
-		double thinRings = Math.max(0, depth - 1 - NORMAL_RINGS);
-		return HUB_RADIUS + normalRings * normalW + thinRings * thinW;
-	}
-
-	private Map<DirectoryNode, Layout> computeLayout(DirectoryNode rootForView) {
-		Map<DirectoryNode, Layout> out = new HashMap<>();
-		if (rootForView == null)
-			return out;
-
-		// Compute per-render ring widths from the current canvas size, so the recursion
-		// can do depth-aware pixel-arc culling (a sweep of N° at the inner ring is
-		// fewer pixels of arc than the same N° at an outer ring; the angle threshold
-		// alone over-culls deep rings and under-culls shallow ones).
-		double w = canvas.getWidth();
-		double h = canvas.getHeight();
-		double maxR = Math.max(40, Math.min(w, h) * 0.46);
-		double normalW = (maxR - HUB_RADIUS) / (NORMAL_RINGS + THIN_RINGS * THIN_RING_FACTOR);
-		if (normalW < 6)
-			normalW = 6;
-		double thinW = normalW * THIN_RING_FACTOR;
-
-		// When viewing the scan root, ring 1 is the root's children (no anchor ring).
-		// When drilled into a sector, ring 1 is that sector at 360° anchoring the view,
-		// and ring 2 onward shows its descendants.
-		boolean rootHasRing = rootForView != scanRoot;
-		if (rootHasRing) {
-			out.put(rootForView, new Layout(1, 90.0, 360.0, getNodeColor(rootForView)));
-			layoutChildrenInto(rootForView, 2, 90.0, 360.0, out, normalW, thinW);
-		} else {
-			double usedSweep = target.totalBytes() > 0 ? target.usedFraction() * 360.0 : 360.0;
-			double startAngle = 90.0 - usedSweep / 2.0;
-			double scannedSweep = target.usedBytes() > 0 ? Math.min(usedSweep,
-					usedSweep * rootForView.totalBytes() / (double) target.usedBytes()) : usedSweep;
-			layoutChildrenInto(rootForView, 1, startAngle, scannedSweep, out, normalW, thinW);
-		}
-		return out;
-	}
-
-	/**
-	 * Recursive sunburst layout. Two culling thresholds compose:
-	 * <ul>
-	 *   <li>{@link #MIN_VISIBLE_SWEEP_DEG} — a fixed angle floor, cheapest check; cuts most slivers.</li>
-	 *   <li>Pixel-arc check — at the outer radius of this depth's ring, we require {@code >= 1 px} of arc length. Sectors below that
-	 *       can't render visibly even at high DPI, and crucially we save the recursive descent into their subtrees.</li>
-	 * </ul>
-	 * Both checks let the sweep "consume" the angle (via {@code a += childSweep}) so non-culled siblings keep their proportional
-	 * positions; we just skip the {@link Layout} allocation and the recursion for invisible sectors.
-	 */
-	private void layoutChildrenInto(
-			DirectoryNode parent, int depth, double startDeg, double sweepDeg,
-			Map<DirectoryNode, Layout> out, double normalW, double thinW) {
-		if (depth > MAX_DEPTH)
-			return;
-		long total = parent.totalBytes();
-		if (total <= 0)
-			return;
-
-		double outerR = ringInnerR(depth + 1, normalW, thinW);
-		double minSweepFromPixels = Math.toDegrees(1.0 / outerR);
-
-		// Fast path: parent's children are sort-stable (post-{@link DirectoryNode#sortBySizeRecursive},
-		// no subsequent mutation) AND the parent isn't scanRoot (whose children may include hiddenNode,
-		// which we always pin last regardless of size). For everyone else, parent.children() is already
-		// in size-desc order — skip the snapshot+sort and iterate directly, reading totalBytes() inline.
-		// This kills the per-render TimSort that JFR flagged as the dominant render-CPU cost on large
-		// trees (1.38M-node SUNBURST snapshots).
-		if (parent != scanRoot && parent.isSortStableByTotalBytes()) {
-			double a = startDeg;
-			for (DirectoryNode child : parent.children()) {
-				long size = child.totalBytes();
-				double frac = size / (double) total;
-				double childSweep = sweepDeg * frac;
-				if (childSweep < MIN_VISIBLE_SWEEP_DEG || childSweep < minSweepFromPixels) {
-					a += childSweep;
-					continue;
-				}
-				out.put(child, new Layout(depth, a, childSweep, getNodeColor(child)));
-				layoutChildrenInto(child, depth + 1, a, childSweep, out, normalW, thinW);
-				a += childSweep;
-			}
-			return;
-		}
-
-		// Slow path (mid-scan, OR scanRoot which needs Hidden pinned last): snapshot child sizes
-		// alongside the nodes so the comparator can read primitive long fields (no boxing, no map
-		// lookup per comparison). See SizedNode for context.
-		List<SizedNode> ordered = snapshotSized(parent.children());
-		// Hidden always lands at the end of scanRoot's children regardless of size — it's
-		// less actionable than real folders and a stable position is more useful than a
-		// size-correct one.
-		ordered.sort(hiddenLastSizeDesc);
-
-		double a = startDeg;
-		for (SizedNode s : ordered) {
-			double frac = s.size / (double) total;
-			double childSweep = sweepDeg * frac;
-			if (childSweep < MIN_VISIBLE_SWEEP_DEG || childSweep < minSweepFromPixels) {
-				a += childSweep;
-				continue;
-			}
-			out.put(s.node, new Layout(depth, a, childSweep, getNodeColor(s.node)));
-			layoutChildrenInto(s.node, depth + 1, a, childSweep, out, normalW, thinW);
-			a += childSweep;
-		}
-	}
-
 	// ---- rendering -------------------------------------------------------
 
 	/**
@@ -2289,622 +2004,29 @@ public final class DiskView {
 		g.setFill(scheme.background());
 		g.fillRect(0, 0, w, h);
 
-		// Reset per-render rank cache. {@link #sortedRank} fills it lazily during this draw,
-		// so subsequent calls for siblings of the same parent become O(1) lookups. Across
-		// renders the cache is invalid because sizes shift as the scan progresses.
+		// Reset per-render rank cache. {@link #sortedRank} fills it lazily during this draw, so subsequent calls
+		// for siblings of the same parent become O(1) lookups. Across renders the cache is invalid because
+		// sizes shift as the scan progresses.
 		rankCache.clear();
 
-		sectors.clear();
-		rects.clear();
-
-		if (scanRoot == null) {
-			drawCenterText(g, w / 2, h / 2, "Scanning…");
-			return;
+		RenderContext ctx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub, hoveringFreeSpace,
+				hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath, scanner.hubState());
+		try {
+			currentVisualization.render(g, w, h, ctx);
+		} catch (RuntimeException ex) {
+			// Wrap so a paint-time exception doesn't brick the live ticker / animation timer. Logged so we still
+			// see what blew up.
+			LOG.log(java.util.logging.Level.WARNING, currentMode + " render failed", ex);
 		}
-
-		if (currentMode == RenderMode.HEATMAP) {
-			// Wrap to keep a paint-time exception from bricking the live ticker / animation
-			// timer infrastructure. Logged so we still see what blew up.
-			try {
-				drawHeatmap(g, w, h);
-				drawHeatmapHoverOverlay(g, w, h);
-			} catch (RuntimeException ex) {
-				LOG.log(java.util.logging.Level.WARNING, "Heatmap render failed", ex);
-				drawCenterText(g, w / 2, h / 2, "Heatmap render error — see logs");
-			}
-			return;
-		}
-
-		double cx = w / 2.0;
-		double cy = h / 2.0;
-		double maxR = Math.max(40, Math.min(w, h) * 0.46);
-		// Pack the rings: NORMAL_RINGS at full thickness + THIN_RINGS at THIN_RING_FACTOR.
-		double normalW = (maxR - HUB_RADIUS) / (NORMAL_RINGS + THIN_RINGS * THIN_RING_FACTOR);
-		if (normalW < 6)
-			normalW = 6;
-		double thinW = normalW * THIN_RING_FACTOR;
-
-		// Draw sectors first, hub on top so anti-aliasing edges are clipped cleanly.
-		if (animating) {
-			drawAnimatedFrame(g, cx, cy, normalW, thinW);
-		} else if (viewRoot != null) {
-			drawLayout(g, cx, cy, normalW, thinW, computeLayout(viewRoot));
-		}
-
-		drawHub(g, cx, cy);
-	}
-
-	private void drawLayout(
-			GraphicsContext g, double cx, double cy, double normalW, double thinW, Map<DirectoryNode, Layout> layout) {
-		// Render outer rings first so that any anti-aliasing edges are overdrawn cleanly
-		// by the inner rings.
-		List<Map.Entry<DirectoryNode, Layout>> entries = new ArrayList<>(layout.entrySet());
-		entries.sort((a, b) -> Double.compare(b.getValue().depth(), a.getValue().depth()));
-
-		for (Map.Entry<DirectoryNode, Layout> entry : entries) {
-			DirectoryNode node = entry.getKey();
-			Layout l = entry.getValue();
-			if (l.sweepDeg() < MIN_VISIBLE_SWEEP_DEG)
-				continue;
-
-			double r1 = ringInnerR(l.depth(), normalW, thinW);
-			double r2 = ringInnerR(l.depth() + 1, normalW, thinW);
-
-			Color base = l.color();
-			double alpha = node.isDone() ? 1.0 : 0.45;
-			if (hoverNode == node) {
-				// Universal hover: slight darkening + saturation boost. JavaFX brightness
-				// clamps at 1.0, so .brighter() on already-light rim sectors is a no-op —
-				// darken-plus-saturate guarantees visible change for both vivid and grey.
-				base = base.deriveColor(0, 1.20, 0.85, 1.0);
-				alpha = Math.min(1.0, alpha + 0.10);
-			}
-			// See drawTreemapCell for why we avoid deriveColor for alpha-only mods.
-			Color fill = (alpha >= 1.0) ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
-			drawAnnularSector(g, cx, cy, r1, r2, l.startDeg(), l.sweepDeg(), fill);
-			sectors.add(new SectorRect(node, (int) l.depth(), l.startDeg(), l.sweepDeg(), r1, r2, false));
-		}
-
-		if (viewRoot == scanRoot && target.totalBytes() > 0) {
-			double usedFraction = target.usedFraction();
-			double usedSweep = usedFraction * 360.0;
-			double startAngle = 90.0 - usedSweep / 2.0;
-			double r1 = HUB_RADIUS;
-			double r2 = ringInnerR(2, normalW, thinW);
-
-			long unaccountedBytes = target.usedBytes() - viewRoot.totalBytes();
-			if (unaccountedBytes > 0 && target.usedBytes() > 0) {
-				double scannedSweep = Math.min(usedSweep,
-						usedSweep * viewRoot.totalBytes() / (double) target.usedBytes());
-				double unaccountedSweep = usedSweep - scannedSweep;
-				if (unaccountedSweep > MIN_VISIBLE_SWEEP_DEG) {
-					double unaccountedStart = startAngle + scannedSweep;
-					Color unaccountedColor =
-							hoveringUnaccounted ? scheme.surface().brighter().brighter() : scheme.surface().brighter();
-					drawAnnularSector(g, cx, cy, r1, r2, unaccountedStart, unaccountedSweep, unaccountedColor);
-					sectors.add(new SectorRect(null, 1, unaccountedStart, unaccountedSweep, r1, r2, true));
-				}
-			}
-
-			double freeSweep = (1.0 - usedFraction) * 360.0;
-			if (freeSweep > MIN_VISIBLE_SWEEP_DEG) {
-				double freeStart = 90.0 + usedSweep / 2.0;
-				Color freeColor = hoveringFreeSpace ? scheme.capacityTrack().brighter() : scheme.capacityTrack();
-				drawAnnularSector(g, cx, cy, r1, r2, freeStart, freeSweep, freeColor);
-				sectors.add(new SectorRect(null, 1, freeStart, freeSweep, r1, r2, false));
-			}
-		}
-	}
-
-	private void drawAnimatedFrame(GraphicsContext g, double cx, double cy, double normalW, double thinW) {
-		long elapsed = System.nanoTime() - animStartNanos;
-		double t = Math.min(1.0, elapsed / (double) ANIM_DURATION_NANOS);
-		double e = easeOutCubic(t);
-
-		Set<DirectoryNode> all = new HashSet<>(animOld.keySet());
-		all.addAll(animNew.keySet());
-
-		List<FrameEntry> frame = new ArrayList<>(all.size());
-		for (DirectoryNode n : all) {
-			Layout o = animOld.get(n);
-			Layout w = animNew.get(n);
-			Layout from, to;
-			double alphaScale = 1.0;
-			Color color = getNodeColor(n);
-			if (o != null && w != null) {
-				from = o;
-				to = w;
-			} else if (o != null) {
-				if (n == animOldViewRoot) {
-					// Outgoing inner ring (drill-in): stay in place, fade out as the new
-					// viewRoot grows over it.
-					from = o;
-					to = o;
-					alphaScale = 1 - e;
-				} else {
-					// Sibling/cousin not in new view: shrink in place.
-					from = o;
-					to = new Layout(o.depth(), o.startDeg() + o.sweepDeg() / 2, 0, color);
-				}
-			} else {
-				if (n == animNewViewRoot) {
-					// Incoming inner ring (drill-out): fade in at destination.
-					from = w;
-					to = w;
-					alphaScale = e;
-				} else {
-					// Newly visible deep node: grow from a point.
-					from = new Layout(w.depth(), w.startDeg() + w.sweepDeg() / 2, 0, color);
-					to = w;
-				}
-			}
-			double depth = lerp(from.depth(), to.depth(), e);
-			double start = lerp(from.startDeg(), to.startDeg(), e);
-			double sweep = lerp(from.sweepDeg(), to.sweepDeg(), e);
-			if (sweep < 0.05)
-				continue;
-			frame.add(new FrameEntry(n, depth, start, sweep, alphaScale, color));
-		}
-
-		// Render outer rings first so inner rings overdraw on radial overlap regions.
-		// For ties on depth (e.g., growing clicked sector overlapping shrinking siblings
-		// in the same ring), draw smaller sweeps first so the larger sweep overdraws.
-		frame.sort(Comparator.comparingDouble(FrameEntry::depth).reversed().thenComparingDouble(FrameEntry::sweep));
-
-		for (FrameEntry fe : frame) {
-			double r1 = Math.max(1, ringInnerR(fe.depth, normalW, thinW));
-			double r2 = Math.max(r1 + 1, ringInnerR(fe.depth + 1, normalW, thinW));
-			Color base = fe.color;
-			double alpha = (fe.node.isDone() ? 1.0 : 0.45) * fe.alphaScale;
-			if (alpha <= 0.001)
-				continue;
-			// See drawTreemapCell for why we avoid deriveColor for alpha-only mods.
-			Color fill = (alpha >= 1.0) ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
-			drawAnnularSector(g, cx, cy, r1, r2, fe.start, fe.sweep, fill);
-		}
-	}
-
-	private void drawAnnularSector(
-			GraphicsContext g, double cx, double cy, double r1, double r2, double startDeg,
-			double sweepDeg, Color fill) {
-		double a1 = Math.toRadians(startDeg);
-		double a2 = Math.toRadians(startDeg + sweepDeg);
-		g.setFill(fill);
-		g.beginPath();
-		g.moveTo(cx + r2 * Math.cos(a1), cy - r2 * Math.sin(a1));
-		g.arc(cx, cy, r2, r2, startDeg, sweepDeg);
-		g.lineTo(cx + r1 * Math.cos(a2), cy - r1 * Math.sin(a2));
-		g.arc(cx, cy, r1, r1, startDeg + sweepDeg, -sweepDeg);
-		g.closePath();
-		g.fill();
-
-		g.setStroke(scheme.background());
-		g.setLineWidth(0.8);
-		g.stroke();
-	}
-
-	private void drawHub(GraphicsContext g, double cx, double cy) {
-		Color hubFill = hoveringHub ? scheme.surface().brighter() : scheme.surface();
-		g.setFill(hubFill);
-		g.fillOval(cx - HUB_RADIUS, cy - HUB_RADIUS, HUB_RADIUS * 2, HUB_RADIUS * 2);
-
-		// Decide what the hub displays right now.
-		String title;
-		String subtitle;
-		if (hoveringFreeSpace) {
-			title = "Free";
-			subtitle = humanSize(target.usableBytes());
-		} else if (hoveringUnaccounted) {
-			title = "Other";
-			subtitle = humanSize(Math.max(0, target.usedBytes() - (scanRoot != null ? scanRoot.totalBytes() : 0)));
-		} else {
-			DirectoryNode focus;
-			if (hoveringHub) {
-				focus = scanRoot;
-			} else if (hoverNode != null) {
-				focus = hoverNode;
-			} else {
-				focus = viewRoot;
-			}
-			if (focus == null)
-				return;
-			if (scanning && focus == scanRoot && !hoveringHub && hoverNode == null) {
-				// Scanner-driven overrides take precedence; null fields fall back to the
-				// bytes/files text that the parallel scanner is happy with.
-				Scanner.HubState hs = scanner.hubState();
-				title = hs.title() != null ? hs.title() : humanSize(progressBytes);
-				subtitle = hs.subtitle() != null ? hs.subtitle() : (progressFiles + " files");
-			} else {
-				title = (focus == scanRoot) ? target.displayName() : focus.name();
-				subtitle = humanSize(focus.totalBytes());
-			}
-		}
-
-		g.setFill(scheme.textPrimary());
-		g.setFont(Font.font("Segoe UI", FontWeight.SEMI_BOLD, 14));
-		g.setTextAlign(TextAlignment.CENTER);
-		g.setTextBaseline(VPos.CENTER);
-		g.fillText(truncate(title, 18), cx, cy - 10, HUB_RADIUS * 1.7);
-
-		g.setFill(scheme.textMuted());
-		g.setFont(Font.font("Segoe UI", 11));
-		g.fillText(subtitle, cx, cy + 8, HUB_RADIUS * 1.7);
-
-		// Third line: only during scan, current path tail.
-		if (scanning && hoverNode == null && !hoveringHub && progressPath != null) {
-			g.setFill(scheme.textMuted().deriveColor(0, 1, 1, 0.6));
-			g.setFont(Font.font("Segoe UI", 10));
-			g.fillText(truncate(tailPath(progressPath), 22), cx, cy + 24, HUB_RADIUS * 1.85);
-		}
-
-		if (scanning) {
-			drawHubProgress(g, cx, cy);
-		}
-	}
-
-	// ---- heatmap (squarified treemap) -----------------------------------
-
-	private static final double HEATMAP_TOP_INSET = 36.0;
-	private static final double HEATMAP_MIN_RECURSE_PX = 12.0;
-	private static final double HEATMAP_LABEL_MIN_W = 100.0;
-	private static final double HEATMAP_LABEL_MIN_H = 24.0;
-	private static final double HEATMAP_INNER_PAD = 2.0;
-
-	private void drawHeatmap(GraphicsContext g, double w, double h) {
-		if (viewRoot == null)
-			return;
-		double x = 0;
-		double y = HEATMAP_TOP_INSET;
-		double availW = w;
-		double availH = h - HEATMAP_TOP_INSET;
-		if (availW < 4 || availH < 4)
-			return;
-
-		List<TreemapItem> items = buildTopLevelTreemapItems();
-		long totalBytes = 0;
-		for (TreemapItem it : items)
-			totalBytes += Math.max(0, it.bytes());
-		if (totalBytes <= 0 || items.isEmpty()) {
-			drawCenterText(g, w / 2.0, y + availH / 2.0, scanning ? "Scanning…" : "Empty");
-			return;
-		}
-
-		double scale = (availW * availH) / (double) totalBytes;
-
-		// Free space is pinned to a fixed strip on the right so it doesn't shuffle with
-		// the squarified layout — visual convention from capacity bars, and otherwise
-		// reads as buggy when the largest item lands on the left.
-		TreemapItem freeItem = null;
-		for (int i = 0; i < items.size(); i++) {
-			if (items.get(i).freeSpace()) {
-				freeItem = items.remove(i);
-				break;
-			}
-		}
-		if (freeItem != null && freeItem.bytes() > 0) {
-			double freeArea = freeItem.bytes() * scale;
-			double freeW = Math.min(availW, freeArea / availH);
-			if (freeW >= 1) {
-				double freeX = x + availW - freeW;
-				drawTreemapCell(g, freeItem, freeX, y, freeW, availH, 0);
-				availW -= freeW;
-			}
-		}
-
-		if (availW < 4 || items.isEmpty())
-			return;
-
-		// Stable sort desc; ties keep declaration order so the unaccounted virtual entry
-		// stays positioned predictably relative to its siblings.
-		items.sort((a, b) -> Long.compare(b.bytes(), a.bytes()));
-		squarify(g, items, x, y, availW, availH, scale, 0);
-	}
-
-	private List<TreemapItem> buildTopLevelTreemapItems() {
-		List<TreemapItem> items = new ArrayList<>();
-		for (DirectoryNode child : viewRoot.children()) {
-			items.add(new TreemapItem(child, child.totalBytes(), getNodeColor(child), false, false));
-		}
-		if (viewRoot == scanRoot && target.totalBytes() > 0) {
-			long unaccounted = Math.max(0L, target.usedBytes() - viewRoot.totalBytes());
-			if (unaccounted > 0) {
-				items.add(new TreemapItem(null, unaccounted, scheme.surface().brighter(), true, false));
-			}
-			long free = Math.max(0L, target.usableBytes());
-			if (free > 0) {
-				items.add(new TreemapItem(null, free, scheme.capacityTrack(), false, true));
-			}
-		}
-		return items;
-	}
-
-	/**
-	 * Squarified treemap (Bruls/Huijgen/van Wijk). Items are pixel-area-scaled via {@code scale}. Walks items in
-	 * size-desc order, packing them into rows along the rectangle's short side until adding the next item would worsen
-	 * the row's worst aspect ratio, then commits the row and continues on the remaining strip.
-	 */
-	private void squarify(
-			GraphicsContext g, List<TreemapItem> items, double x, double y, double w, double h,
-			double scale, int depth) {
-		if (items.isEmpty() || w < 1 || h < 1)
-			return;
-		List<TreemapItem> remaining = new ArrayList<>(items);
-		while (!remaining.isEmpty() && w >= 1 && h >= 1) {
-			double shortSide = Math.min(w, h);
-			List<TreemapItem> row = new ArrayList<>();
-			double rowSum = 0;
-			double rowMin = Double.POSITIVE_INFINITY;
-			double rowMax = 0;
-			while (!remaining.isEmpty()) {
-				TreemapItem next = remaining.get(0);
-				double nextArea = Math.max(0, next.bytes()) * scale;
-				if (nextArea <= 0) {
-					remaining.remove(0);
-					continue;
-				}
-				double trialSum = rowSum + nextArea;
-				double trialMin = Math.min(rowMin, nextArea);
-				double trialMax = Math.max(rowMax, nextArea);
-				double currentWorst =
-						row.isEmpty() ? Double.POSITIVE_INFINITY : worstAspect(rowSum, rowMin, rowMax, shortSide);
-				double trialWorst = worstAspect(trialSum, trialMin, trialMax, shortSide);
-				if (row.isEmpty() || trialWorst <= currentWorst) {
-					row.add(next);
-					rowSum = trialSum;
-					rowMin = trialMin;
-					rowMax = trialMax;
-					remaining.remove(0);
-				} else {
-					break;
-				}
-			}
-			if (row.isEmpty())
-				break;
-			double thickness = rowSum / shortSide;
-			boolean rowAlongTop = w < h;
-			if (rowAlongTop) {
-				layoutHeatmapRow(g, row, x, y, w, thickness, scale, true, depth);
-				y += thickness;
-				h -= thickness;
-			} else {
-				layoutHeatmapRow(g, row, x, y, thickness, h, scale, false, depth);
-				x += thickness;
-				w -= thickness;
-			}
-		}
-	}
-
-	private static double worstAspect(double sum, double min, double max, double shortSide) {
-		if (sum <= 0 || shortSide <= 0)
-			return Double.POSITIVE_INFINITY;
-		double s2 = sum * sum;
-		double w2 = shortSide * shortSide;
-		return Math.max((w2 * max) / s2, s2 / (w2 * min));
-	}
-
-	private void layoutHeatmapRow(
-			GraphicsContext g, List<TreemapItem> row, double x, double y, double w, double h,
-			double scale, boolean rowAlongTop, int depth) {
-		double rowSum = 0;
-		for (TreemapItem t : row)
-			rowSum += Math.max(0, t.bytes()) * scale;
-		if (rowSum <= 0)
-			return;
-		double offset = 0;
-		for (TreemapItem t : row) {
-			double area = Math.max(0, t.bytes()) * scale;
-			double frac = area / rowSum;
-			double rx, ry, rw, rh;
-			if (rowAlongTop) {
-				rx = x + offset;
-				ry = y;
-				rw = w * frac;
-				rh = h;
-				offset += rw;
-			} else {
-				rx = x;
-				ry = y + offset;
-				rw = w;
-				rh = h * frac;
-				offset += rh;
-			}
-			drawTreemapCell(g, t, rx, ry, rw, rh, depth);
-		}
-	}
-
-	private void drawTreemapCell(
-			GraphicsContext g, TreemapItem item, double x, double y, double w, double h, int depth) {
-		// Sub-pixel cull. Anything thinner than 1 px on either axis can't render visibly
-		// (Canvas's fillRect will antialias to nothing) and we'd still pay for getNodeColor,
-		// hover-state derivation, fillRect, and a rects.add hit-test entry. JFR flagged the
-		// recursive squarify/drawTreemapCell chain as the FX-thread CPU dominant on big
-		// trees; this is the cheapest and biggest cut to its max-render time.
-		if (w < 1.0 || h < 1.0)
-			return;
-
-		Color base = item.color();
-		boolean hovered = false;
-		if (item.node() != null && hoverNode == item.node()) {
-			base = base.deriveColor(0, 1.20, 0.85, 1.0);
-			hovered = true;
-		} else if (item.freeSpace() && hoveringFreeSpace) {
-			base = scheme.capacityTrack().brighter();
-			hovered = true;
-		} else if (item.unaccounted() && hoveringUnaccounted) {
-			base = scheme.surface().brighter().brighter();
-			hovered = true;
-		}
-		double alpha = (item.node() == null || item.node().isDone()) ? 1.0 : 0.45;
-		if (hovered)
-			alpha = Math.min(1.0, alpha + 0.10);
-		// Avoid Color.deriveColor() here: it always does RGB→HSB→RGB even when hue/sat/bright
-		// are no-ops (the 0,1,1 args), allocating a fresh Color per cell. JFR flagged this as
-		// the dominant per-cell cost on million-cell heatmap renders. Two cheap fast paths:
-		//   - alpha == 1.0 (post-scan, common case): base is already opaque, reuse it as-is.
-		//   - alpha < 1.0: direct constructor does the same thing as deriveColor's alpha-only
-		//     path without the HSB roundtrip.
-		Color fill = (alpha >= 1.0) ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
-
-		g.setFill(fill);
-		g.fillRect(x, y, w, h);
-
-		if (w > 1.5 && h > 1.5) {
-			g.setStroke(scheme.background());
-			g.setLineWidth(1.0);
-			g.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
-		}
-
-		rects.add(new RectHit(item.node(), x, y, w, h, item.unaccounted(), item.freeSpace()));
-
-		boolean recursable = item.node() != null && !item.node().isFileSector() && !item.node().children().isEmpty();
-		double childX = x + HEATMAP_INNER_PAD;
-		double childY = y + HEATMAP_INNER_PAD;
-		double childW = w - 2 * HEATMAP_INNER_PAD;
-		double childH = h - 2 * HEATMAP_INNER_PAD;
-
-		if (w >= HEATMAP_LABEL_MIN_W && h >= HEATMAP_LABEL_MIN_H && (item.node() != null || item.freeSpace() || item.unaccounted())) {
-			String name;
-			long bytes;
-			if (item.node() != null) {
-				name = item.node().name();
-				bytes = item.node().totalBytes();
-			} else if (item.freeSpace()) {
-				name = "Free";
-				bytes = target.usableBytes();
-			} else {
-				name = "Other";
-				bytes = item.bytes();
-			}
-			drawTreemapLabel(g, x, y, w, name, bytes, base);
-			if (recursable) {
-				double labelBand = 16;
-				if (childH > labelBand + HEATMAP_MIN_RECURSE_PX) {
-					childY += labelBand;
-					childH -= labelBand;
-				}
-			}
-		}
-
-		if (recursable && childW >= HEATMAP_MIN_RECURSE_PX && childH >= HEATMAP_MIN_RECURSE_PX) {
-			List<DirectoryNode> kids = item.node().children();
-			List<TreemapItem> childItems = new ArrayList<>(kids.size());
-			long childTotal = 0;
-			for (DirectoryNode k : kids) {
-				long b = k.totalBytes();
-				if (b <= 0)
-					continue;
-				childItems.add(new TreemapItem(k, b, getNodeColor(k), false, false));
-				childTotal += b;
-			}
-			if (childTotal > 0 && !childItems.isEmpty()) {
-				childItems.sort((a, b) -> Long.compare(b.bytes(), a.bytes()));
-				double childScale = (childW * childH) / (double) childTotal;
-				squarify(g, childItems, childX, childY, childW, childH, childScale, depth + 1);
-			}
-		}
-	}
-
-	private void drawTreemapLabel(
-			GraphicsContext g, double x, double y, double w, String name, long bytes, Color fillBase) {
-		Color textColor = textOn(fillBase);
-		g.setFill(textColor);
-		g.setFont(Font.font("Segoe UI", FontWeight.SEMI_BOLD, 11));
-		g.setTextAlign(TextAlignment.LEFT);
-		g.setTextBaseline(VPos.TOP);
-		String size = humanSize(bytes);
-		double padded = Math.max(0, w - 12);
-		String sizeSuffix = "  " + size;
-		int approxCharsForName = Math.max(2, (int) (padded / 6.5) - sizeSuffix.length());
-		String shown = truncate(name, approxCharsForName) + sizeSuffix;
-		g.fillText(shown, x + 6, y + 4, padded);
-	}
-
-	private void drawHeatmapHoverOverlay(GraphicsContext g, double w, double h) {
-		String name;
-		long bytes;
-		if (hoverNode != null) {
-			name = hoverNode.name();
-			bytes = hoverNode.totalBytes();
-		} else if (hoveringFreeSpace) {
-			name = "Free";
-			bytes = target.usableBytes();
-		} else if (hoveringUnaccounted) {
-			name = "Other";
-			bytes = Math.max(0, target.usedBytes() - (scanRoot != null ? scanRoot.totalBytes() : 0));
-		} else if (scanning && progressPath != null) {
-			name = tailPath(progressPath);
-			bytes = progressBytes;
-		} else {
-			return;
-		}
-		String text = truncate(name, 60) + "  —  " + humanSize(bytes);
-		g.setFont(Font.font("Segoe UI", 11));
-		double pad = 8;
-		double textW = Math.min(w - 24, 6.5 * text.length() + 2 * pad);
-		double boxH = 22;
-		double boxX = 12;
-		double boxY = h - boxH - 12;
-		g.setFill(scheme.surface().deriveColor(0, 1, 1, 0.85));
-		g.fillRoundRect(boxX, boxY, textW, boxH, 6, 6);
-		g.setFill(scheme.textPrimary());
-		g.setTextAlign(TextAlignment.LEFT);
-		g.setTextBaseline(VPos.CENTER);
-		g.fillText(text, boxX + pad, boxY + boxH / 2.0, textW - 2 * pad);
-	}
-
-	private static Color textOn(Color bg) {
-		double lum = 0.299 * bg.getRed() + 0.587 * bg.getGreen() + 0.114 * bg.getBlue();
-		return lum > 0.55 ? Color.gray(0.10) : Color.gray(0.95);
-	}
-
-	private void drawHubProgress(GraphicsContext g, double cx, double cy) {
-		double r = HUB_RADIUS - 4;
-		double thickness = 2.5;
-
-		g.setStroke(scheme.accent());
-		g.setLineWidth(thickness);
-		g.setLineCap(StrokeLineCap.ROUND);
-
-		// Scanner override wins; otherwise compute bytes/usedBytes ourselves (the parallel
-		// scanner relies on the fallback). Negative = "no override, use the default path."
-		Scanner.HubState hs = scanner.hubState();
-		double frac = hs.arcFraction();
-		if (frac < 0) {
-			long usedBytes = target.totalBytes() - target.usableBytes();
-			if (usedBytes > 0 && progressBytes > 0) {
-				frac = Math.min(1.0, progressBytes / (double) usedBytes);
-			}
-		}
-
-		if (frac >= 0) {
-			// Faint full track first.
-			g.setStroke(scheme.accent().deriveColor(0, 1, 1, 0.18));
-			g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90, 360, ArcType.OPEN);
-			// Filled portion clockwise from 12 o'clock.
-			g.setStroke(scheme.accent());
-			g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90, -360 * frac, ArcType.OPEN);
-		} else {
-			// Indeterminate: a 60° segment that rotates clockwise once every ~1.6s.
-			double offset = (System.nanoTime() / 1_000_000.0 / 4.5) % 360.0; // deg/ms-ish
-			g.strokeArc(cx - r, cy - r, 2 * r, 2 * r, 90 - offset, -60, ArcType.OPEN);
-		}
-	}
-
-	private void drawCenterText(GraphicsContext g, double cx, double cy, String text) {
-		g.setFill(scheme.textMuted());
-		g.setTextAlign(TextAlignment.CENTER);
-		g.setTextBaseline(VPos.CENTER);
-		g.setFont(Font.font("Segoe UI", 13));
-		g.fillText(text, cx, cy);
 	}
 
 	// ---- interaction -----------------------------------------------------
 
 	private void handleMouseMove(double mx, double my) {
-		if (scanRoot == null || animating)
+		if (scanRoot == null || currentVisualization.isAnimating())
 			return;
-		// Freeze the highlight while the path context menu is open so the sector under the
-		// right-click stays selected as the user moves the cursor over the menu items.
+		// Freeze the highlight while the path context menu is open so the sector under the right-click stays
+		// selected as the user moves the cursor over the menu items.
 		if (pathContextMenu.isShowing())
 			return;
 
@@ -2918,47 +2040,15 @@ public final class DiskView {
 		hoveringFreeSpace = false;
 		hoveringUnaccounted = false;
 
-		if (currentMode == RenderMode.HEATMAP) {
-			// Iterate in reverse so deeper rects (added later by recursion) win the hit.
-			for (int i = rects.size() - 1; i >= 0; i--) {
-				RectHit r = rects.get(i);
-				if (r.contains(mx, my)) {
-					if (r.node() != null) {
-						hoverNode = r.node();
-					} else if (r.freeSpace()) {
-						hoveringFreeSpace = true;
-					} else if (r.unaccounted()) {
-						hoveringUnaccounted = true;
-					}
-					break;
-				}
-			}
-		} else {
-			double cx = canvas.getWidth() / 2.0;
-			double cy = canvas.getHeight() / 2.0;
-			double dx = mx - cx;
-			double dy = my - cy;
-			double r = Math.hypot(dx, dy);
-			if (r < HUB_RADIUS) {
-				hoveringHub = true;
-			} else {
-				double theta = Math.toDegrees(Math.atan2(-dy, dx));
-				if (theta < 0)
-					theta += 360;
-				for (SectorRect s : sectors) {
-					if (r >= s.r1 && r <= s.r2 && angleInSweep(theta, s.startDeg, s.sweepDeg)) {
-						if (s.node() == null) {
-							if (s.unaccounted())
-								hoveringUnaccounted = true;
-							else
-								hoveringFreeSpace = true;
-						} else {
-							hoverNode = s.node();
-						}
-						break;
-					}
-				}
-			}
+		HitResult hit = currentVisualization.hitTest(mx, my);
+		if (hit instanceof HitResult.OnNode on) {
+			hoverNode = on.node();
+		} else if (hit == HitResult.Special.HUB) {
+			hoveringHub = true;
+		} else if (hit == HitResult.Special.FREE_SPACE) {
+			hoveringFreeSpace = true;
+		} else if (hit == HitResult.Special.UNACCOUNTED) {
+			hoveringUnaccounted = true;
 		}
 
 		if (wasHub != hoveringHub || wasFree != hoveringFreeSpace || wasUnaccounted != hoveringUnaccounted || wasNode != hoverNode) {
@@ -2967,43 +2057,18 @@ public final class DiskView {
 	}
 
 	private void handleClick(double mx, double my) {
-		if (scanRoot == null || animating)
+		if (scanRoot == null || currentVisualization.isAnimating())
 			return;
 		root.requestFocus();
 
-		if (currentMode == RenderMode.HEATMAP) {
-			for (int i = rects.size() - 1; i >= 0; i--) {
-				RectHit r = rects.get(i);
-				if (r.contains(mx, my) && r.node() != null) {
-					select(r.node());
-					return;
-				}
-			}
-			return;
-		}
-
-		double cx = canvas.getWidth() / 2.0;
-		double cy = canvas.getHeight() / 2.0;
-		double dx = mx - cx;
-		double dy = my - cy;
-		double r = Math.hypot(dx, dy);
-
-		if (r < HUB_RADIUS) {
+		HitResult hit = currentVisualization.hitTest(mx, my);
+		if (hit instanceof HitResult.OnNode on) {
+			select(on.node());
+		} else if (hit == HitResult.Special.HUB) {
 			// Reset to scan root, but record intermediates so Right can replay.
 			navigateUpTo(scanRoot);
-			return;
 		}
-
-		double theta = Math.toDegrees(Math.atan2(-dy, dx));
-		if (theta < 0)
-			theta += 360;
-		for (SectorRect s : sectors) {
-			if (r >= s.r1 && r <= s.r2 && angleInSweep(theta, s.startDeg, s.sweepDeg)) {
-				if (s.node() != null)
-					select(s.node());
-				return;
-			}
-		}
+		// Free-space / unaccounted / nothing: no navigation.
 	}
 
 	/**
@@ -3068,7 +2133,7 @@ public final class DiskView {
 			l.setOnMouseEntered(e -> l.setStyle(crumbStyle(false, true)));
 			l.setOnMouseExited(e -> l.setStyle(crumbStyle(false, false)));
 			l.setOnMouseClicked(e -> {
-				if (e.getButton() == MouseButton.PRIMARY && !animating)
+				if (e.getButton() == MouseButton.PRIMARY && !currentVisualization.isAnimating())
 					navigateUpTo(node);
 			});
 		}
@@ -3127,31 +2192,6 @@ public final class DiskView {
 
 	// ---- helpers ---------------------------------------------------------
 
-	private static boolean angleInSweep(double theta, double start, double sweep) {
-		// Normalize start to [0, 360). Layout angles can grow past 360° as the iterator
-		// walks counterclockwise around the full circle (sectors in the upper-right
-		// quadrant end up with start > 360°). Without normalization the wrap branch
-		// below mis-classifies their range.
-		start = ((start % 360) + 360) % 360;
-		double end = start + sweep;
-		if (end <= 360)
-			return theta >= start && theta <= end;
-		return theta >= start || theta <= (end - 360);
-	}
-
-	private static String truncate(String s, int max) {
-		if (s == null)
-			return "";
-		return s.length() <= max ? s : s.substring(0, max - 1) + "…";
-	}
-
-	private static String tailPath(String p) {
-		if (p == null)
-			return "";
-		int slash = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
-		return slash < 0 ? p : p.substring(slash + 1);
-	}
-
 	static String humanSize(long bytes) {
 		return SizeFormat.format(bytes);
 	}
@@ -3167,44 +2207,6 @@ public final class DiskView {
 		// tokens, so alpha silently becomes 0 (transparent).
 		return String.format(java.util.Locale.ROOT, "rgba(%d,%d,%d,%.3f)", (int) Math.round(c.getRed() * 255),
 				(int) Math.round(c.getGreen() * 255), (int) Math.round(c.getBlue() * 255), c.getOpacity());
-	}
-
-	private static double lerp(double a, double b, double t) {
-		return a + (b - a) * t;
-	}
-
-	private static double easeOutCubic(double t) {
-		double inv = 1 - t;
-		return 1 - inv * inv * inv;
-	}
-
-	private record SectorRect(DirectoryNode node, int depth, double startDeg, double sweepDeg, double r1, double r2,
-							  boolean unaccounted) {
-	}
-
-	/**
-	 * Hit-test rect for the heatmap. {@code node == null} means the rectangle is the free-space or unaccounted virtual
-	 * entry at scan root.
-	 */
-	private record RectHit(DirectoryNode node, double x, double y, double w, double h, boolean unaccounted,
-						   boolean freeSpace) {
-		boolean contains(double mx, double my) {
-			return mx >= x && mx <= x + w && my >= y && my <= y + h;
-		}
-	}
-
-	/**
-	 * Heatmap item — a directory child or a virtual entry (free / unaccounted) used while building the squarified
-	 * layout. {@code bytes} drives the layout area; {@code color} is the resolved fill before alpha/hover modulation.
-	 */
-	private record TreemapItem(DirectoryNode node, long bytes, Color color, boolean unaccounted, boolean freeSpace) {
-	}
-
-	private record Layout(double depth, double startDeg, double sweepDeg, Color color) {
-	}
-
-	private record FrameEntry(DirectoryNode node, double depth, double start, double sweep, double alphaScale,
-							  Color color) {
 	}
 
 	/**
@@ -3239,8 +2241,8 @@ public final class DiskView {
 	}
 
 	/**
-	 * Kind of thing the menu is acting on. Determines which actions the menu shows and how
-	 * "Open"-style actions interpret the path:
+	 * Kind of thing the menu is acting on. Determines which actions the menu shows and how "Open"-style actions
+	 * interpret the path:
 	 * <ul>
 	 *   <li>{@link #DIRECTORY} — a real on-disk folder. Menu shows {@code Open} only.</li>
 	 *   <li>{@link #FILE} — a real on-disk file. Menu shows {@code Open} (default app) and
@@ -3255,10 +2257,10 @@ public final class DiskView {
 
 	/**
 	 * What the context menu acts on: an on-disk path, the {@link TargetKind} (which controls menu shape and
-	 * "Open"-style action semantics), and a {@link Runnable} that knows how to stage this specific target for
-	 * deletion. The stage action is supplied by the resolver because it needs domain context the menu doesn't have
-	 * (size, parent node, file vs directory). {@code null} stage action → menu item is disabled (e.g. the scan root,
-	 * which we refuse to stage as a footgun guard, or aggregates which have no concrete delete target).
+	 * "Open"-style action semantics), and a {@link Runnable} that knows how to stage this specific target for deletion.
+	 * The stage action is supplied by the resolver because it needs domain context the menu doesn't have (size, parent
+	 * node, file vs directory). {@code null} stage action → menu item is disabled (e.g. the scan root, which we refuse
+	 * to stage as a footgun guard, or aggregates which have no concrete delete target).
 	 */
 	private record PathTarget(Path path, TargetKind kind, Runnable stageAction) {
 		boolean isDirectory() {
@@ -3312,12 +2314,12 @@ public final class DiskView {
 		private static final long TOGGLE_DEBOUNCE_NANOS = 150_000_000L; // 150 ms
 
 		/**
-		 * Bubble-phase handler installed on the menu's own scene while the menu is shown. Listens
-		 * for {@code MOUSE_RELEASED} (not {@code MOUSE_PRESSED}) so the MenuItem skin gets to fire
-		 * the item's action on release first — by the time this handler runs, the menu is already
-		 * hidden and the {@code isShowing()} guard makes it a no-op. For clicks that <em>didn't</em>
-		 * land on an actionable item — right-clicks on items, left-clicks on the menu's padding /
-		 * header / border — nothing dismisses the menu, so this handler does it explicitly.
+		 * Bubble-phase handler installed on the menu's own scene while the menu is shown. Listens for
+		 * {@code MOUSE_RELEASED} (not {@code MOUSE_PRESSED}) so the MenuItem skin gets to fire the item's action on
+		 * release first — by the time this handler runs, the menu is already hidden and the {@code isShowing()} guard
+		 * makes it a no-op. For clicks that <em>didn't</em> land on an actionable item — right-clicks on items,
+		 * left-clicks on the menu's padding / header / border — nothing dismisses the menu, so this handler does it
+		 * explicitly.
 		 */
 		private final javafx.event.EventHandler<javafx.scene.input.MouseEvent> menuMissDismiss = e -> {
 			if (menu.isShowing()) {
