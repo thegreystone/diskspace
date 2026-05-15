@@ -43,6 +43,7 @@ import se.hirt.diskspace.model.Volume;
 import se.hirt.diskspace.scan.ScanStrategy;
 import se.hirt.diskspace.scan.Scanner;
 import se.hirt.diskspace.ui.theme.ColorScheme;
+import se.hirt.diskspace.ui.theme.Theme;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -52,9 +53,15 @@ import java.util.function.Consumer;
 public final class PickerView {
 
 	private final StackPane root;
-	private final ColorScheme scheme;
+	private ColorScheme scheme;
 	private final Consumer<Volume> onSelection;
 	private final List<Runnable> sizeRefreshers = new ArrayList<>();
+	/**
+	 * Per-region restylers registered as each component is built. {@link #applyTheme} walks the list so every inline
+	 * style that captured a {@code scheme.xxx()} colour at construction time gets re-run against the new scheme.
+	 * Parallel to {@link #sizeRefreshers}, which the {@code U} key uses for the same fan-out shape.
+	 */
+	private final List<Runnable> styleRefreshers = new ArrayList<>();
 	private final StackPane helpOverlay;
 	/**
 	 * Lifted to an instance field so {@link #dispatchTopLevelKey} can fire it on S. Constructed during
@@ -67,8 +74,8 @@ public final class PickerView {
 		this.onSelection = onSelection;
 
 		Label title = new Label("Choose a disk");
-		title.setStyle("-fx-text-fill: " + toCss(
-				scheme.textPrimary()) + ";" + "-fx-font-size: 22px; -fx-font-weight: 600;" + "-fx-padding: 0 0 18 0;");
+		styleRefreshers.add(() -> title.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textPrimary()) + ";" + "-fx-font-size: 22px; -fx-font-weight: 600;" + "-fx-padding: 0 0 18 0;"));
 
 		VBox rows = new VBox(12);
 		for (Volume v : Volume.enumerate()) {
@@ -76,9 +83,9 @@ public final class PickerView {
 		}
 
 		Button choose = new Button("Choose folder…");
-		choose.setStyle("-fx-background-color: transparent;" + "-fx-text-fill: " + toCss(
-				scheme.accent()) + ";" + "-fx-border-color: " + toCss(
-				scheme.accent()) + ";" + "-fx-border-radius: 6; -fx-background-radius: 6;" + "-fx-padding: 8 14 8 14; -fx-cursor: hand;");
+		styleRefreshers.add(() -> choose.setStyle("-fx-background-color: transparent;" + "-fx-text-fill: " + toCss(
+				this.scheme.accent()) + ";" + "-fx-border-color: " + toCss(
+				this.scheme.accent()) + ";" + "-fx-border-radius: 6; -fx-background-radius: 6;" + "-fx-padding: 8 14 8 14; -fx-cursor: hand;"));
 		choose.setOnAction(e -> {
 			DirectoryChooser dc = new DirectoryChooser();
 			dc.setTitle("Choose folder to scan");
@@ -96,8 +103,8 @@ public final class PickerView {
 		// PARALLEL → SEQUENTIAL). Tooltip explains the current choice; row tooltips regenerate
 		// on hover so per-disk strategy text picks up the change automatically.
 		Label strategyLabel = new Label();
-		strategyLabel.setStyle("-fx-text-fill: " + toCss(
-				scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-cursor: hand; -fx-padding: 0 0 0 12;");
+		styleRefreshers.add(() -> strategyLabel.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-cursor: hand; -fx-padding: 0 0 0 12;"));
 		Runnable refreshStrategy = () -> strategyLabel.setText(
 				"Scan: " + Scanner.PREFERENCE.get().label() + "  ·  click or S to cycle");
 		refreshStrategy.run();
@@ -124,24 +131,28 @@ public final class PickerView {
 		content.setMaxWidth(720);
 
 		StackPane centered = new StackPane(content);
-		centered.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+		styleRefreshers.add(() -> centered.setStyle("-fx-background-color: " + toCss(this.scheme.background()) + ";"));
 		StackPane.setAlignment(content, Pos.TOP_CENTER);
 
 		ScrollPane scroll = new ScrollPane(centered);
 		scroll.setFitToWidth(true);
 		scroll.setFitToHeight(true);
-		scroll.setStyle("-fx-background: " + toCss(scheme.background()) + ";" + "-fx-background-color: " + toCss(
-				scheme.background()) + ";");
+		styleRefreshers.add(() -> scroll.setStyle(
+				"-fx-background: " + toCss(this.scheme.background()) + ";" + "-fx-background-color: " + toCss(
+						this.scheme.background()) + ";"));
 
 		BorderPane body = new BorderPane(scroll);
-		body.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+		styleRefreshers.add(() -> body.setStyle("-fx-background-color: " + toCss(this.scheme.background()) + ";"));
 
 		helpOverlay = buildHelpOverlay();
 		helpOverlay.setVisible(false);
 		helpOverlay.setManaged(false);
 
 		root = new StackPane(body, helpOverlay);
-		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+		styleRefreshers.add(() -> root.setStyle("-fx-background-color: " + toCss(this.scheme.background()) + ";"));
+
+		// Apply initial styles now that every refresher is registered.
+		restyle();
 
 		// Mouse-only parity with the keyboard shortcuts above. Disk-specific actions (Re-scan,
 		// Toggle Visualization) don't appear because there's no scan running yet in the picker.
@@ -149,7 +160,7 @@ public final class PickerView {
 
 		// Esc toggles the help overlay; U toggles size units; S cycles the scan-strategy
 		// preference (AUTO → BULK → MFT → PARALLEL → SEQUENTIAL, skipping platform-unavailable
-		// strategies). Filter at root so shortcuts fire
+		// strategies). T flips the theme (dark / light). Filter at root so shortcuts fire
 		// regardless of which descendant currently has focus (button, scroll viewport, etc).
 		// The same dispatch is also exposed via dispatchTopLevelKey so MainWindow can route
 		// shortcuts in here when focus has fled to the TabPane header.
@@ -163,6 +174,21 @@ public final class PickerView {
 
 	public Region getRoot() {
 		return root;
+	}
+
+	/**
+	 * Live theme handoff. Called by {@link MainWindow#applyTheme} after the {@link Theme} listener fires. Replays every
+	 * registered inline-style block against the new scheme, then refreshes capacity-bar fills (which are bound to
+	 * {@code scheme.capacity*}) — those aren't styled via CSS so they need an explicit re-fill.
+	 */
+	public void applyTheme(ColorScheme newScheme) {
+		this.scheme = newScheme;
+		restyle();
+	}
+
+	private void restyle() {
+		for (Runnable r : styleRefreshers)
+			r.run();
 	}
 
 	/**
@@ -199,6 +225,9 @@ public final class PickerView {
 		} else if (e.getCode() == KeyCode.S) {
 			toggleStrategy.run();
 			e.consume();
+		} else if (e.getCode() == KeyCode.T) {
+			Theme.toggle();
+			e.consume();
 		}
 	}
 
@@ -221,6 +250,9 @@ public final class PickerView {
 		MenuItem cycleStrategyItem = new MenuItem("Cycle Scan Strategy");
 		cycleStrategyItem.setOnAction(e -> toggleStrategy.run());
 
+		MenuItem toggleThemeItem = new MenuItem("Toggle Theme");
+		toggleThemeItem.setOnAction(e -> Theme.toggle());
+
 		MenuItem preferencesItem = new MenuItem("Preferences…");
 		preferencesItem.setOnAction(e -> PreferencesDialog.show());
 
@@ -228,8 +260,8 @@ public final class PickerView {
 		quitItem.setOnAction(e -> se.hirt.diskspace.App.requestQuit());
 
 		ContextMenu menu = new ContextMenu();
-		menu.getItems().addAll(helpItem, toggleUnitsItem, cycleStrategyItem, new SeparatorMenuItem(), preferencesItem,
-				new SeparatorMenuItem(), quitItem);
+		menu.getItems().addAll(helpItem, toggleUnitsItem, cycleStrategyItem, toggleThemeItem, new SeparatorMenuItem(),
+				preferencesItem, new SeparatorMenuItem(), quitItem);
 
 		root.setOnContextMenuRequested(e -> {
 			menu.show(root, e.getScreenX(), e.getScreenY());
@@ -254,11 +286,12 @@ public final class PickerView {
 		addHelpRow(grid, row++, "Esc", "Show / hide this help");
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
 		addHelpRow(grid, row++, "S", "Cycle scan strategy (Auto / Bulk / MFT / Parallel / Sequential)");
+		addHelpRow(grid, row++, "T", "Toggle theme (dark / light)");
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label sub = new Label("After picking a disk");
-		sub.setStyle("-fx-text-fill: " + toCss(
-				scheme.textMuted()) + ";" + "-fx-font-size: 12px; -fx-font-weight: 600;" + "-fx-padding: 12 0 2 0;");
+		styleRefreshers.add(() -> sub.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textMuted()) + ";" + "-fx-font-size: 12px; -fx-font-weight: 600;" + "-fx-padding: 12 0 2 0;"));
 		grid.add(sub, 0, row++, 2, 1);
 
 		addHelpRow(grid, row++, "←  ↑", "Go up one level");
@@ -269,23 +302,23 @@ public final class PickerView {
 		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
 
 		Label title = new Label("Keyboard Shortcuts");
-		title.setStyle("-fx-text-fill: " + toCss(
-				scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600;" + "-fx-padding: 0 0 14 0;");
+		styleRefreshers.add(() -> title.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600;" + "-fx-padding: 0 0 14 0;"));
 
 		Label hint = new Label("Press Esc to close");
-		hint.setStyle(
-				"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
+		styleRefreshers.add(() -> hint.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;"));
 
 		VBox card = new VBox(title, grid, hint);
 		card.setAlignment(Pos.TOP_LEFT);
 		card.setPadding(new Insets(24, 28, 20, 28));
 		card.setMaxWidth(460);
 		card.setMaxHeight(Region.USE_PREF_SIZE);
-		card.setStyle("-fx-background-color: " + toCss(
-				scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);");
+		styleRefreshers.add(() -> card.setStyle("-fx-background-color: " + toCss(
+				this.scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);"));
 
 		StackPane overlay = new StackPane(card);
-		overlay.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
+		styleRefreshers.add(() -> overlay.setStyle("-fx-background-color: " + toCss(this.scheme.overlayScrim()) + ";"));
 		// Backdrop click dismisses; card clicks report the card (or a descendant) as target,
 		// so this check naturally ignores them.
 		overlay.setOnMouseClicked(e -> {
@@ -297,25 +330,28 @@ public final class PickerView {
 
 	private void addHelpRow(GridPane grid, int row, String key, String desc) {
 		Label k = new Label(key);
-		k.setStyle("-fx-text-fill: " + toCss(
-				scheme.accent()) + ";" + "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;" + "-fx-font-size: 13px; -fx-font-weight: 600;");
+		styleRefreshers.add(() -> k.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.accent()) + ";" + "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;" + "-fx-font-size: 13px; -fx-font-weight: 600;"));
 		k.setMinWidth(64);
 		Label d = new Label(desc);
-		d.setStyle("-fx-text-fill: " + toCss(scheme.textPrimary()) + ";" + "-fx-font-size: 13px;");
+		styleRefreshers.add(
+				() -> d.setStyle("-fx-text-fill: " + toCss(this.scheme.textPrimary()) + ";" + "-fx-font-size: 13px;"));
 		grid.add(k, 0, row);
 		grid.add(d, 1, row);
 	}
 
 	private Region buildRow(Volume v) {
 		Label name = new Label(v.displayName());
-		name.setStyle(
-				"-fx-text-fill: " + toCss(scheme.textPrimary()) + ";" + "-fx-font-size: 15px; -fx-font-weight: 600;");
+		styleRefreshers.add(() -> name.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textPrimary()) + ";" + "-fx-font-size: 15px; -fx-font-weight: 600;"));
 
 		Label path = new Label(v.root().toString());
-		path.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px;");
+		styleRefreshers.add(
+				() -> path.setStyle("-fx-text-fill: " + toCss(this.scheme.textMuted()) + ";" + "-fx-font-size: 11px;"));
 
 		Label total = new Label(humanSize(v.totalBytes()));
-		total.setStyle("-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 12px;");
+		styleRefreshers.add(() -> total.setStyle(
+				"-fx-text-fill: " + toCss(this.scheme.textMuted()) + ";" + "-fx-font-size: 12px;"));
 		// Without this, the label keeps the width it was first laid out with and clips when
 		// the unit toggle widens the text (e.g. "228 GB" → "213 GiB").
 		total.setMinWidth(Region.USE_PREF_SIZE);
@@ -326,25 +362,42 @@ public final class PickerView {
 		String tagText = v.storageProfile() == null ? "" : v.storageProfile().shortLabel();
 		if (!tagText.isEmpty()) {
 			Label tag = new Label(tagText);
-			tag.setStyle(
-					"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-font-weight: 600;");
+			styleRefreshers.add(() -> tag.setStyle("-fx-text-fill: " + toCss(
+					this.scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-font-weight: 600;"));
 			sizeBlock.getChildren().add(tag);
 		}
 		sizeBlock.getChildren().add(total);
 
-		Region bar = buildCapacityBar(v.usedFraction());
+		Rectangle barTrack = new Rectangle();
+		Rectangle barFill = new Rectangle();
+		Region bar = buildCapacityBar(v.usedFraction(), barTrack, barFill);
+		styleRefreshers.add(() -> {
+			barTrack.setFill(this.scheme.capacityTrack());
+			barFill.setFill(this.scheme.capacityFillFor(v.usedFraction()));
+		});
 		HBox.setHgrow(bar, Priority.ALWAYS);
 		HBox barRow = new HBox(12, bar, sizeBlock);
 		barRow.setAlignment(Pos.CENTER_LEFT);
 
 		VBox box = new VBox(4, name, path, barRow);
 		box.setPadding(new Insets(14, 16, 14, 16));
-		String baseStyle = "-fx-background-color: " + toCss(
-				scheme.surface()) + ";" + "-fx-background-radius: 10; -fx-cursor: hand;";
-		box.setStyle(baseStyle);
-		box.setOnMouseEntered(e -> box.setStyle(
-				baseStyle + "-fx-effect: dropshadow(gaussian, " + toCss(scheme.accent()) + ", 12, 0.15, 0, 0);"));
-		box.setOnMouseExited(e -> box.setStyle(baseStyle));
+		// Hover state needs current colours every time the user enters/exits — bind the styles to a holder so
+		// the theme toggle can update the base + hover variants in one place.
+		final String[] baseStyleHolder = new String[1];
+		final String[] hoverStyleHolder = new String[1];
+		Runnable refreshBoxStyles = () -> {
+			baseStyleHolder[0] = "-fx-background-color: " + toCss(
+					this.scheme.surface()) + ";" + "-fx-background-radius: 10; -fx-cursor: hand;";
+			hoverStyleHolder[0] = baseStyleHolder[0] + "-fx-effect: dropshadow(gaussian, " + toCss(
+					this.scheme.accent()) + ", 12, 0.15, 0, 0);";
+			// Re-paint whichever state the row is currently in. JavaFX doesn't expose a public hover-flag on Region,
+			// but a re-set to the base style covers the common case (cursor not over the row right now); the next
+			// enter/exit will land on the right style either way.
+			box.setStyle(baseStyleHolder[0]);
+		};
+		styleRefreshers.add(refreshBoxStyles);
+		box.setOnMouseEntered(e -> box.setStyle(hoverStyleHolder[0]));
+		box.setOnMouseExited(e -> box.setStyle(baseStyleHolder[0]));
 		box.setOnMouseClicked(e -> onSelection.accept(v));
 
 		// Rich tooltip with FS, storage type, sizes (with %), and a per-profile description
@@ -484,17 +537,15 @@ public final class PickerView {
 		return lines;
 	}
 
-	private Region buildCapacityBar(double fraction) {
+	private Region buildCapacityBar(double fraction, Rectangle track, Rectangle fill) {
 		double f = Math.max(0.0, Math.min(1.0, fraction));
 		double height = 10;
 
-		Rectangle track = new Rectangle();
 		track.setHeight(height);
 		track.setArcWidth(height);
 		track.setArcHeight(height);
 		track.setFill(scheme.capacityTrack());
 
-		Rectangle fill = new Rectangle();
 		fill.setHeight(height);
 		fill.setArcWidth(height);
 		fill.setArcHeight(height);

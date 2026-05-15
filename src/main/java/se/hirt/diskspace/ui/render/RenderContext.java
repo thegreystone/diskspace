@@ -67,7 +67,7 @@ import se.hirt.diskspace.scan.Scanner;
  *        {@code null}, may be {@link Scanner.HubState#DEFAULT}
  */
 public record RenderContext(DirectoryNode scanRoot, DirectoryNode viewRoot, DirectoryNode hiddenNode,
-							DirectoryNode hoverNode, boolean hoveringHub, boolean hoveringFreeSpace,
-							boolean hoveringUnaccounted, Volume target, boolean scanning, long progressFiles,
-							long progressBytes, String progressPath, Scanner.HubState hubState) {
+                            DirectoryNode hoverNode, boolean hoveringHub, boolean hoveringFreeSpace,
+                            boolean hoveringUnaccounted, Volume target, boolean scanning, long progressFiles,
+                            long progressBytes, String progressPath, Scanner.HubState hubState) {
 }

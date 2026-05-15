@@ -462,7 +462,7 @@ public final class HeatmapVisualization implements Visualization {
 	 * entry at scan root.
 	 */
 	private record RectHit(DirectoryNode node, double x, double y, double w, double h, boolean unaccounted,
-						   boolean freeSpace) {
+	                       boolean freeSpace) {
 		boolean contains(double mx, double my) {
 			return mx >= x && mx <= x + w && my >= y && my <= y + h;
 		}

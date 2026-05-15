@@ -130,7 +130,16 @@ public final class DiskView {
 	private final StackPane outerRoot;
 	private final StackPane helpOverlay;
 	private final Canvas canvas;
-	private final ColorScheme scheme;
+	private ColorScheme scheme;
+	/**
+	 * Per-region restylers registered as inline-styled widgets are built. {@link #applyTheme} walks the list so every
+	 * {@code setStyle("…" + css(scheme.xxx()) + …)} call from the constructor (and from its helper methods like
+	 * {@link #configureTable}, {@link #buildStagingPane}, {@link #buildHelpOverlay}) gets re-run against the new
+	 * scheme. Matches the pattern used in {@link PickerView}, and parallels how {@link #cycleColoringMode} swaps the
+	 * resolver: theme is in-memory state that the {@code T} keybinding flips, and views re-render against the live
+	 * field.
+	 */
+	private final java.util.List<Runnable> styleRefreshers = new java.util.ArrayList<>();
 	private final Volume target;
 
 	private final Label rightHeader;
@@ -307,7 +316,7 @@ public final class DiskView {
 
 		canvas = new Canvas();
 		Pane canvasHolder = new Pane(canvas);
-		canvasHolder.setStyle(bg(scheme.background()));
+		styleRefreshers.add(() -> canvasHolder.setStyle(bg(scheme.background())));
 		canvas.widthProperty().bind(canvasHolder.widthProperty());
 		canvas.heightProperty().bind(canvasHolder.heightProperty());
 		canvas.widthProperty().addListener((o, a, b) -> redrawWith("resize"));
@@ -353,8 +362,8 @@ public final class DiskView {
 		// same PREFERENCE+capability check) so the badge text accurately reflects which
 		// scanner is actually running for this view, not whatever PREFERENCE later flips to.
 		strategyBadge = new Label(Scanner.strategyLabelFor(target));
-		strategyBadge.setStyle("-fx-text-fill: " + css(
-				scheme.textMuted()) + ";" + "-fx-font-size: 10px; -fx-font-weight: 600;" + "-fx-padding: 12 14 0 0;");
+		styleRefreshers.add(() -> strategyBadge.setStyle("-fx-text-fill: " + css(
+				scheme.textMuted()) + ";" + "-fx-font-size: 10px; -fx-font-weight: 600;" + "-fx-padding: 12 14 0 0;"));
 		strategyBadge.setPickOnBounds(false);
 		strategyBadge.setMaxSize(Region.USE_PREF_SIZE, Region.USE_PREF_SIZE);
 		// Hidden by default — onStart turns it on for the duration of the scan.
@@ -373,20 +382,20 @@ public final class DiskView {
 		StackPane leftStack = new StackPane(canvasHolder, breadcrumb, strategyBadge);
 		StackPane.setAlignment(breadcrumb, Pos.TOP_LEFT);
 		StackPane.setAlignment(strategyBadge, Pos.TOP_RIGHT);
-		leftStack.setStyle(bg(scheme.background()));
+		styleRefreshers.add(() -> leftStack.setStyle(bg(scheme.background())));
 
 		configureTable();
 		table.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
 		configureStagingTable();
 		stagingPane = buildStagingPane();
 		rightSplit.setOrientation(Orientation.VERTICAL);
-		rightSplit.setStyle(bg(scheme.background()));
+		styleRefreshers.add(() -> rightSplit.setStyle(bg(scheme.background())));
 		rightSplit.getItems().add(table);
 		stagedItems.addListener((ListChangeListener<StagedItem>) c -> updateStagingVisibility());
 
 		rightHeader = new Label("  " + target.displayName());
-		rightHeader.setStyle(
-				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 0 8 12;");
+		styleRefreshers.add(() -> rightHeader.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 0 8 12;"));
 		// Keep the size/file-count tail visible when the path is long; ellipsize the head instead.
 		rightHeader.setTextOverrun(OverrunStyle.LEADING_ELLIPSIS);
 		rightHeader.setMaxWidth(Double.MAX_VALUE);
@@ -399,13 +408,13 @@ public final class DiskView {
 		pathContextMenu.install(rightHeader, e -> targetFor(viewRoot));
 
 		rightHeaderInfo = new Label("  —  scanning…");
-		rightHeaderInfo.setStyle(
-				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 12 8 0;");
+		styleRefreshers.add(() -> rightHeaderInfo.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 12 8 0;"));
 
 		// Flash overlay sits behind the path label and pulses on copy. Mouse-transparent so it
 		// doesn't intercept the click that triggered it.
 		headerFlash = new Rectangle();
-		headerFlash.setFill(scheme.accent());
+		styleRefreshers.add(() -> headerFlash.setFill(scheme.accent()));
 		headerFlash.setOpacity(0);
 		headerFlash.setMouseTransparent(true);
 		headerFlash.setArcWidth(4);
@@ -429,10 +438,10 @@ public final class DiskView {
 
 		BorderPane right = new BorderPane(rightSplit);
 		right.setTop(headerBar);
-		right.setStyle(bg(scheme.background()));
+		styleRefreshers.add(() -> right.setStyle(bg(scheme.background())));
 
 		root = new SplitPane(leftStack, right);
-		root.setStyle(bg(scheme.background()));
+		styleRefreshers.add(() -> root.setStyle(bg(scheme.background())));
 		root.setDividerPositions(0.70);
 		SplitPane.setResizableWithParent(right, false);
 
@@ -479,7 +488,10 @@ public final class DiskView {
 		helpOverlay.setVisible(false);
 		helpOverlay.setManaged(false);
 		this.outerRoot = new StackPane(root, helpOverlay);
-		outerRoot.setStyle(bg(scheme.background()));
+		styleRefreshers.add(() -> outerRoot.setStyle(bg(scheme.background())));
+
+		// Apply initial styles now that every refresher across the constructor and helpers has registered.
+		restyle();
 
 		startVizEvent();
 		startScan();
@@ -622,6 +634,11 @@ public final class DiskView {
 			cycleColoringMode();
 			e.consume();
 		}
+		case T -> {
+			emitUserAction("T", "toggle-theme");
+			se.hirt.diskspace.ui.theme.Theme.toggle();
+			e.consume();
+		}
 		default -> { /* let it bubble */ }
 		}
 	}
@@ -629,10 +646,10 @@ public final class DiskView {
 	private void configureTable() {
 		table.setItems(tableItems);
 		table.setPlaceholder(new Label(""));
-		table.setStyle(
+		styleRefreshers.add(() -> table.setStyle(
 				"-fx-background-color: " + css(scheme.background()) + ";" + "-fx-control-inner-background: " + css(
 						scheme.background()) + ";" + "-fx-text-fill: " + css(
-						scheme.textPrimary()) + ";" + "-fx-table-cell-border-color: transparent;");
+						scheme.textPrimary()) + ";" + "-fx-table-cell-border-color: transparent;"));
 
 		TableColumn<Entry, String> nameCol = new TableColumn<>("Name");
 		nameCol.setCellValueFactory(d -> new SimpleStringProperty(d.getValue().name()));
@@ -770,12 +787,14 @@ public final class DiskView {
 				} else if (isHover() && item != null) {
 					// Hover lands between selection and alternation in visual weight, so
 					// the user can see exactly which row a click would target without it
-					// being mistaken for a selected row.
-					bg = "rgba(255,255,255,0.12)";
+					// being mistaken for a selected row. scheme.rowHover() carries a translucent
+					// white in dark mode / translucent black in light mode, so the tint reads
+					// correctly against either background.
+					bg = css(scheme.rowHover());
 				} else if (item != null && item.isDirectory()) {
-					bg = odd ? "rgba(255,255,255,0.075)" : "rgba(255,255,255,0.045)";
+					bg = css(odd ? scheme.rowAltStrong() : scheme.rowAltWeak());
 				} else {
-					bg = odd ? "rgba(255,255,255,0.025)" : "transparent";
+					bg = odd ? css(scheme.rowAltWeak()) : "transparent";
 				}
 				setStyle("-fx-background-color: " + bg + ";");
 			}
@@ -787,10 +806,10 @@ public final class DiskView {
 	private void configureStagingTable() {
 		stagingTable.setItems(stagedItems);
 		stagingTable.setPlaceholder(new Label(""));
-		stagingTable.setStyle(
+		styleRefreshers.add(() -> stagingTable.setStyle(
 				"-fx-background-color: " + css(scheme.background()) + ";" + "-fx-control-inner-background: " + css(
 						scheme.background()) + ";" + "-fx-text-fill: " + css(
-						scheme.textPrimary()) + ";" + "-fx-table-cell-border-color: transparent;");
+						scheme.textPrimary()) + ";" + "-fx-table-cell-border-color: transparent;"));
 		stagingTable.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
 
 		TableColumn<StagedItem, String> nameCol = new TableColumn<>("Path");
@@ -839,7 +858,7 @@ public final class DiskView {
 				if (empty || item == null || !item.isDirectory()) {
 					setStyle("");
 				} else {
-					setStyle("-fx-background-color: rgba(255, 255, 255, 0.045);");
+					setStyle("-fx-background-color: " + css(scheme.rowAltWeak()) + ";");
 				}
 			}
 		});
@@ -847,11 +866,12 @@ public final class DiskView {
 
 	private BorderPane buildStagingPane() {
 		Label header = new Label("  Scheduled for deletion");
-		header.setStyle("-fx-text-fill: " + css(
+		styleRefreshers.add(() -> header.setStyle("-fx-text-fill: " + css(
 				scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 8 12 8 12;" + "-fx-border-color: " + css(
-				scheme.surface()) + " transparent transparent transparent;" + "-fx-border-width: 1 0 0 0;");
+				scheme.surface()) + " transparent transparent transparent;" + "-fx-border-width: 1 0 0 0;"));
 
-		stagingFooterLabel.setStyle("-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px;");
+		styleRefreshers.add(() -> stagingFooterLabel.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px;"));
 
 		cancelStagingButton = new Button("Cancel");
 		cancelStagingButton.setOnAction(e -> stagedItems.clear());
@@ -864,12 +884,12 @@ public final class DiskView {
 		HBox footer = new HBox(8, stagingFooterLabel, grow, cancelStagingButton, deleteStagedButton);
 		footer.setAlignment(Pos.CENTER_LEFT);
 		footer.setPadding(new Insets(8, 12, 8, 12));
-		footer.setStyle(bg(scheme.background()));
+		styleRefreshers.add(() -> footer.setStyle(bg(scheme.background())));
 
 		BorderPane pane = new BorderPane(stagingTable);
 		pane.setTop(header);
 		pane.setBottom(footer);
-		pane.setStyle(bg(scheme.background()));
+		styleRefreshers.add(() -> pane.setStyle(bg(scheme.background())));
 		return pane;
 	}
 
@@ -1854,26 +1874,27 @@ public final class DiskView {
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
 		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
 		addHelpRow(grid, row++, "C", "Cycle coloring mode");
+		addHelpRow(grid, row++, "T", "Toggle theme (dark / light)");
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label title = new Label("Keyboard Shortcuts");
-		title.setStyle("-fx-text-fill: " + css(
-				scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600; -fx-padding: 0 0 14 0;");
+		styleRefreshers.add(() -> title.setStyle("-fx-text-fill: " + css(
+				scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600; -fx-padding: 0 0 14 0;"));
 
 		Label hint = new Label("Press Esc to close");
-		hint.setStyle(
-				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;");
+		styleRefreshers.add(() -> hint.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;"));
 
 		VBox card = new VBox(title, grid, hint);
 		card.setAlignment(Pos.TOP_LEFT);
 		card.setPadding(new Insets(24, 28, 20, 28));
 		card.setMaxWidth(460);
 		card.setMaxHeight(Region.USE_PREF_SIZE);
-		card.setStyle("-fx-background-color: " + css(
-				scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);");
+		styleRefreshers.add(() -> card.setStyle("-fx-background-color: " + css(
+				scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);"));
 
 		StackPane overlay = new StackPane(card);
-		overlay.setStyle("-fx-background-color: rgba(0,0,0,0.55);");
+		styleRefreshers.add(() -> overlay.setStyle("-fx-background-color: " + css(scheme.overlayScrim()) + ";"));
 		// Backdrop click dismisses; the card consumes its own clicks before they reach here.
 		overlay.setOnMouseClicked(e -> {
 			if (e.getTarget() == overlay)
@@ -1884,11 +1905,12 @@ public final class DiskView {
 
 	private void addHelpRow(javafx.scene.layout.GridPane grid, int row, String key, String desc) {
 		Label k = new Label(key);
-		k.setStyle("-fx-text-fill: " + css(
-				scheme.accent()) + ";" + "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;" + "-fx-font-size: 13px; -fx-font-weight: 600;");
+		styleRefreshers.add(() -> k.setStyle("-fx-text-fill: " + css(
+				scheme.accent()) + ";" + "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;" + "-fx-font-size: 13px; -fx-font-weight: 600;"));
 		k.setMinWidth(64);
 		Label d = new Label(desc);
-		d.setStyle("-fx-text-fill: " + css(scheme.textPrimary()) + ";" + "-fx-font-size: 13px;");
+		styleRefreshers.add(
+				() -> d.setStyle("-fx-text-fill: " + css(scheme.textPrimary()) + ";" + "-fx-font-size: 13px;"));
 		grid.add(k, 0, row);
 		grid.add(d, 1, row);
 	}
@@ -1908,6 +1930,39 @@ public final class DiskView {
 		// Reclaim focus so subsequent keypresses route through this view's handler.
 		root.requestFocus();
 		redrawWith("mode-change");
+	}
+
+	/**
+	 * Live theme handoff. Called by {@link MainWindow#applyTheme} after the {@link se.hirt.diskspace.ui.theme.Theme}
+	 * listener fires. Replays every registered inline-style block (the {@code setStyle("…" + css(scheme.xxx()) + …)}
+	 * calls from the constructor and its helpers), rebuilds the colour resolver against the new scheme (palette
+	 * derivations bake in scheme-dependent values), and triggers fresh paints on the table + visualization so the
+	 * change is visible immediately. Mirrors {@link #cycleColoringMode} in shape — in-session only, no persistence.
+	 */
+	void applyTheme(ColorScheme newScheme) {
+		this.scheme = newScheme;
+		restyle();
+		// Resolver palettes derive from the scheme — rebuild so colours match the new background and replay scan /
+		// hidden state onto the new resolver, same as cycleColoringMode does.
+		NodeColorResolver fresh = currentColoringMode.createResolver(newScheme, this::sortedRank);
+		fresh.setScanRoot(scanRoot);
+		fresh.setHiddenNode(hiddenNode);
+		if (!scanning && scanRoot != null) {
+			fresh.onScanComplete();
+		}
+		nodeColors = fresh;
+		// Breadcrumb labels capture scheme colours at construction — rebuild so existing crumbs pick up the new
+		// scheme. New hovers would refresh themselves via crumbStyle, but the at-rest visuals would otherwise stay
+		// stuck on the old palette.
+		rebuildBreadcrumb();
+		table.refresh();
+		stagingTable.refresh();
+		redrawWith("theme-change");
+	}
+
+	private void restyle() {
+		for (Runnable r : styleRefreshers)
+			r.run();
 	}
 
 	/**
@@ -2287,7 +2342,7 @@ public final class DiskView {
 	 * re-walking.
 	 */
 	private record StagedItem(boolean isDirectory, java.nio.file.Path path, long sizeAtStaging, DirectoryNode dirNode,
-							  DirectoryNode parentNode) {
+	                          DirectoryNode parentNode) {
 		long currentSize() {
 			return isDirectory && dirNode != null ? dirNode.totalBytes() : sizeAtStaging;
 		}
@@ -2374,6 +2429,7 @@ public final class DiskView {
 		private final MenuItem rescanItem = new MenuItem("Re-scan");
 		private final MenuItem toggleUnitsItem = new MenuItem("Toggle Size Units");
 		private final MenuItem toggleVizItem = new MenuItem("Toggle Visualization");
+		private final MenuItem toggleThemeItem = new MenuItem("Toggle Theme");
 		private final MenuItem preferencesItem = new MenuItem("Preferences…");
 		private final MenuItem quitItem = new MenuItem("Quit");
 		private PathTarget pending;
@@ -2449,6 +2505,10 @@ public final class DiskView {
 				emitUserAction("ContextMenu", "toggle-mode");
 				toggleRenderMode();
 			});
+			toggleThemeItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "toggle-theme");
+				se.hirt.diskspace.ui.theme.Theme.toggle();
+			});
 			preferencesItem.setOnAction(e -> {
 				emitUserAction("ContextMenu", "preferences");
 				PreferencesDialog.show();
@@ -2517,9 +2577,8 @@ public final class DiskView {
 						// Preferences sits in its own section above Quit per the app's menu hierarchy:
 						// it's the only entry that mutates persisted state, so the separators flag it
 						// as distinct from the transient view-toggle actions above it.
-						menu.getItems()
-								.addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, new SeparatorMenuItem(),
-										preferencesItem, new SeparatorMenuItem(), quitItem);
+						menu.getItems().addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, toggleThemeItem,
+								new SeparatorMenuItem(), preferencesItem, new SeparatorMenuItem(), quitItem);
 					}
 				}
 				menu.show(node, e.getScreenX(), e.getScreenY());
