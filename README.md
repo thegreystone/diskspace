@@ -12,7 +12,10 @@ A cross-platform disk space visualizer that shows where your space went, with tw
 **squarified-treemap heatmap** (good for finding the largest individual cells across the whole tree). Press `V` to
 toggle.
 
+
 ![DiskSpace sunburst view, drilled into Program Files](docs/screenshots/diskspace.png)
+![DiskSpace sunburst view, light mode](docs/screenshots/diskspace-light.png)
+
 
 ## Quick Start
 
