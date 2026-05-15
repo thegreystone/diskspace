@@ -1,0 +1,283 @@
+/* Light theme — covers all JavaFX-rendered chrome.
+ * Component-specific colors drawn in code come from ColorScheme.LIGHT.
+ */
+
+.root {
+    -fx-base: #F4F4F5;
+    -fx-background: #FFFFFF;
+    -fx-control-inner-background: #FFFFFF;
+    -fx-control-inner-background-alt: #FAFAFB;
+    -fx-accent: #1F8E96;
+    -fx-default-button: #1F8E96;
+    -fx-focus-color: #1F8E96;
+    -fx-faint-focus-color: #1F8E9622;
+    -fx-text-fill: #1A1A1A;
+    -fx-text-base-color: #1A1A1A;
+    -fx-text-background-color: #1A1A1A;
+    -fx-mark-color: #1A1A1A;
+    -fx-mark-highlight-color: #1A1A1A;
+    -fx-selection-bar: #1F8E96;
+    -fx-selection-bar-non-focused: #D8D8DE;
+    -fx-cell-hover-color: #ECECEF;
+    -fx-cell-focus-inner-border: #1F8E96;
+    -fx-font-family: "Segoe UI", "SF Pro Text", "Inter", system, sans-serif;
+}
+
+/* ---------------- TabPane ---------------- */
+
+.tab-pane {
+    -fx-background-color: #FFFFFF;
+    -fx-tab-min-height: 30;
+    -fx-tab-max-height: 30;
+}
+
+.tab-pane > .tab-header-area {
+    -fx-padding: 6 8 0 8;
+    -fx-background-color: #FFFFFF;
+}
+
+.tab-pane > .tab-header-area > .headers-region {
+    -fx-background-color: transparent;
+}
+
+.tab-pane > .tab-header-area > .tab-header-background {
+    -fx-background-color: #FFFFFF;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab {
+    -fx-background-color: #F4F4F5;
+    -fx-background-radius: 6 6 0 0;
+    -fx-padding: 4 14 4 14;
+    -fx-background-insets: 0 1 0 1;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:hover {
+    -fx-background-color: #E8E8EC;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:selected {
+    -fx-background-color: #E5E5E8;
+    -fx-border-color: transparent transparent #1F8E96 transparent;
+    -fx-border-width: 0 0 2 0;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab .tab-label {
+    -fx-text-fill: #5C5C66;
+    -fx-font-size: 12px;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:selected .tab-label {
+    -fx-text-fill: #1A1A1A;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab .tab-close-button {
+    -fx-background-color: #7A7A82;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:hover .tab-close-button {
+    -fx-background-color: #1A1A1A;
+}
+
+.tab-pane > .tab-header-area > .control-buttons-tab {
+    -fx-background-color: #FFFFFF;
+}
+
+/* ---------------- SplitPane ---------------- */
+
+.split-pane {
+    -fx-background-color: #FFFFFF;
+    -fx-padding: 0;
+}
+
+.split-pane > .split-pane-divider {
+    -fx-background-color: #E5E5E8;
+    -fx-padding: 0 1 0 1;
+}
+
+/* ---------------- ScrollPane ---------------- */
+
+.scroll-pane {
+    -fx-background-color: #FFFFFF;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+}
+
+.scroll-pane > .viewport {
+    -fx-background-color: #FFFFFF;
+}
+
+.scroll-pane > .corner {
+    -fx-background-color: #FFFFFF;
+}
+
+/* ---------------- ScrollBar ---------------- */
+
+.scroll-bar {
+    -fx-background-color: #FFFFFF;
+}
+
+.scroll-bar > .thumb {
+    -fx-background-color: #C8C8CE;
+    -fx-background-radius: 4;
+    -fx-background-insets: 2;
+}
+
+.scroll-bar > .thumb:hover {
+    -fx-background-color: #A8A8B0;
+}
+
+.scroll-bar > .track,
+.scroll-bar > .track-background {
+    -fx-background-color: #FFFFFF;
+    -fx-border-color: transparent;
+}
+
+.scroll-bar > .increment-button,
+.scroll-bar > .decrement-button {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.scroll-bar > .increment-arrow,
+.scroll-bar > .decrement-arrow {
+    -fx-background-color: #7A7A82;
+    -fx-padding: 2;
+}
+
+/* ---------------- ListView ---------------- */
+
+.list-view {
+    -fx-background-color: #FFFFFF;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+}
+
+.list-cell {
+    -fx-background-color: #FFFFFF;
+    -fx-text-fill: #1A1A1A;
+    -fx-padding: 6 14 6 14;
+}
+
+.list-cell:filled:hover {
+    -fx-background-color: #F4F4F5;
+}
+
+.list-cell:filled:selected {
+    -fx-background-color: #E5E5E8;
+    -fx-text-fill: #1A1A1A;
+}
+
+.list-cell:filled:selected:focused {
+    -fx-background-color: #D8D8DE;
+}
+
+.list-cell:empty {
+    -fx-background-color: #FFFFFF;
+}
+
+/* ---------------- Button ---------------- */
+
+.button {
+    -fx-background-color: transparent;
+    -fx-text-fill: #1F8E96;
+    -fx-border-color: #1F8E96;
+    -fx-border-radius: 6;
+    -fx-background-radius: 6;
+    -fx-padding: 6 14 6 14;
+    -fx-cursor: hand;
+}
+
+.button:hover {
+    -fx-background-color: #1F8E9618;
+}
+
+.button:focused {
+    -fx-border-color: #1F8E96;
+    -fx-effect: dropshadow(gaussian, #1F8E9655, 6, 0.3, 0, 0);
+}
+
+.button:armed {
+    -fx-background-color: #1F8E9633;
+}
+
+/* ---------------- TableView ---------------- */
+
+/* Scope-override the selection-bar variables for TableView only. See dark.css for the
+ * full rationale — same chain applies here, just with light-mode neutral fills. */
+.table-view {
+    -fx-selection-bar: transparent;
+    -fx-selection-bar-non-focused: transparent;
+}
+
+
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:selected,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:focused,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:focused,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:selected,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:focused:selected {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:odd,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:hover,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:selected,
+.table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:focused:selected {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:selected,
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:selected,
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:focused:selected {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:selected,
+.table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled:focused:selected {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+}
+
+.table-view .column-header,
+.table-view .column-header-background,
+.table-view .column-header-background .filler {
+    -fx-background-color: #F4F4F5;
+    -fx-border-color: transparent;
+}
+
+.table-view .column-header .label {
+    -fx-text-fill: #5C5C66;
+}
+
+/* ---------------- Tooltip & ContextMenu ---------------- */
+
+.tooltip {
+    -fx-background-color: #2A2A30;
+    -fx-text-fill: #EDEDED;
+    -fx-background-radius: 4;
+    -fx-padding: 4 8 4 8;
+}
+
+.context-menu {
+    -fx-background-color: #FFFFFF;
+    -fx-border-color: #E5E5E8;
+    -fx-text-fill: #1A1A1A;
+}
+
+.menu-item {
+    -fx-background-color: #FFFFFF;
+}
+
+.menu-item:focused {
+    -fx-background-color: #E5E5E8;
+}
+
+.menu-item .label {
+    -fx-text-fill: #1A1A1A;
+}

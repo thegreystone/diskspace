@@ -40,6 +40,7 @@ import javafx.stage.Stage;
 import se.hirt.diskspace.platform.Capabilities;
 import se.hirt.diskspace.ui.MainWindow;
 import se.hirt.diskspace.ui.theme.ColorScheme;
+import se.hirt.diskspace.ui.theme.Theme;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -79,18 +80,23 @@ public final class App extends Application {
 	@Override
 	public void start(Stage stage) {
 		hostServices = getHostServices();
-		ColorScheme scheme = ColorScheme.DARK;
+		ColorScheme scheme = Theme.current();
 
 		MainWindow main = new MainWindow(scheme);
 		mainWindow = main;
 		Scene scene = new Scene(main.getRoot(), 1100, 700);
 		scene.setFill(scheme.background());
-		if (scheme.stylesheet() != null) {
-			var url = App.class.getResource(scheme.stylesheet());
-			if (url != null) {
-				scene.getStylesheets().add(url.toExternalForm());
-			}
-		}
+		applyStylesheet(scene, scheme);
+
+		// Live theme switching. Subscribed before the stage is shown so a T press that
+		// somehow lands during startup still propagates. Swap the Scene's stylesheet, repaint
+		// its fill, and fan out to the view tree — MainWindow.applyTheme re-runs each tab's
+		// inline-style blocks so colours baked in at construction time pick up the new scheme.
+		Theme.addListener(newScheme -> {
+			scene.setFill(newScheme.background());
+			applyStylesheet(scene, newScheme);
+			main.applyTheme(newScheme);
+		});
 
 		stage.setTitle("DiskSpace");
 		stage.getIcons().addAll(loadAppIcons());
@@ -102,6 +108,32 @@ public final class App extends Application {
 		// Defer until after the main window is on screen so the dialog parents to it
 		// rather than appearing standalone before anything has rendered.
 		Platform.runLater(this::maybeOfferElevation);
+	}
+
+	/**
+	 * Drop any stylesheet from a previously-active {@link ColorScheme} and install the one for {@code scheme}, if any.
+	 * Called at startup and from the {@link Theme} listener on every {@code T} toggle. Iterating over both registered
+	 * stylesheets (rather than tracking "the last URL added") keeps this resilient if more themes appear later — any
+	 * stylesheet not belonging to {@code scheme} is removed.
+	 */
+	private static void applyStylesheet(Scene scene, ColorScheme scheme) {
+		java.util.List<String> toRemove = new java.util.ArrayList<>();
+		for (var s : se.hirt.diskspace.ui.theme.ColorSchemes.all()) {
+			if (s == scheme || s.stylesheet() == null)
+				continue;
+			var url = App.class.getResource(s.stylesheet());
+			if (url != null)
+				toRemove.add(url.toExternalForm());
+		}
+		scene.getStylesheets().removeAll(toRemove);
+		if (scheme.stylesheet() != null) {
+			var url = App.class.getResource(scheme.stylesheet());
+			if (url != null) {
+				String href = url.toExternalForm();
+				if (!scene.getStylesheets().contains(href))
+					scene.getStylesheets().add(href);
+			}
+		}
 	}
 
 	/**
@@ -121,9 +153,9 @@ public final class App extends Application {
 		if (Boolean.getBoolean("diskspace.skipElevationPrompt"))
 			return;
 		String confirmationText = """
-								  DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as administrator. Without elevation it falls back to the directory-walking scanner.
-								  
-								  Restart as administrator now?""";
+		                          DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as administrator. Without elevation it falls back to the directory-walking scanner.
+		                          
+		                          Restart as administrator now?""";
 		Alert alert = new Alert(AlertType.CONFIRMATION, confirmationText, ButtonType.YES, ButtonType.NO);
 		alert.setHeaderText("Run as administrator for faster scanning?");
 		alert.setTitle("DiskSpace");
@@ -199,6 +231,9 @@ public final class App extends Application {
 		// SizeFormat is a process-wide singleton — restore the persisted unit before any UI is built
 		// so the first scan's formatting matches the user's preference instead of the DECIMAL default.
 		se.hirt.diskspace.ui.SizeFormat.setMode(se.hirt.diskspace.settings.Settings.get().defaultSizeUnit());
+		// Same dance for the theme: seed Theme.current() from the persisted preference before any view is constructed
+		// so the very first paint uses the user's chosen scheme rather than DARK-by-default.
+		Theme.set(se.hirt.diskspace.settings.Settings.get().defaultColorScheme());
 		launch(args);
 	}
 

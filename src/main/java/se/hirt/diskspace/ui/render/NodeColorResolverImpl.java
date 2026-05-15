@@ -138,12 +138,12 @@ public final class NodeColorResolverImpl implements NodeColorResolver {
 		Color computed;
 		if (node.isFileSector()) {
 			int d = depthFromScanRoot(node);
-			computed = SectorPalette.forFileSector(node.name(), Math.max(0, d - 1));
+			computed = SectorPalette.forFileSector(scheme, node.name(), Math.max(0, d - 1));
 		} else if (node.parent() == scanRoot || node.parent() == null) {
 			// Family root — palette pick by name with collision avoidance.
 			if ("Hidden".equals(node.name())) {
-				// Hidden has its own reserved grey via SectorPalette.forName.
-				computed = SectorPalette.forName("Hidden", 0);
+				// Hidden has its own reserved grey via SectorPalette.forName (scheme-owned).
+				computed = SectorPalette.forName(scheme, "Hidden", 0);
 			} else {
 				computed = SectorPalette.atIndex(allocateTopLevelIdx(node), 0);
 			}

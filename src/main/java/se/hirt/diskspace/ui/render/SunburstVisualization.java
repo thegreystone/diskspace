@@ -643,7 +643,7 @@ public final class SunburstVisualization implements Visualization {
 
 	/** Frame-time sector after lerping {@link Layout}s for the animation. */
 	private record FrameEntry(DirectoryNode node, double depth, double start, double sweep, double alphaScale,
-							  Color color) {
+	                          Color color) {
 	}
 
 	/**
@@ -651,7 +651,7 @@ public final class SunburstVisualization implements Visualization {
 	 * associated node; otherwise {@code node==null} means free-space arc.
 	 */
 	private record SectorRect(DirectoryNode node, int depth, double startDeg, double sweepDeg, double r1, double r2,
-							  boolean unaccounted) {
+	                          boolean unaccounted) {
 	}
 
 	/** Frozen-size snapshot of a node, used so the sort comparator can read primitive {@code long} fields. */

@@ -32,6 +32,8 @@ import se.hirt.diskspace.ui.DiskView.RenderMode;
 import se.hirt.diskspace.ui.SizeFormat;
 import se.hirt.diskspace.ui.render.ColoringMode;
 import se.hirt.diskspace.ui.render.ColoringModes;
+import se.hirt.diskspace.ui.theme.ColorScheme;
+import se.hirt.diskspace.ui.theme.ColorSchemes;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -66,6 +68,7 @@ public final class Settings {
 	private static final String KEY_DEFAULT_VISUALIZATION = "default.visualization";
 	private static final String KEY_DEFAULT_SIZE_UNIT = "default.size.unit";
 	private static final String KEY_DEFAULT_COLORING_MODE = "default.coloring.mode";
+	private static final String KEY_DEFAULT_COLOR_SCHEME = "default.color.scheme";
 
 	private static final RenderMode FALLBACK_VISUALIZATION = RenderMode.SUNBURST;
 	private static final SizeFormat.Mode FALLBACK_SIZE_UNIT = SizeFormat.Mode.DECIMAL;
@@ -90,14 +93,16 @@ public final class Settings {
 	private RenderMode defaultVisualization;
 	private SizeFormat.Mode defaultSizeUnit;
 	private ColoringMode defaultColoringMode;
+	private ColorScheme defaultColorScheme;
 
 	private Settings(
 			Path file, RenderMode defaultVisualization, SizeFormat.Mode defaultSizeUnit,
-			ColoringMode defaultColoringMode) {
+			ColoringMode defaultColoringMode, ColorScheme defaultColorScheme) {
 		this.file = file;
 		this.defaultVisualization = defaultVisualization;
 		this.defaultSizeUnit = defaultSizeUnit;
 		this.defaultColoringMode = defaultColoringMode;
+		this.defaultColorScheme = defaultColorScheme;
 	}
 
 	public synchronized RenderMode defaultVisualization() {
@@ -124,6 +129,14 @@ public final class Settings {
 		this.defaultColoringMode = mode != null ? mode : ColoringModes.defaultMode();
 	}
 
+	public synchronized ColorScheme defaultColorScheme() {
+		return defaultColorScheme;
+	}
+
+	public synchronized void setDefaultColorScheme(ColorScheme scheme) {
+		this.defaultColorScheme = scheme != null ? scheme : ColorSchemes.defaultMode();
+	}
+
 	/**
 	 * Persist current values. Creates the parent directory if missing. Logged-and-swallowed on failure — a read-only
 	 * config dir shouldn't take the app down, the worst case is that the choice isn't remembered across launches.
@@ -133,6 +146,7 @@ public final class Settings {
 		p.setProperty(KEY_DEFAULT_VISUALIZATION, defaultVisualization.name());
 		p.setProperty(KEY_DEFAULT_SIZE_UNIT, defaultSizeUnit.name());
 		p.setProperty(KEY_DEFAULT_COLORING_MODE, defaultColoringMode.id());
+		p.setProperty(KEY_DEFAULT_COLOR_SCHEME, defaultColorScheme.id());
 		try {
 			Files.createDirectories(file.getParent());
 			try (OutputStream out = Files.newOutputStream(file)) {
@@ -158,7 +172,8 @@ public final class Settings {
 		SizeFormat.Mode unit = parseEnum(p.getProperty(KEY_DEFAULT_SIZE_UNIT), SizeFormat.Mode.class,
 				FALLBACK_SIZE_UNIT);
 		ColoringMode coloring = ColoringModes.byId(p.getProperty(KEY_DEFAULT_COLORING_MODE));
-		return new Settings(file, viz, unit, coloring);
+		ColorScheme scheme = ColorSchemes.byId(p.getProperty(KEY_DEFAULT_COLOR_SCHEME));
+		return new Settings(file, viz, unit, coloring, scheme);
 	}
 
 	private static <E extends Enum<E>> E parseEnum(String raw, Class<E> type, E fallback) {

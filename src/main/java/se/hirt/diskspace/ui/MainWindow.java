@@ -42,15 +42,13 @@ public final class MainWindow {
 
 	private final BorderPane root;
 	private final TabPane tabs;
-	private final ColorScheme scheme;
+	private ColorScheme scheme;
 	private final Tab plusTab;
 
 	public MainWindow(ColorScheme scheme) {
 		this.scheme = scheme;
 
 		tabs = new TabPane();
-		tabs.setStyle("-fx-background-color: " + toCss(
-				scheme.background()) + ";" + "-fx-tab-min-height: 28; -fx-tab-max-height: 28;");
 		tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.ALL_TABS);
 
 		plusTab = new Tab("+");
@@ -71,7 +69,7 @@ public final class MainWindow {
 		tabs.getSelectionModel().select(first);
 
 		root = new BorderPane(tabs);
-		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+		restyle();
 
 		// Single-key shortcuts should reach the active tab's content (DiskView or
 		// PickerView) even when focus is on the TabPane header. Each content also
@@ -108,6 +106,32 @@ public final class MainWindow {
 
 	public Region getRoot() {
 		return root;
+	}
+
+	/**
+	 * Live theme handoff. Called by {@code App}'s {@link se.hirt.diskspace.ui.theme.Theme} listener after the new
+	 * scheme has been stored. Refreshes our own inline styles, rebuilds the "+" hint pane (a transient label — cheaper
+	 * to recreate than to restyle in place), and fans out to every open tab so per-view inline styles get re-applied
+	 * too.
+	 */
+	public void applyTheme(ColorScheme newScheme) {
+		this.scheme = newScheme;
+		restyle();
+		plusTab.setContent(buildHint());
+		for (Tab t : tabs.getTabs()) {
+			Object data = t.getUserData();
+			if (data instanceof DiskView dv) {
+				dv.applyTheme(newScheme);
+			} else if (data instanceof PickerView pv) {
+				pv.applyTheme(newScheme);
+			}
+		}
+	}
+
+	private void restyle() {
+		tabs.setStyle("-fx-background-color: " + toCss(
+				scheme.background()) + ";" + "-fx-tab-min-height: 28; -fx-tab-max-height: 28;");
+		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
 	}
 
 	/**

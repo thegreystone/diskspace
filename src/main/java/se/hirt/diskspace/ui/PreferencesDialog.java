@@ -42,6 +42,8 @@ import se.hirt.diskspace.settings.Settings;
 import se.hirt.diskspace.ui.DiskView.RenderMode;
 import se.hirt.diskspace.ui.render.ColoringMode;
 import se.hirt.diskspace.ui.render.ColoringModes;
+import se.hirt.diskspace.ui.theme.ColorScheme;
+import se.hirt.diskspace.ui.theme.ColorSchemes;
 
 /**
  * Modal "Preferences" dialog. Persists the user's startup defaults. Changes do not affect the currently open tabs or
@@ -108,6 +110,30 @@ public final class PreferencesDialog {
 			unitDescription.setText(newV == null ? "" : newV.description());
 		});
 
+		ChoiceBox<ColorScheme> themeChoice = new ChoiceBox<>();
+		themeChoice.getItems().addAll(ColorSchemes.all());
+		themeChoice.setConverter(new StringConverter<>() {
+			@Override
+			public String toString(ColorScheme scheme) {
+				return scheme == null ? "" : scheme.displayName();
+			}
+
+			@Override
+			public ColorScheme fromString(String string) {
+				for (ColorScheme s : ColorSchemes.all()) {
+					if (s.displayName().equals(string))
+						return s;
+				}
+				return ColorSchemes.defaultMode();
+			}
+		});
+		themeChoice.setValue(settings.defaultColorScheme());
+
+		Label themeDescription = describeLabel(settings.defaultColorScheme().description());
+		themeChoice.getSelectionModel().selectedItemProperty().addListener((obs, oldV, newV) -> {
+			themeDescription.setText(newV == null ? "" : newV.description());
+		});
+
 		ChoiceBox<ColoringMode> coloringChoice = new ChoiceBox<>();
 		coloringChoice.getItems().addAll(ColoringModes.all());
 		coloringChoice.setConverter(new StringConverter<>() {
@@ -142,22 +168,26 @@ public final class PreferencesDialog {
 		valueCol.setHgrow(Priority.SOMETIMES);
 		grid.getColumnConstraints().addAll(labelCol, valueCol);
 
-		grid.add(new Label("Default visualization:"), 0, 0);
-		grid.add(vizChoice, 1, 0);
+		grid.add(new Label("Default theme:"), 0, 0);
+		grid.add(themeChoice, 1, 0);
 		// Description sits in the value column under the picker — a hint, not a labelled field.
-		grid.add(vizDescription, 1, 1);
-		grid.add(new Label("Default size unit:"), 0, 2);
-		grid.add(unitChoice, 1, 2);
-		grid.add(unitDescription, 1, 3);
-		grid.add(new Label("Default coloring:"), 0, 4);
-		grid.add(coloringChoice, 1, 4);
-		grid.add(coloringDescription, 1, 5);
+		grid.add(themeDescription, 1, 1);
+		grid.add(new Label("Default visualization:"), 0, 2);
+		grid.add(vizChoice, 1, 2);
+		grid.add(vizDescription, 1, 3);
+		grid.add(new Label("Default size unit:"), 0, 4);
+		grid.add(unitChoice, 1, 4);
+		grid.add(unitDescription, 1, 5);
+		grid.add(new Label("Default coloring:"), 0, 6);
+		grid.add(coloringChoice, 1, 6);
+		grid.add(coloringDescription, 1, 7);
 
 		dialog.getDialogPane().setContent(grid);
 		dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
 
 		dialog.showAndWait().ifPresent(button -> {
 			if (button == ButtonType.OK) {
+				settings.setDefaultColorScheme(themeChoice.getValue());
 				settings.setDefaultVisualization(vizChoice.getValue());
 				settings.setDefaultSizeUnit(unitChoice.getValue());
 				settings.setDefaultColoringMode(coloringChoice.getValue());
