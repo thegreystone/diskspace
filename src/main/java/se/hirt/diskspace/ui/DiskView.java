@@ -281,13 +281,13 @@ public final class DiskView {
 
 	private final Deque<DirectoryNode> forwardStack = new ArrayDeque<>();
 
-	public DiskView(Volume target, ColorScheme scheme) {
+	public DiskView(Volume target, ColorScheme initialScheme) {
 		this.target = target;
-		this.scheme = scheme;
+		this.scheme = initialScheme;
 		// Build the resolver from the persisted coloring mode. New tabs honour the saved choice;
 		// the C keybinding can swap it later in this tab — see cycleColoringMode().
 		this.currentColoringMode = se.hirt.diskspace.settings.Settings.get().defaultColoringMode();
-		this.nodeColors = currentColoringMode.createResolver(scheme, this::sortedRank);
+		this.nodeColors = currentColoringMode.createResolver(initialScheme, this::sortedRank);
 		this.scanner = Scanner.forVolume(target);
 		// Honour the persisted "default visualization" preference for newly opened tabs.
 		// Existing tabs retain whatever mode they were in — only new constructions consult Settings.
