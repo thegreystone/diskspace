@@ -161,19 +161,17 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                      effective values. The GC startup banner ("Maximum heap
                                      size: …") is the authoritative readout, not PrintFlags. -->
                                 <arg>-R:MinHeapSize=1g</arg>
-                                <!-- Bake GC logging in by default so production builds can be
-                                     diagnosed without a custom build. Cost is ~300 bytes of
-                                     binary size (these flags flip defaults of already-compiled
-                                     Serial-GC logging paths; no extra code pulled in). Output
-                                     goes to stdout, which is /dev/null when the .app is launched
-                                     from Finder but visible when launched from a terminal:
-                                       /Applications/DiskSpace.app/Contents/MacOS/DiskSpace
-                                     Run that line in Terminal to see GC events live. The
-                                     `-R:+PrintGCTimeStamps` prefix on each line lets you
-                                     correlate pauses with scanner log timestamps. -->
-                                <arg>-R:+PrintGC</arg>
-                                <arg>-R:+VerboseGC</arg>
-                                <arg>-R:+PrintGCTimeStamps</arg>
+                                <!-- GC logging via `-R:+PrintGC` etc. is intentionally NOT enabled.
+                                     The "stdout goes to /dev/null when launched from Finder" assumption
+                                     holds on macOS, but on Windows GUI subsystem exes have an INVALID
+                                     stderr handle by default (no console attached, no inherited
+                                     redirection), and Substrate VM's GC writes are native (bypass
+                                     System.err), so they segfault the process on first write. Reproduced
+                                     locally: a Start-Menu-shortcut launch consistently crashes during the
+                                     first scan; redirecting (`diskspace.exe > x.txt 2>&1`) survives because
+                                     stderr becomes a valid file handle. Get richer GC data from JFR
+                                     instead: `-debug` flag already auto-starts a recording that captures
+                                     GC events with pause times and allocation pressure, viewable in JMC. -->
                                 <!-- Enable Flight Recorder so production builds can capture
                                      JFR recordings (App.maybeStartJfrRecording auto-starts one
                                      when `-debug` is passed). On Oracle GraalVM 21+ Substrate
