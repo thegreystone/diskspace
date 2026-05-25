@@ -63,3 +63,6 @@ $RECYCLE.BIN/
 
 # Claude Code agent session state
 .claude/
+
+# Misc
+*.psd
