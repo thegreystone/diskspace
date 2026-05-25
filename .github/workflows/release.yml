@@ -80,14 +80,14 @@ jobs:
           fi
           cp "$SRC" "$DST"
 
-      - name: Build Windows installer (Inno Setup)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          cp "target/diskspace-${VERSION}-${{ matrix.suffix }}.exe" installer/diskspace.exe
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "//DMyVersion=${VERSION}" installer/diskspace.iss
-          cp "installer/Output/diskspace-${VERSION}-${{ matrix.suffix }}-setup.exe" target/
+      # Windows: only the bare .exe is built+uploaded here, unsigned. The Inno Setup
+      # installer is built locally by scripts/sign-release.ps1 *after* the bare .exe
+      # has been signed — that way the installer wraps a signed binary, not an
+      # unsigned one (which AV/SmartScreen would flag once extracted to Program
+      # Files). Certum SimplySign needs an OTP-from-phone step that doesn't have a
+      # clean headless path on GitHub-hosted runners, so signing + installer build
+      # both happen on the maintainer's machine. See docs/DEVGUIDE.md
+      # § Signing Windows artifacts.
 
       - name: Import signing certificate (macOS)
         if: runner.os == 'macOS'
@@ -163,7 +163,6 @@ jobs:
           path: |
             target/diskspace-*-${{ matrix.suffix }}
             target/diskspace-*-${{ matrix.suffix }}.exe
-            target/diskspace-*-${{ matrix.suffix }}-setup.exe
             target/diskspace-*-${{ matrix.suffix }}.dmg
 
   # ── Create GitHub release with all artifacts ─────────────────────────

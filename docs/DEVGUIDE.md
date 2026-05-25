@@ -14,6 +14,8 @@ For contributors. End-user docs (downloading, preferences, macOS quirks) live in
     - [Analysing with JMC 10](#analysing-with-jmc-10)
     - [Custom events](#custom-events)
 - [Adding a coloring mode](#adding-a-coloring-mode)
+- [Releasing](#releasing)
+    - [Signing Windows artifacts](#signing-windows-artifacts)
 - [Developer troubleshooting](#developer-troubleshooting)
 
 ## Building from source
@@ -234,6 +236,74 @@ entry is also the default for fresh installs, so don't reorder casually.
 - **Pick a stable `id`.** It's the key written to `settings.properties`. Changing it later silently resets every user's
   saved preference to the default. The id also de-duplicates against built-ins — providers with a colliding id are
   logged and skipped at startup.
+
+## Releasing
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds native binaries for
+Linux / macOS / Windows and creates a GitHub Release with all artifacts attached. macOS binaries
+are signed and notarised inside CI using the secrets the workflow already references.
+
+### Signing Windows artifacts
+
+CI publishes the Windows release with only the **unsigned bare**
+`diskspace-<v>-windows-x86_64.exe`. The Inno Setup installer is built and signed locally as part
+of the post-release signing step, so the installer always wraps an already-signed binary — if
+Inno wrapped an unsigned exe (as it did in CI before this split), the user would end up with an
+unsigned binary in `Program Files` that AV/SmartScreen rescans could still flag, defeating most
+of the point of signing.
+
+[`scripts/sign-release.ps1`](../scripts/sign-release.ps1) does the whole post-release flow in
+one shot:
+
+1. Downloads the unsigned bare exe from the GitHub release.
+2. Signs it with the Certum cert (SimplySign Desktop must be logged in).
+3. Builds the Inno Setup installer locally, wrapping the **signed** bare exe.
+4. Signs the installer.
+5. Uploads bare exe (clobbering the unsigned one) and the new installer.
+
+Why all signing is post-release rather than in CI: Certum's cloud signing requires SimplySign
+Desktop + an OTP push from the mobile app, and GitHub-hosted Windows runners are headless (no
+GUI session to drive SimplySign).
+
+**One-time setup on your signing machine:**
+
+1. Install **SimplySign Desktop** and the **SimplySign mobile app**, paired against your Certum
+   account.
+2. Install **Inno Setup 6** ([https://jrsoftware.org/isdl.php](https://jrsoftware.org/isdl.php)).
+   The script defaults to `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`; pass `-Iscc` if yours
+   is elsewhere.
+3. Install the **Windows SDK** (gets you `signtool.exe`; the script auto-finds it under
+   `C:\Program Files (x86)\Windows Kits\10\bin\…\x64`).
+4. Install the **GitHub CLI** (`gh`) and authenticate against the repo.
+5. Add to your PowerShell `$PROFILE`:
+
+   ```powershell
+   $env:DISKSPACE_SIGN_THUMBPRINT = '<SHA1 thumbprint of your Certum cert>'
+   ```
+
+   The thumbprint isn't sensitive (it's readable from any signed binary). It lives in your
+   profile rather than the repo so cert renewal is a one-line edit on your machine, not a commit.
+   Always pin by thumbprint — never use `signtool /a`, which can silently pick the wrong cert
+   if your store has more than one (e.g. a stray self-signed dev cert).
+
+**Per release:**
+
+1. Push the `v*` tag and wait for the release workflow to publish (~15 min for the full matrix).
+   The release will show only the bare Windows `.exe` at this point; no installer yet.
+2. Open SimplySign Desktop, log in (OTP from the mobile app).
+3. Run:
+
+   ```powershell
+   .\scripts\sign-release.ps1 -Tag v0.2.8
+   ```
+
+   ~30 seconds. The script signs the bare exe, builds and signs the installer, and uploads both
+   to the release.
+
+SmartScreen reputation for the cert builds over downloads + time — fresh Certum OSS certs ship
+without instant SmartScreen trust, so early-release users may still see "Windows protected your
+PC" until reputation accumulates. Edge's download warning ("not commonly downloaded") fades on
+the same curve.
 
 ## Developer troubleshooting
 
