@@ -31,6 +31,8 @@ package se.hirt.diskspace.ui;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.*;
@@ -63,6 +65,8 @@ public final class PickerView {
 	 */
 	private final List<Runnable> styleRefreshers = new ArrayList<>();
 	private final StackPane helpOverlay;
+	private final StackPane aboutOverlay;
+	private final StackPane licenseOverlay;
 	/**
 	 * Lifted to an instance field so {@link #dispatchTopLevelKey} can fire it on S. Constructed during
 	 * {@link #PickerView} setup; never null after the constructor returns.
@@ -147,8 +151,16 @@ public final class PickerView {
 		helpOverlay = buildHelpOverlay();
 		helpOverlay.setVisible(false);
 		helpOverlay.setManaged(false);
+		aboutOverlay = buildAboutOverlay();
+		aboutOverlay.setVisible(false);
+		aboutOverlay.setManaged(false);
+		licenseOverlay = buildLicenseOverlay();
+		licenseOverlay.setVisible(false);
+		licenseOverlay.setManaged(false);
 
-		root = new StackPane(body, helpOverlay);
+		// Stack order: license on top of about so opening license over an open about reads
+		// as a layer and Esc closes the topmost.
+		root = new StackPane(body, helpOverlay, aboutOverlay, licenseOverlay);
 		styleRefreshers.add(() -> root.setStyle("-fx-background-color: " + toCss(this.scheme.background()) + ";"));
 
 		// Apply initial styles now that every refresher is registered.
@@ -198,22 +210,45 @@ public final class PickerView {
 	 * trigger silently behind it.
 	 */
 	public void dispatchTopLevelKey(KeyEvent e) {
+		// Esc always closes the topmost overlay (license > about > help), or opens help
+		// when none are visible.
 		if (e.getCode() == KeyCode.ESCAPE) {
-			toggleHelp();
+			if (licenseOverlay.isVisible()) {
+				toggleLicense();
+			} else if (aboutOverlay.isVisible()) {
+				toggleAbout();
+			} else {
+				toggleHelp();
+			}
 			e.consume();
 			return;
 		}
 		// Modifier-held keys (Cmd-Q, etc.) belong to native handlers — get out of the way.
 		if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown())
 			return;
-		// Q quits unconditionally — must work even when the help overlay is up. Route
-		// through App.requestQuit so scanners are cancelled before the toolkit tears down.
+		// Q quits unconditionally — must work even when overlays are up. Route through
+		// App.requestQuit so scanners are cancelled before the toolkit tears down.
 		if (e.getCode() == KeyCode.Q) {
 			se.hirt.diskspace.App.requestQuit();
 			e.consume();
 			return;
 		}
-		if (helpOverlay.isVisible()) {
+		// A toggles the About overlay from anywhere. Handled before the overlay-swallow
+		// below so users can open About while help is on screen.
+		if (e.getCode() == KeyCode.A) {
+			toggleAbout();
+			e.consume();
+			return;
+		}
+		// L toggles the license overlay from anywhere — including over the About card,
+		// which advertises "Press L for license". Handled before the overlay-swallow
+		// below so it works while other overlays are visible.
+		if (e.getCode() == KeyCode.L) {
+			toggleLicense();
+			e.consume();
+			return;
+		}
+		if (helpOverlay.isVisible() || aboutOverlay.isVisible() || licenseOverlay.isVisible()) {
 			e.consume();
 			return;
 		}
@@ -256,12 +291,15 @@ public final class PickerView {
 		MenuItem preferencesItem = new MenuItem("Preferences…");
 		preferencesItem.setOnAction(e -> PreferencesDialog.show());
 
+		MenuItem aboutItem = new MenuItem("About DiskSpace…");
+		aboutItem.setOnAction(e -> toggleAbout());
+
 		MenuItem quitItem = new MenuItem("Quit");
 		quitItem.setOnAction(e -> se.hirt.diskspace.App.requestQuit());
 
 		ContextMenu menu = new ContextMenu();
 		menu.getItems().addAll(helpItem, toggleUnitsItem, cycleStrategyItem, toggleThemeItem, new SeparatorMenuItem(),
-				preferencesItem, new SeparatorMenuItem(), quitItem);
+				preferencesItem, aboutItem, new SeparatorMenuItem(), quitItem);
 
 		root.setOnContextMenuRequested(e -> {
 			menu.show(root, e.getScreenX(), e.getScreenY());
@@ -277,6 +315,22 @@ public final class PickerView {
 			root.requestFocus();
 	}
 
+	private void toggleAbout() {
+		boolean show = !aboutOverlay.isVisible();
+		aboutOverlay.setVisible(show);
+		aboutOverlay.setManaged(show);
+		if (!show)
+			root.requestFocus();
+	}
+
+	private void toggleLicense() {
+		boolean show = !licenseOverlay.isVisible();
+		licenseOverlay.setVisible(show);
+		licenseOverlay.setManaged(show);
+		if (!show)
+			root.requestFocus();
+	}
+
 	private StackPane buildHelpOverlay() {
 		GridPane grid = new GridPane();
 		grid.setHgap(20);
@@ -287,6 +341,8 @@ public final class PickerView {
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
 		addHelpRow(grid, row++, "S", "Cycle scan strategy (Auto / Bulk / MFT / Parallel / Sequential)");
 		addHelpRow(grid, row++, "T", "Toggle theme (dark / light)");
+		addHelpRow(grid, row++, "A", "Show About");
+		addHelpRow(grid, row++, "L", "Show license");
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label sub = new Label("After picking a disk");
@@ -324,6 +380,105 @@ public final class PickerView {
 		overlay.setOnMouseClicked(e -> {
 			if (e.getTarget() == overlay)
 				toggleHelp();
+		});
+		return overlay;
+	}
+
+	private StackPane buildAboutOverlay() {
+		ImageView icon = new ImageView();
+		var iconUrl = se.hirt.diskspace.App.class.getResource("/se/hirt/diskspace/icon-128.png");
+		if (iconUrl != null) {
+			icon.setImage(new Image(iconUrl.toExternalForm()));
+			icon.setFitWidth(96);
+			icon.setFitHeight(96);
+			icon.setPreserveRatio(true);
+			icon.setSmooth(true);
+		}
+
+		Label appName = new Label(se.hirt.diskspace.AppInfo.NAME + "  " + se.hirt.diskspace.AppInfo.version());
+		styleRefreshers.add(() -> appName.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textPrimary()) + ";" + "-fx-font-size: 22px; -fx-font-weight: 600;"));
+
+		Label tagline = new Label(se.hirt.diskspace.AppInfo.TAGLINE);
+		styleRefreshers.add(() -> tagline.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textMuted()) + ";" + "-fx-font-size: 12px; -fx-padding: 2 0 0 0;"));
+
+		VBox header = new VBox(2, appName, tagline);
+		header.setAlignment(Pos.CENTER_LEFT);
+
+		HBox topRow = new HBox(18, icon, header);
+		topRow.setAlignment(Pos.CENTER_LEFT);
+
+		Label copyright = new Label(se.hirt.diskspace.AppInfo.COPYRIGHT);
+		styleRefreshers.add(() -> copyright.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textPrimary()) + ";" + "-fx-font-size: 12px; -fx-padding: 20 0 0 0;"));
+
+		Hyperlink github = new Hyperlink(se.hirt.diskspace.AppInfo.GITHUB_URL);
+		github.setOnAction(e -> {
+			var hs = se.hirt.diskspace.App.hostServices();
+			if (hs != null)
+				hs.showDocument(se.hirt.diskspace.AppInfo.GITHUB_URL);
+		});
+		styleRefreshers.add(() -> github.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.accent()) + ";" + "-fx-font-size: 12px; -fx-padding: 2 0 0 -4;" + "-fx-border-color: transparent; -fx-underline: true;"));
+
+		Label runtime = new Label(se.hirt.diskspace.AppInfo.runtimeDescription());
+		styleRefreshers.add(() -> runtime.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;"));
+
+		Label hint = new Label("Press L for license  ·  Esc to close");
+		styleRefreshers.add(() -> hint.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 18 0 0 0;"));
+
+		VBox card = new VBox(topRow, copyright, github, runtime, hint);
+		card.setAlignment(Pos.TOP_LEFT);
+		card.setPadding(new Insets(24, 28, 20, 28));
+		card.setMaxWidth(500);
+		card.setMaxHeight(Region.USE_PREF_SIZE);
+		styleRefreshers.add(() -> card.setStyle("-fx-background-color: " + toCss(
+				this.scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);"));
+
+		StackPane overlay = new StackPane(card);
+		styleRefreshers.add(() -> overlay.setStyle("-fx-background-color: " + toCss(this.scheme.overlayScrim()) + ";"));
+		overlay.setOnMouseClicked(e -> {
+			if (e.getTarget() == overlay)
+				toggleAbout();
+		});
+		return overlay;
+	}
+
+	private StackPane buildLicenseOverlay() {
+		Label title = new Label("License");
+		styleRefreshers.add(() -> title.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600; -fx-padding: 0 0 14 0;"));
+
+		Label body = new Label(se.hirt.diskspace.AppInfo.licenseText());
+		body.setWrapText(false);
+		styleRefreshers.add(() -> body.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textPrimary()) + ";" + "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;" + "-fx-font-size: 11px;"));
+
+		ScrollPane scroll = new ScrollPane(body);
+		scroll.setFitToWidth(true);
+		scroll.setPrefViewportHeight(360);
+		scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
+
+		Label hint = new Label("Press Esc to close");
+		styleRefreshers.add(() -> hint.setStyle("-fx-text-fill: " + toCss(
+				this.scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;"));
+
+		VBox card = new VBox(title, scroll, hint);
+		card.setAlignment(Pos.TOP_LEFT);
+		card.setPadding(new Insets(24, 28, 20, 28));
+		card.setMaxWidth(640);
+		card.setMaxHeight(Region.USE_PREF_SIZE);
+		styleRefreshers.add(() -> card.setStyle("-fx-background-color: " + toCss(
+				this.scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);"));
+
+		StackPane overlay = new StackPane(card);
+		styleRefreshers.add(() -> overlay.setStyle("-fx-background-color: " + toCss(this.scheme.overlayScrim()) + ";"));
+		overlay.setOnMouseClicked(e -> {
+			if (e.getTarget() == overlay)
+				toggleLicense();
 		});
 		return overlay;
 	}

@@ -45,6 +45,8 @@ import javafx.scene.Node;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.*;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.input.*;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
@@ -129,6 +131,8 @@ public final class DiskView {
 	private final SplitPane root;
 	private final StackPane outerRoot;
 	private final StackPane helpOverlay;
+	private final StackPane aboutOverlay;
+	private final StackPane licenseOverlay;
 	private final Canvas canvas;
 	private ColorScheme scheme;
 	/**
@@ -487,7 +491,15 @@ public final class DiskView {
 		this.helpOverlay = buildHelpOverlay();
 		helpOverlay.setVisible(false);
 		helpOverlay.setManaged(false);
-		this.outerRoot = new StackPane(root, helpOverlay);
+		this.aboutOverlay = buildAboutOverlay();
+		aboutOverlay.setVisible(false);
+		aboutOverlay.setManaged(false);
+		this.licenseOverlay = buildLicenseOverlay();
+		licenseOverlay.setVisible(false);
+		licenseOverlay.setManaged(false);
+		// Stack order matters: license sits on top of about so opening license over an
+		// already-open about reads as a layer, and Esc closes the topmost.
+		this.outerRoot = new StackPane(root, helpOverlay, aboutOverlay, licenseOverlay);
 		styleRefreshers.add(() -> outerRoot.setStyle(bg(scheme.background())));
 
 		// Apply initial styles now that every refresher across the constructor and helpers has registered.
@@ -551,28 +563,53 @@ public final class DiskView {
 	 * modifier-free keys only — chords belong to focused controls.
 	 */
 	public void dispatchTopLevelKey(KeyEvent e) {
-		// Esc toggles the help overlay even with modifiers off-path; check it first so
-		// users always have a way out.
+		// Esc always closes the topmost overlay (license > about > help) before falling
+		// through to "show help if nothing is open". Users always have a way out.
 		if (e.getCode() == javafx.scene.input.KeyCode.ESCAPE) {
-			emitUserAction("Esc", "toggle-help");
-			toggleHelp();
+			if (licenseOverlay != null && licenseOverlay.isVisible()) {
+				emitUserAction("Esc", "close-license");
+				toggleLicense();
+			} else if (aboutOverlay != null && aboutOverlay.isVisible()) {
+				emitUserAction("Esc", "close-about");
+				toggleAbout();
+			} else {
+				emitUserAction("Esc", "toggle-help");
+				toggleHelp();
+			}
 			e.consume();
 			return;
 		}
 		// Modifier-held keys (Cmd-Q, etc.) belong to native handlers — get out of the way.
 		if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown())
 			return;
-		// Q quits unconditionally — must work even when the help overlay is up. Route
-		// through App.requestQuit so scanners are cancelled before the toolkit tears down.
+		// Q quits unconditionally — must work even when overlays are up. Route through
+		// App.requestQuit so scanners are cancelled before the toolkit tears down.
 		if (e.getCode() == javafx.scene.input.KeyCode.Q) {
 			emitUserAction("Q", "quit");
 			se.hirt.diskspace.App.requestQuit();
 			e.consume();
 			return;
 		}
-		// While help is visible swallow other keys so they don't trigger silently behind
-		// the overlay.
-		if (helpOverlay != null && helpOverlay.isVisible()) {
+		// A toggles the About overlay from anywhere. Handled before the overlay-swallow
+		// below so users can open About while help is on screen.
+		if (e.getCode() == javafx.scene.input.KeyCode.A) {
+			emitUserAction("A", "toggle-about");
+			toggleAbout();
+			e.consume();
+			return;
+		}
+		// L toggles the license overlay from anywhere — including from over the About
+		// card, which advertises "Press L for license". Handled before the overlay
+		// swallow below so it works while other overlays are visible.
+		if (e.getCode() == javafx.scene.input.KeyCode.L) {
+			emitUserAction("L", "toggle-license");
+			toggleLicense();
+			e.consume();
+			return;
+		}
+		// While any overlay is visible swallow other keys so they don't trigger silently
+		// behind the overlay.
+		if ((helpOverlay != null && helpOverlay.isVisible()) || (aboutOverlay != null && aboutOverlay.isVisible()) || (licenseOverlay != null && licenseOverlay.isVisible())) {
 			e.consume();
 			return;
 		}
@@ -1859,6 +1896,20 @@ public final class DiskView {
 		root.requestFocus();
 	}
 
+	private void toggleAbout() {
+		boolean show = !aboutOverlay.isVisible();
+		aboutOverlay.setVisible(show);
+		aboutOverlay.setManaged(show);
+		root.requestFocus();
+	}
+
+	private void toggleLicense() {
+		boolean show = !licenseOverlay.isVisible();
+		licenseOverlay.setVisible(show);
+		licenseOverlay.setManaged(show);
+		root.requestFocus();
+	}
+
 	private StackPane buildHelpOverlay() {
 		javafx.scene.layout.GridPane grid = new javafx.scene.layout.GridPane();
 		grid.setHgap(20);
@@ -1875,6 +1926,8 @@ public final class DiskView {
 		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
 		addHelpRow(grid, row++, "C", "Cycle coloring mode");
 		addHelpRow(grid, row++, "T", "Toggle theme (dark / light)");
+		addHelpRow(grid, row++, "A", "Show About");
+		addHelpRow(grid, row++, "L", "Show license");
 		addHelpRow(grid, row++, "Q", "Quit DiskSpace");
 
 		Label title = new Label("Keyboard Shortcuts");
@@ -1899,6 +1952,111 @@ public final class DiskView {
 		overlay.setOnMouseClicked(e -> {
 			if (e.getTarget() == overlay)
 				toggleHelp();
+		});
+		return overlay;
+	}
+
+	private StackPane buildAboutOverlay() {
+		ImageView icon = new ImageView();
+		var iconUrl = se.hirt.diskspace.App.class.getResource("/se/hirt/diskspace/icon-128.png");
+		if (iconUrl != null) {
+			icon.setImage(new Image(iconUrl.toExternalForm()));
+			icon.setFitWidth(96);
+			icon.setFitHeight(96);
+			icon.setPreserveRatio(true);
+			icon.setSmooth(true);
+		}
+
+		Label appName = new Label(se.hirt.diskspace.AppInfo.NAME + "  " + se.hirt.diskspace.AppInfo.version());
+		styleRefreshers.add(() -> appName.setStyle(
+				"-fx-text-fill: " + css(scheme.textPrimary()) + ";" + "-fx-font-size: 22px; -fx-font-weight: 600;"));
+
+		Label tagline = new Label(se.hirt.diskspace.AppInfo.TAGLINE);
+		styleRefreshers.add(() -> tagline.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 12px; -fx-padding: 2 0 0 0;"));
+
+		VBox header = new VBox(2, appName, tagline);
+		header.setAlignment(Pos.CENTER_LEFT);
+
+		HBox topRow = new HBox(18, icon, header);
+		topRow.setAlignment(Pos.CENTER_LEFT);
+
+		Label copyright = new Label(se.hirt.diskspace.AppInfo.COPYRIGHT);
+		styleRefreshers.add(() -> copyright.setStyle(
+				"-fx-text-fill: " + css(scheme.textPrimary()) + ";" + "-fx-font-size: 12px; -fx-padding: 20 0 0 0;"));
+
+		// Hyperlink opens the GitHub URL in the user's default browser via HostServices,
+		// the only JavaFX-portable way to launch a URL across JVM and native-image runs.
+		Hyperlink github = new Hyperlink(se.hirt.diskspace.AppInfo.GITHUB_URL);
+		github.setOnAction(e -> {
+			var hs = se.hirt.diskspace.App.hostServices();
+			if (hs != null)
+				hs.showDocument(se.hirt.diskspace.AppInfo.GITHUB_URL);
+		});
+		// -fx-padding negative left to undo the Hyperlink's default 4px inner padding so it
+		// visually aligns with the copyright line above it.
+		styleRefreshers.add(() -> github.setStyle("-fx-text-fill: " + css(
+				scheme.accent()) + ";" + "-fx-font-size: 12px; -fx-padding: 2 0 0 -4;" + "-fx-border-color: transparent; -fx-underline: true;"));
+
+		Label runtime = new Label(se.hirt.diskspace.AppInfo.runtimeDescription());
+		styleRefreshers.add(() -> runtime.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;"));
+
+		Label hint = new Label("Press L for license  ·  Esc to close");
+		styleRefreshers.add(() -> hint.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 18 0 0 0;"));
+
+		VBox card = new VBox(topRow, copyright, github, runtime, hint);
+		card.setAlignment(Pos.TOP_LEFT);
+		card.setPadding(new Insets(24, 28, 20, 28));
+		card.setMaxWidth(500);
+		card.setMaxHeight(Region.USE_PREF_SIZE);
+		styleRefreshers.add(() -> card.setStyle("-fx-background-color: " + css(
+				scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);"));
+
+		StackPane overlay = new StackPane(card);
+		styleRefreshers.add(() -> overlay.setStyle("-fx-background-color: " + css(scheme.overlayScrim()) + ";"));
+		overlay.setOnMouseClicked(e -> {
+			if (e.getTarget() == overlay)
+				toggleAbout();
+		});
+		return overlay;
+	}
+
+	private StackPane buildLicenseOverlay() {
+		Label title = new Label("License");
+		styleRefreshers.add(() -> title.setStyle("-fx-text-fill: " + css(
+				scheme.textPrimary()) + ";" + "-fx-font-size: 18px; -fx-font-weight: 600; -fx-padding: 0 0 14 0;"));
+
+		Label body = new Label(se.hirt.diskspace.AppInfo.licenseText());
+		// Disable wrapping so the BSD-3 keeps its hand-formatted line breaks; ScrollPane
+		// handles horizontal overflow if the user's window is narrow.
+		body.setWrapText(false);
+		styleRefreshers.add(() -> body.setStyle("-fx-text-fill: " + css(
+				scheme.textPrimary()) + ";" + "-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace;" + "-fx-font-size: 11px;"));
+
+		ScrollPane scroll = new ScrollPane(body);
+		scroll.setFitToWidth(true);
+		scroll.setPrefViewportHeight(360);
+		scroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
+
+		Label hint = new Label("Press Esc to close");
+		styleRefreshers.add(() -> hint.setStyle(
+				"-fx-text-fill: " + css(scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-padding: 14 0 0 0;"));
+
+		VBox card = new VBox(title, scroll, hint);
+		card.setAlignment(Pos.TOP_LEFT);
+		card.setPadding(new Insets(24, 28, 20, 28));
+		card.setMaxWidth(640);
+		card.setMaxHeight(Region.USE_PREF_SIZE);
+		styleRefreshers.add(() -> card.setStyle("-fx-background-color: " + css(
+				scheme.surface()) + ";" + "-fx-background-radius: 12;" + "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.45), 24, 0.25, 0, 4);"));
+
+		StackPane overlay = new StackPane(card);
+		styleRefreshers.add(() -> overlay.setStyle("-fx-background-color: " + css(scheme.overlayScrim()) + ";"));
+		overlay.setOnMouseClicked(e -> {
+			if (e.getTarget() == overlay)
+				toggleLicense();
 		});
 		return overlay;
 	}
@@ -2431,6 +2589,7 @@ public final class DiskView {
 		private final MenuItem toggleVizItem = new MenuItem("Toggle Visualization");
 		private final MenuItem toggleThemeItem = new MenuItem("Toggle Theme");
 		private final MenuItem preferencesItem = new MenuItem("Preferences…");
+		private final MenuItem aboutItem = new MenuItem("About DiskSpace…");
 		private final MenuItem quitItem = new MenuItem("Quit");
 		private PathTarget pending;
 		/**
@@ -2513,6 +2672,10 @@ public final class DiskView {
 				emitUserAction("ContextMenu", "preferences");
 				PreferencesDialog.show();
 			});
+			aboutItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "about");
+				toggleAbout();
+			});
 			quitItem.setOnAction(e -> {
 				emitUserAction("ContextMenu", "quit");
 				se.hirt.diskspace.App.requestQuit();
@@ -2578,7 +2741,7 @@ public final class DiskView {
 						// it's the only entry that mutates persisted state, so the separators flag it
 						// as distinct from the transient view-toggle actions above it.
 						menu.getItems().addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, toggleThemeItem,
-								new SeparatorMenuItem(), preferencesItem, new SeparatorMenuItem(), quitItem);
+								new SeparatorMenuItem(), preferencesItem, aboutItem, new SeparatorMenuItem(), quitItem);
 					}
 				}
 				menu.show(node, e.getScreenX(), e.getScreenY());

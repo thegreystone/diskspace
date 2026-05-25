@@ -89,6 +89,31 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     </dependencies>
 
     <build>
+        <!--
+          Two resource blocks so AppInfo.version() can read pom.xml's <version>
+          without a hand-maintained constant: app.properties contains literal
+          ${project.version} on disk; the filtered block substitutes it at
+          process-resources time. Everything else (icons, themes, LICENSE.txt)
+          passes through unfiltered so binary resources aren't risk of being
+          rewritten by Maven's filter. Declaring any <resources> block replaces
+          the implicit default, so both blocks have to be spelled out.
+        -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <includes>
+                    <include>se/hirt/diskspace/app.properties</include>
+                </includes>
+                <filtering>true</filtering>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>se/hirt/diskspace/app.properties</exclude>
+                </excludes>
+                <filtering>false</filtering>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>
