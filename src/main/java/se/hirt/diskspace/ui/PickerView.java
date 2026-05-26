@@ -356,6 +356,8 @@ public final class PickerView {
 		addHelpRow(grid, row++, "Del", "Stage / unstage selection for deletion");
 		addHelpRow(grid, row++, "R", "Re-scan the current disk");
 		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
+		addHelpRow(grid, row++, "C", "Cycle coloring mode");
+		addHelpRow(grid, row++, "H", "Hide / show free space");
 
 		Label title = new Label("Keyboard Shortcuts");
 		styleRefreshers.add(() -> title.setStyle("-fx-text-fill: " + toCss(

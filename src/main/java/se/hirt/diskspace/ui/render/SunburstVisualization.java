@@ -248,7 +248,10 @@ public final class SunburstVisualization implements Visualization {
 			layoutChildrenInto(rootForView, 2, 90.0, 360.0, out, normalW, thinW, ctx);
 		} else {
 			Volume target = ctx.target();
-			double usedSweep = target.totalBytes() > 0 ? target.usedFraction() * 360.0 : 360.0;
+			// When hide-free-space is on (H), the data fills the full 360 -- no free arc, no centred "used wedge".
+			// Unaccounted bytes still get their proportional slice via scannedSweep below; they're scanned-but-
+			// unattributed, which the user cares about even when they don't want to see the free remainder.
+			double usedSweep = ctx.hideFreeSpace() || target.totalBytes() <= 0 ? 360.0 : target.usedFraction() * 360.0;
 			double startAngle = 90.0 - usedSweep / 2.0;
 			double scannedSweep = target.usedBytes() > 0 ? Math.min(usedSweep,
 					usedSweep * rootForView.totalBytes() / (double) target.usedBytes()) : usedSweep;
@@ -368,8 +371,11 @@ public final class SunburstVisualization implements Visualization {
 		// into a folder, the chart is about that folder's contents, not the volume's free space.
 		Volume target = ctx.target();
 		if (ctx.viewRoot() == ctx.scanRoot() && target.totalBytes() > 0) {
+			// Same usedSweep contract as computeLayout above: hide-free-space mode forces the data to span 360 so
+			// the free arc (computed later as 360 - usedSweep) collapses to zero and isn't drawn. Unaccounted still
+			// shows up because its sweep is a fraction of usedSweep.
 			double usedFraction = target.usedFraction();
-			double usedSweep = usedFraction * 360.0;
+			double usedSweep = ctx.hideFreeSpace() ? 360.0 : usedFraction * 360.0;
 			double startAngle = 90.0 - usedSweep / 2.0;
 			double r1 = HUB_RADIUS;
 			double r2 = ringInnerR(2, normalW, thinW);

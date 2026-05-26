@@ -48,6 +48,7 @@ Building from source and contributing: see [docs/DEVGUIDE.md](docs/DEVGUIDE.md).
 | `U`       | Toggle size units between decimal (GB, default) and binary (GiB).                                  |
 | `V`       | Toggle visualization between sunburst (default) and heatmap (squarified treemap).                  |
 | `C`       | Cycle coloring mode (Classic, Black & White, …).                                                   |
+| `H`       | Hide / show free space in the visualization (disk view only).                                      |
 | `Esc`     | Show / hide the keyboard-shortcut overlay (renders on top of the live view).                       |
 | `Q`       | Quit DiskSpace.                                                                                    |
 

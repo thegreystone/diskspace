@@ -52,6 +52,11 @@ import se.hirt.diskspace.scan.Scanner;
  * 		cursor is over the free-space arc / cell
  * @param hoveringUnaccounted
  * 		cursor is over the "Unaccounted" arc / cell
+ * @param hideFreeSpace
+ * 		when {@code true}, visualisations must omit the free-space arc / cell entirely and let scanned data fill the full
+ * 		canvas. Bound to {@code H} in {@code DiskView}; per-tab state, in-session only. Hover state for free space is
+ * 		meaningless in this mode (there's nothing to hover) and is naturally suppressed because the hit-test region doesn't
+ * 		exist.
  * @param target
  * 		the {@link Volume} being visualised — used for capacity figures
  * @param scanning
@@ -68,6 +73,6 @@ import se.hirt.diskspace.scan.Scanner;
  */
 public record RenderContext(DirectoryNode scanRoot, DirectoryNode viewRoot, DirectoryNode hiddenNode,
                             DirectoryNode hoverNode, boolean hoveringHub, boolean hoveringFreeSpace,
-                            boolean hoveringUnaccounted, Volume target, boolean scanning, long progressFiles,
-                            long progressBytes, String progressPath, Scanner.HubState hubState) {
+                            boolean hoveringUnaccounted, boolean hideFreeSpace, Volume target, boolean scanning,
+                            long progressFiles, long progressBytes, String progressPath, Scanner.HubState hubState) {
 }

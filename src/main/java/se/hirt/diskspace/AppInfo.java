@@ -38,9 +38,9 @@ import java.util.Properties;
 /**
  * Static metadata about the running app, surfaced by the About / License overlays.
  * <p>
- * Version is read from {@code /se/hirt/diskspace/app.properties}, a Maven-filtered resource whose {@code version=}
- * line is substituted from {@code pom.xml}'s {@code <version>} at {@code process-resources} time. Single source of
- * truth: bumping the pom version is enough; no companion constant to update. See the {@code <resources>} block in
+ * Version is read from {@code /se/hirt/diskspace/app.properties}, a Maven-filtered resource whose {@code version=} line
+ * is substituted from {@code pom.xml}'s {@code <version>} at {@code process-resources} time. Single source of truth:
+ * bumping the pom version is enough; no companion constant to update. See the {@code <resources>} block in
  * {@code pom.xml} for the filtering config, and {@code -H:IncludeResources} in the {@code native} profile if the
  * GraalVM analyzer ever stops auto-detecting this resource path.
  */

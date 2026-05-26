@@ -180,9 +180,14 @@ public final class HeatmapVisualization implements Visualization {
 			if (unaccounted > 0) {
 				items.add(new TreemapItem(null, unaccounted, host.scheme().surface().brighter(), true, false));
 			}
-			long free = Math.max(0L, target.usableBytes());
-			if (free > 0) {
-				items.add(new TreemapItem(null, free, host.scheme().capacityTrack(), false, true));
+			// Skip the free-space cell when hide-free-space (H) is on. The remaining items keep their normal
+			// squarified layout; with no freeItem to pull out, drawHeatmap's right-strip pinning is a no-op and
+			// the data fills the full canvas width.
+			if (!ctx.hideFreeSpace()) {
+				long free = Math.max(0L, target.usableBytes());
+				if (free > 0) {
+					items.add(new TreemapItem(null, free, host.scheme().capacityTrack(), false, true));
+				}
 			}
 		}
 		return items;

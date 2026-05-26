@@ -227,6 +227,12 @@ public final class DiskView {
 	private boolean hoveringHub;
 	private boolean hoveringFreeSpace;
 	private boolean hoveringUnaccounted;
+	/**
+	 * Per-tab toggle bound to {@code H}: when true, visualisations omit the free-space arc / cell and let scanned data
+	 * fill the whole canvas. In-session only — not persisted, mirrors {@code V} (visualization) and {@code C}
+	 * (coloring) in that regard.
+	 */
+	private boolean hideFreeSpace;
 	private volatile boolean scanning = true;
 
 	private long progressFiles;
@@ -676,6 +682,11 @@ public final class DiskView {
 			se.hirt.diskspace.ui.theme.Theme.toggle();
 			e.consume();
 		}
+		case H -> {
+			emitUserAction("H", "toggle-hide-free-space");
+			toggleHideFreeSpace();
+			e.consume();
+		}
 		default -> { /* let it bubble */ }
 		}
 	}
@@ -1076,8 +1087,8 @@ public final class DiskView {
 		double canvasW = canvas.getWidth();
 		double canvasH = canvas.getHeight();
 		RenderContext beforeCtx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
-				scanner.hubState());
+				hoveringFreeSpace, hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles, progressBytes,
+				progressPath, scanner.hubState());
 		Map<DirectoryNode, SunburstVisualization.Layout> beforeLayout =
 				animateRemoval ? sunburst.computeLayout(viewRoot, canvasW, canvasH, beforeCtx) : null;
 		DirectoryNode previousViewRoot = viewRoot;
@@ -1136,8 +1147,8 @@ public final class DiskView {
 		// (shrink in place); surviving siblings whose sweeps grew (less weight in the parent) tween into their
 		// new wider positions.
 		RenderContext afterCtx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
-				scanner.hubState());
+				hoveringFreeSpace, hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles, progressBytes,
+				progressPath, scanner.hubState());
 		Map<DirectoryNode, SunburstVisualization.Layout> afterLayout = sunburst.computeLayout(viewRoot, canvasW,
 				canvasH, afterCtx);
 		sunburst.beginAnimation(previousViewRoot, viewRoot, beforeLayout, afterLayout);
@@ -1868,8 +1879,8 @@ public final class DiskView {
 		double w = canvas.getWidth();
 		double h = canvas.getHeight();
 		RenderContext before = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
-				scanner.hubState());
+				hoveringFreeSpace, hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles, progressBytes,
+				progressPath, scanner.hubState());
 		Map<DirectoryNode, SunburstVisualization.Layout> oldL = sunburst.computeLayout(viewRoot, w, h, before);
 		DirectoryNode previousViewRoot = viewRoot;
 
@@ -1880,8 +1891,8 @@ public final class DiskView {
 		rebuildBreadcrumb();
 
 		RenderContext after = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
-				hoveringFreeSpace, hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath,
-				scanner.hubState());
+				hoveringFreeSpace, hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles, progressBytes,
+				progressPath, scanner.hubState());
 		Map<DirectoryNode, SunburstVisualization.Layout> newL = sunburst.computeLayout(viewRoot, w, h, after);
 		sunburst.beginAnimation(previousViewRoot, viewRoot, oldL, newL);
 		// Make sure the root has focus so keyboard shortcuts work after a drill.
@@ -1925,6 +1936,7 @@ public final class DiskView {
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
 		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
 		addHelpRow(grid, row++, "C", "Cycle coloring mode");
+		addHelpRow(grid, row++, "H", "Hide / show free space");
 		addHelpRow(grid, row++, "T", "Toggle theme (dark / light)");
 		addHelpRow(grid, row++, "A", "Show About");
 		addHelpRow(grid, row++, "L", "Show license");
@@ -2088,6 +2100,19 @@ public final class DiskView {
 		// Reclaim focus so subsequent keypresses route through this view's handler.
 		root.requestFocus();
 		redrawWith("mode-change");
+	}
+
+	/**
+	 * Flip the {@link #hideFreeSpace} toggle. Clears any free-space hover state (there's nothing to hover when the arc
+	 * / cell isn't drawn) and triggers a redraw so the layout re-flows immediately.
+	 */
+	private void toggleHideFreeSpace() {
+		hideFreeSpace = !hideFreeSpace;
+		if (hideFreeSpace) {
+			hoveringFreeSpace = false;
+		}
+		root.requestFocus();
+		redrawWith("hide-free-space-change");
 	}
 
 	/**
@@ -2295,7 +2320,8 @@ public final class DiskView {
 		rankCache.clear();
 
 		RenderContext ctx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub, hoveringFreeSpace,
-				hoveringUnaccounted, target, scanning, progressFiles, progressBytes, progressPath, scanner.hubState());
+				hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
 		try {
 			currentVisualization.render(g, w, h, ctx);
 		} catch (RuntimeException ex) {
@@ -2587,6 +2613,7 @@ public final class DiskView {
 		private final MenuItem rescanItem = new MenuItem("Re-scan");
 		private final MenuItem toggleUnitsItem = new MenuItem("Toggle Size Units");
 		private final MenuItem toggleVizItem = new MenuItem("Toggle Visualization");
+		private final MenuItem toggleFreeSpaceItem = new MenuItem("Hide / Show Free Space");
 		private final MenuItem toggleThemeItem = new MenuItem("Toggle Theme");
 		private final MenuItem preferencesItem = new MenuItem("Preferences…");
 		private final MenuItem aboutItem = new MenuItem("About DiskSpace…");
@@ -2664,6 +2691,10 @@ public final class DiskView {
 				emitUserAction("ContextMenu", "toggle-mode");
 				toggleRenderMode();
 			});
+			toggleFreeSpaceItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "toggle-hide-free-space");
+				toggleHideFreeSpace();
+			});
 			toggleThemeItem.setOnAction(e -> {
 				emitUserAction("ContextMenu", "toggle-theme");
 				se.hirt.diskspace.ui.theme.Theme.toggle();
@@ -2740,8 +2771,10 @@ public final class DiskView {
 						// Preferences sits in its own section above Quit per the app's menu hierarchy:
 						// it's the only entry that mutates persisted state, so the separators flag it
 						// as distinct from the transient view-toggle actions above it.
-						menu.getItems().addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, toggleThemeItem,
-								new SeparatorMenuItem(), preferencesItem, aboutItem, new SeparatorMenuItem(), quitItem);
+						menu.getItems()
+								.addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, toggleFreeSpaceItem,
+										toggleThemeItem, new SeparatorMenuItem(), preferencesItem, aboutItem,
+										new SeparatorMenuItem(), quitItem);
 					}
 				}
 				menu.show(node, e.getScreenX(), e.getScreenY());
