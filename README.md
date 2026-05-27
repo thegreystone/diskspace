@@ -45,6 +45,7 @@ Building from source and contributing: see [docs/DEVGUIDE.md](docs/DEVGUIDE.md).
 | `Del`     | Stage selected rows (or the current section) for deletion. Press again on a staged row to unstage. |
 | `R`       | Re-scan the current disk from scratch.                                                             |
 | `S`       | (picker only) Cycle scan strategy: Auto → MFT → Parallel → Sequential.                             |
+| `H`       | (picker only) Show / hide unavailable disks (off-screen, unreadable media). Hidden by default.     |
 | `U`       | Toggle size units between decimal (GB, default) and binary (GiB).                                  |
 | `V`       | Toggle visualization between sunburst (default) and heatmap (squarified treemap).                  |
 | `C`       | Cycle coloring mode (Classic, Black & White, …).                                                   |

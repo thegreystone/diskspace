@@ -70,9 +70,15 @@ public final class Settings {
 	private static final String KEY_DEFAULT_COLORING_MODE = "default.coloring.mode";
 	private static final String KEY_DEFAULT_COLOR_SCHEME = "default.color.scheme";
 	private static final String KEY_ELEVATION_CHOICE = "windows.elevation.choice";
+	private static final String KEY_HIDE_UNAVAILABLE_DISKS = "picker.hide.unavailable.disks";
 
 	private static final RenderMode FALLBACK_VISUALIZATION = RenderMode.SUNBURST;
 	private static final SizeFormat.Mode FALLBACK_SIZE_UNIT = SizeFormat.Mode.DECIMAL;
+	/**
+	 * Unreadable disks are hidden from the picker by default — most users only care about disks they can actually
+	 * scan.
+	 */
+	private static final boolean FALLBACK_HIDE_UNAVAILABLE_DISKS = true;
 
 	/**
 	 * Whether DiskSpace should run elevated (so the fast MFT scanner can open raw volume handles). Windows-only in
@@ -110,16 +116,19 @@ public final class Settings {
 	private ColoringMode defaultColoringMode;
 	private ColorScheme defaultColorScheme;
 	private ElevationChoice elevationChoice;
+	private boolean hideUnavailableDisks;
 
 	private Settings(
 			Path file, RenderMode defaultVisualization, SizeFormat.Mode defaultSizeUnit,
-			ColoringMode defaultColoringMode, ColorScheme defaultColorScheme, ElevationChoice elevationChoice) {
+			ColoringMode defaultColoringMode, ColorScheme defaultColorScheme, ElevationChoice elevationChoice,
+			boolean hideUnavailableDisks) {
 		this.file = file;
 		this.defaultVisualization = defaultVisualization;
 		this.defaultSizeUnit = defaultSizeUnit;
 		this.defaultColoringMode = defaultColoringMode;
 		this.defaultColorScheme = defaultColorScheme;
 		this.elevationChoice = elevationChoice;
+		this.hideUnavailableDisks = hideUnavailableDisks;
 	}
 
 	public synchronized RenderMode defaultVisualization() {
@@ -162,6 +171,14 @@ public final class Settings {
 		this.elevationChoice = choice != null ? choice : ElevationChoice.ASK;
 	}
 
+	public synchronized boolean hideUnavailableDisks() {
+		return hideUnavailableDisks;
+	}
+
+	public synchronized void setHideUnavailableDisks(boolean hide) {
+		this.hideUnavailableDisks = hide;
+	}
+
 	/**
 	 * Persist current values. Creates the parent directory if missing. Logged-and-swallowed on failure — a read-only
 	 * config dir shouldn't take the app down, the worst case is that the choice isn't remembered across launches.
@@ -173,6 +190,7 @@ public final class Settings {
 		p.setProperty(KEY_DEFAULT_COLORING_MODE, defaultColoringMode.id());
 		p.setProperty(KEY_DEFAULT_COLOR_SCHEME, defaultColorScheme.id());
 		p.setProperty(KEY_ELEVATION_CHOICE, elevationChoice.name());
+		p.setProperty(KEY_HIDE_UNAVAILABLE_DISKS, Boolean.toString(hideUnavailableDisks));
 		try {
 			Files.createDirectories(file.getParent());
 			try (OutputStream out = Files.newOutputStream(file)) {
@@ -201,7 +219,16 @@ public final class Settings {
 		ColorScheme scheme = ColorSchemes.byId(p.getProperty(KEY_DEFAULT_COLOR_SCHEME));
 		ElevationChoice elevation = parseEnum(p.getProperty(KEY_ELEVATION_CHOICE), ElevationChoice.class,
 				ElevationChoice.ASK);
-		return new Settings(file, viz, unit, coloring, scheme, elevation);
+		boolean hideUnavailable = parseBoolean(p.getProperty(KEY_HIDE_UNAVAILABLE_DISKS),
+				FALLBACK_HIDE_UNAVAILABLE_DISKS);
+		return new Settings(file, viz, unit, coloring, scheme, elevation, hideUnavailable);
+	}
+
+	/** Parses a stored boolean, falling back to {@code fallback} when the key is missing or blank. */
+	private static boolean parseBoolean(String raw, boolean fallback) {
+		if (raw == null || raw.isBlank())
+			return fallback;
+		return Boolean.parseBoolean(raw.trim());
 	}
 
 	private static <E extends Enum<E>> E parseEnum(String raw, Class<E> type, E fallback) {

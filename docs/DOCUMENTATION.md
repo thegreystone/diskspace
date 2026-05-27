@@ -6,6 +6,7 @@ table; contributors will want [DEVGUIDE.md](DEVGUIDE.md) instead.
 ## Contents
 
 - [Installing on Windows: getting past Edge / SmartScreen](#installing-on-windows-getting-past-edge--smartscreen)
+- [Interacting while data streams in](#interacting-while-data-streams-in)
 - [Preferences](#preferences)
     - [Storage location](#storage-location)
     - [Coloring modes](#coloring-modes)
@@ -65,18 +66,41 @@ On the *"Windows protected your PC"* dialog there's a **"Report this app as safe
 reports to build the cert's reputation in SmartScreen, and once enough land the warnings stop showing entirely for
 everyone. Verifying the publisher reads **Open Source Developer Marcus Hirt** before clicking it is a good habit.
 
+## Interacting while data streams in
+
+DiskSpace never holds you behind a loading screen. Both the disk picker and the visualizations fill in progressively,
+and you can act on whatever is already there.
+
+**The disk picker.** Every disk appears immediately as a placeholder row, then each is read on its own background
+thread. A row stays dimmed and gently pulsing — with a "…" where its size and type will go — until **both** are known,
+at which point it lights up and becomes clickable. The storage type is needed before you can pick a disk because it
+decides the fastest scanner for that medium, so a row isn't selectable until its type is in. A small spinner beside the
+*Choose a disk* heading shows overall progress (*Looking for disks…*, then *Identifying disk types…* as the
+SSD / HDD / Network tags fill in). Disks resolve independently, so a slow or unresponsive volume — a network share, a
+flaky USB card reader — never holds up the others. A disk that can't be read (offline, disconnected, or failing media)
+is **left out of the picker by default**; press `H` to toggle showing it, where it appears as a dimmed, non-selectable
+**Unavailable** entry. The default is configurable under **Preferences → Disk picker → Hide unavailable disks**.
+
+**The visualizations.** A scan streams its results into the sunburst / heatmap as it walks the tree, so the picture
+builds up live instead of appearing only once the scan finishes. You can **interact with the view the whole time** —
+drill into a folder, navigate up and down with the arrow keys, hover for details, or toggle visualization (`V`) and
+coloring (`C`) — all while data is still being gathered underneath. The view keeps updating around whatever you're
+looking at.
+
 ## Preferences
 
 Right-click anywhere on the picker or in the empty space of an open disk view and choose **Preferences…** to set
 startup defaults:
 
-| Setting               | What it controls                                                  |
-|-----------------------|-------------------------------------------------------------------|
-| Default visualization | Sunburst (radial) or Squarified Treemap on each newly opened tab. |
-| Default size unit     | Decimal (GB) or Binary (GiB) — applied at process start.          |
-| Default coloring      | Coloring mode used by each newly opened tab.                      |
+| Setting                | What it controls                                                     |
+|------------------------|----------------------------------------------------------------------|
+| Default visualization  | Sunburst (radial) or Squarified Treemap on each newly opened tab.    |
+| Default size unit      | Decimal (GB) or Binary (GiB) — applied at process start.             |
+| Default coloring       | Coloring mode used by each newly opened tab.                         |
+| Hide unavailable disks | Whether unreadable disks are left out of the picker (on by default). |
 
-The `V` / `U` / `C` shortcuts still toggle the same things in-session without touching the persisted defaults.
+The `V` / `U` / `C` shortcuts still toggle the same things in-session without touching the persisted defaults, and `H`
+does the same for hiding unavailable disks in the picker.
 
 ### Storage location
 

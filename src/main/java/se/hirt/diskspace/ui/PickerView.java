@@ -28,6 +28,12 @@
  */
 package se.hirt.diskspace.ui;
 
+import javafx.animation.KeyFrame;
+import javafx.animation.KeyValue;
+import javafx.animation.Timeline;
+import javafx.application.Platform;
+import javafx.beans.property.DoubleProperty;
+import javafx.beans.property.SimpleDoubleProperty;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.*;
@@ -41,13 +47,16 @@ import javafx.scene.shape.Rectangle;
 import javafx.stage.DirectoryChooser;
 import javafx.stage.Window;
 import javafx.util.Duration;
+import se.hirt.diskspace.model.StorageProfile;
 import se.hirt.diskspace.model.Volume;
 import se.hirt.diskspace.scan.ScanStrategy;
 import se.hirt.diskspace.scan.Scanner;
+import se.hirt.diskspace.settings.Settings;
 import se.hirt.diskspace.ui.theme.ColorScheme;
 import se.hirt.diskspace.ui.theme.Theme;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -72,6 +81,36 @@ public final class PickerView {
 	 * {@link #PickerView} setup; never null after the constructor returns.
 	 */
 	private Runnable toggleStrategy;
+	/**
+	 * Opacity breathing on the disk-discovery progress marker while work is in flight — the same gentle pulse the
+	 * scanning badge uses in {@code DiskView} (1.0 → 0.5 → 1.0 every ~1.2 s). Also drives {@link #placeholderOpacity}
+	 * in lock-step. Started by {@link #startEnumeration}, and stopped by {@link #hideProgress} once everything has
+	 * resolved.
+	 */
+	private final Timeline progressPulse;
+	/** Disk-discovery marker (wheel + status text) at the right of the title row. */
+	private final HBox progressRow;
+	/** Status text inside {@link #progressRow}: "Looking for disks…" then "Identifying disk types…". */
+	private final Label scanningLabel;
+	/**
+	 * Shared opacity driver for placeholder breathing, animated 0.75 ↔ 0.4 by {@link #progressPulse}. Each
+	 * not-yet-ready disk row binds its opacity to this so the whole list of pending rows breathes in unison; a row
+	 * unbinds (snapping to full opacity when ready, or a static dim when unavailable) the moment its fate is decided.
+	 */
+	private final DoubleProperty placeholderOpacity = new SimpleDoubleProperty(1.0);
+	/** FX-thread-only: disk rows not yet in a terminal state (ready or unavailable). Hits 0 → hide the marker. */
+	private int pendingRows;
+	/** FX-thread-only: roots whose size resolve hasn't finished. Hits 0 → flip the status text to "Identifying…". */
+	private int resolvesRemaining;
+	/**
+	 * Whether settled-unavailable disks are hidden. Seeded from the persistent preference when the picker is built, and
+	 * flipped in-session by the {@code H} shortcut (session-only, like {@code U}/{@code V}/{@code C}/{@code T} — it
+	 * doesn't rewrite the saved default). When on, an unreadable disk's row is kept in the list but
+	 * {@code managed=false} so toggling can reveal it again without losing its place.
+	 */
+	private boolean hideUnavailableDisks = Settings.get().hideUnavailableDisks();
+	/** Every disk row, in root order. Held so the {@code H} toggle can revisit the settled-unavailable ones. */
+	private List<DiskRow> diskRows = List.of();
 
 	public PickerView(ColorScheme scheme, Consumer<Volume> onSelection) {
 		this.scheme = scheme;
@@ -79,12 +118,48 @@ public final class PickerView {
 
 		Label title = new Label("Choose a disk");
 		styleRefreshers.add(() -> title.setStyle("-fx-text-fill: " + toCss(
-				this.scheme.textPrimary()) + ";" + "-fx-font-size: 22px; -fx-font-weight: 600;" + "-fx-padding: 0 0 18 0;"));
+				this.scheme.textPrimary()) + ";" + "-fx-font-size: 22px; -fx-font-weight: 600;"));
 
+		// The disk list is populated asynchronously (see startEnumeration). Resolving a volume's
+		// free/total space hits the medium, and a failing one — a dead SD card in a reader, a
+		// stalled USB drive — can block for tens of seconds; doing that synchronously on the FX
+		// thread (as the old Volume.enumerate() loop here did) wedged the whole startup. So the
+		// picker shows immediately and rows slot in as each root reports back, in root order.
 		VBox rows = new VBox(12);
-		for (Volume v : Volume.enumerate()) {
-			rows.getChildren().add(buildRow(v));
-		}
+
+		// Discreet "still discovering disks" marker, parked on the right of the title row and
+		// hidden once every root has reported in (or the watchdog gives up on an unresponsive
+		// one). JavaFX's ProgressIndicator with no progress value set runs in indeterminate mode
+		// — the built-in spinning wheel. Small and muted so it reads as a hint, not a modal wait.
+		ProgressIndicator spinner = new ProgressIndicator();
+		spinner.setPrefSize(16, 16);
+		spinner.setMinSize(16, 16);
+		spinner.setMaxSize(16, 16);
+		styleRefreshers.add(() -> spinner.setStyle("-fx-progress-color: " + toCss(this.scheme.accent()) + ";"));
+		scanningLabel = new Label("Looking for disks…");
+		styleRefreshers.add(() -> scanningLabel.setStyle(
+				"-fx-text-fill: " + toCss(this.scheme.textMuted()) + ";" + "-fx-font-size: 12px;"));
+		progressRow = new HBox(8, scanningLabel, spinner);
+		progressRow.setAlignment(Pos.CENTER_RIGHT);
+		// Breathe the whole marker (label + wheel) in and out while it's up, the same trick the
+		// scanning badge uses in DiskView, so the status reads as a soft "still working" hint rather
+		// than a solid, intrusive label. The same timeline also drives placeholderOpacity (0.75 ↔
+		// 0.4) so the not-yet-ready disk rows breathe in sync with it. One 600 ms keyframe +
+		// autoReverse = a ~1.2 s round trip; INDEFINITE keeps it going until hideProgress stops it.
+		progressPulse = new Timeline(new KeyFrame(Duration.ZERO, new KeyValue(progressRow.opacityProperty(), 1.0),
+				new KeyValue(placeholderOpacity, 0.75)),
+				new KeyFrame(Duration.millis(600), new KeyValue(progressRow.opacityProperty(), 0.5),
+						new KeyValue(placeholderOpacity, 0.4)));
+		progressPulse.setAutoReverse(true);
+		progressPulse.setCycleCount(Timeline.INDEFINITE);
+
+		Region titleSpacer = new Region();
+		HBox.setHgrow(titleSpacer, Priority.ALWAYS);
+		HBox titleRow = new HBox(title, titleSpacer, progressRow);
+		titleRow.setAlignment(Pos.CENTER_LEFT);
+		// The 18px gap below the header used to be the title label's bottom padding; moved here so
+		// the wheel and its label centre vertically against the title text, not its padded box.
+		titleRow.setPadding(new Insets(0, 0, 18, 0));
 
 		Button choose = new Button("Choose folder…");
 		styleRefreshers.add(() -> choose.setStyle("-fx-background-color: transparent;" + "-fx-text-fill: " + toCss(
@@ -130,7 +205,7 @@ public final class PickerView {
 		chooseRow.setAlignment(Pos.CENTER_LEFT);
 		chooseRow.setPadding(new Insets(20, 0, 0, 0));
 
-		VBox content = new VBox(title, rows, chooseRow);
+		VBox content = new VBox(titleRow, rows, chooseRow);
 		content.setPadding(new Insets(36, 48, 36, 48));
 		content.setMaxWidth(720);
 
@@ -182,6 +257,347 @@ public final class PickerView {
 			if (newScene != null)
 				root.requestFocus();
 		});
+
+		// Kick off disk discovery only after the whole picker is built and styled, so the rows
+		// that stream in land on a fully-initialised view.
+		startEnumeration(rows);
+	}
+
+	/**
+	 * How long a row may stay pending before the watchdog forces it to a terminal state. Rows normally settle (become
+	 * clickable, or "Unavailable") as their resolve + storage-type probe finish, and the marker hides the moment the
+	 * last one does; this is purely a backstop for genuinely-stuck media (a dead SD card, a stalled reader) whose
+	 * {@link Volume#resolve} or storage probe can block indefinitely. Generous on purpose so it never cuts off a
+	 * legitimately-slow-but-working disk — a disk hung this long is dead, and the picker has been usable the whole
+	 * time. When it fires, a still-pending row is forced terminal: resolved-with-unknown-type if its size came in,
+	 * otherwise "Unavailable".
+	 */
+	private static final long ENUMERATION_GRACE_MS = 30_000;
+
+	/**
+	 * Builds a placeholder row for every disk up front (in root order) and resolves them off the FX thread, one virtual
+	 * thread per root. A row starts dimmed, breathing, and non-clickable; it becomes clickable only once <em>both</em>
+	 * its size has resolved <em>and</em> its medium has been classified — the storage type picks the optimal scanner,
+	 * so a scan mustn't start without it. A root that can't be read (or that the watchdog gives up on) settles to a
+	 * dimmed "Unavailable" entry rather than vanishing.
+	 * <p>The {@code scanningLabel} text tracks the phase: "Looking for disks…" while any size is still resolving, then
+	 * "Identifying disk types…" once they're all in and only the medium probes remain.
+	 * <p>The background threads only do the blocking work and marshal results back via {@link Platform#runLater};
+	 * every counter and row mutation happens on the FX thread, so {@link #pendingRows} / {@link #resolvesRemaining}
+	 * need no synchronization.
+	 */
+	private void startEnumeration(VBox rows) {
+		List<Path> roots = Volume.rootDirectories();
+		if (roots.isEmpty()) {
+			hideProgress();
+			return;
+		}
+		progressPulse.playFromStart();
+		pendingRows = roots.size();
+		resolvesRemaining = roots.size();
+
+		// Placeholder rows for every disk, in root order, all on screen immediately. They breathe
+		// (opacity bound to placeholderOpacity) and aren't clickable until they resolve + classify.
+		diskRows = new ArrayList<>(roots.size());
+		for (Path root : roots) {
+			DiskRow row = new DiskRow(root);
+			diskRows.add(row);
+			rows.getChildren().add(row.node);
+		}
+		// Style the freshly-built placeholder rows against the active scheme (their refreshers were
+		// just registered, after the constructor's own restyle()).
+		restyle();
+
+		for (DiskRow row : diskRows) {
+			Thread.ofVirtual().name("picker-resolve-" + row.root).start(() -> {
+				Volume v = Volume.resolve(row.root); // may block for a long time on dead media
+				Platform.runLater(() -> {
+					if (--resolvesRemaining == 0)
+						scanningLabel.setText("Identifying disk types…");
+					if (v == null) {
+						onUnavailable(row);
+						return;
+					}
+					row.applyResolved(v);   // size + bar appear; row stays breathing + non-clickable
+					fillStorageTag(v, row); // classify the medium, then mark the row ready/clickable
+				});
+			});
+		}
+
+		// Backstop: force any row still pending after the grace period to a terminal state, so the
+		// list can't breathe forever on stuck media.
+		Thread.ofVirtual().name("picker-enum-watchdog").start(() -> {
+			try {
+				Thread.sleep(ENUMERATION_GRACE_MS);
+			} catch (InterruptedException e) {
+				return;
+			}
+			Platform.runLater(() -> {
+				for (DiskRow row : diskRows) {
+					if (row.resolved) {
+						if (row.markReady(StorageProfile.UNKNOWN))
+							rowSettled();
+					} else {
+						onUnavailable(row);
+					}
+				}
+			});
+		});
+	}
+
+	/**
+	 * Classifies the medium behind {@code v} on a virtual thread (the probe can block), then marks {@code row} ready on
+	 * the FX thread — filling in the storage-type tag and finally enabling the click that starts a scan. An
+	 * {@link StorageProfile#UNKNOWN} result still readies the row (the scanner falls back to its default); it just
+	 * shows no tag.
+	 */
+	private void fillStorageTag(Volume v, DiskRow row) {
+		Thread.ofVirtual().name("picker-profile-" + v.root()).start(() -> {
+			StorageProfile probed;
+			try {
+				probed = Volume.probeStorageProfile(v);
+			} catch (RuntimeException e) {
+				probed = StorageProfile.UNKNOWN;
+			}
+			StorageProfile profile = probed == null ? StorageProfile.UNKNOWN : probed;
+			Platform.runLater(() -> {
+				if (row.markReady(profile))
+					rowSettled();
+			});
+		});
+	}
+
+	/**
+	 * Settles {@code row} as unavailable: a dimmed, non-clickable "Unavailable" entry, hidden right away when
+	 * {@link #hideUnavailableDisks} is on. The node stays in the list either way (just {@code managed=false} when
+	 * hidden), so the {@code H} toggle can reveal it later without losing its place. Counts as settled exactly once —
+	 * the {@code markUnavailable} guard makes a late watchdog/resolve pass a no-op.
+	 */
+	private void onUnavailable(DiskRow row) {
+		if (!row.markUnavailable())
+			return; // already terminal
+		applyUnavailableVisibility(row);
+		rowSettled();
+	}
+
+	/**
+	 * Show or hide one settled-unavailable row per {@link #hideUnavailableDisks}; the node stays in the list either
+	 * way.
+	 */
+	private void applyUnavailableVisibility(DiskRow row) {
+		row.node.setManaged(!hideUnavailableDisks);
+		row.node.setVisible(!hideUnavailableDisks);
+	}
+
+	/** Flip whether settled-unavailable disks are shown. Session-only (doesn't rewrite the saved preference). */
+	private void toggleHideUnavailable() {
+		hideUnavailableDisks = !hideUnavailableDisks;
+		for (DiskRow row : diskRows) {
+			if (row.isUnavailable())
+				applyUnavailableVisibility(row);
+		}
+	}
+
+	/** One row reached a terminal state (ready or unavailable); hide the marker once they all have. FX thread only. */
+	private void rowSettled() {
+		if (--pendingRows == 0)
+			hideProgress();
+	}
+
+	private void hideProgress() {
+		progressPulse.stop();
+		progressRow.setOpacity(1.0); // undo whatever mid-pulse opacity we stopped on
+		progressRow.setVisible(false);
+		progressRow.setManaged(false);
+	}
+
+	/**
+	 * One row in the picker. Created as a dimmed, breathing, non-clickable placeholder showing just the disk's root;
+	 * {@link #applyResolved} fills in name / size / capacity bar (still not clickable), and {@link #markReady} — called
+	 * once the medium is classified — stops the breathing, snaps to full opacity, shows the type tag, and enables the
+	 * click that starts a scan. {@link #markUnavailable} is the terminal alternative for a disk that can't be read.
+	 * <p>All methods run on the FX thread. {@link #terminal} makes the ready / unavailable decision first-wins, so a
+	 * slow resolve or probe landing after the watchdog already settled the row is harmlessly ignored.
+	 */
+	private final class DiskRow {
+		private final Path root;
+		private final VBox node;
+		private final Label nameLabel;
+		private final Label pathLabel;
+		private final Label sizeLabel;
+		private final Label tagLabel;
+		private final Rectangle barTrack = new Rectangle();
+		private final Rectangle barFill = new Rectangle();
+		private final DoubleProperty barFraction = new SimpleDoubleProperty(0);
+		private final String[] baseStyle = new String[1];
+		private final String[] hoverStyle = new String[1];
+
+		private Volume current;   // null until applyResolved
+		private boolean resolved; // size known (applyResolved ran)
+		private boolean terminal; // ready or unavailable — first wins
+
+		DiskRow(Path root) {
+			this.root = root;
+			String rootText = root.toString();
+
+			nameLabel = new Label(rootText);
+			styleRefreshers.add(() -> nameLabel.setStyle("-fx-text-fill: " + toCss(
+					scheme.textPrimary()) + ";" + "-fx-font-size: 15px; -fx-font-weight: 600;"));
+
+			pathLabel = new Label(rootText);
+			styleRefreshers.add(() -> pathLabel.setStyle(
+					"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 11px;"));
+
+			// Size slot starts as a placeholder ellipsis; applyResolved swaps in the real figure.
+			sizeLabel = new Label("…");
+			styleRefreshers.add(() -> sizeLabel.setStyle(
+					"-fx-text-fill: " + toCss(scheme.textMuted()) + ";" + "-fx-font-size: 12px;"));
+			// Pin min width to preferred so the growable bar shrinks instead of clipping this label.
+			sizeLabel.setMinWidth(Region.USE_PREF_SIZE);
+
+			// Type slot likewise starts as a placeholder ellipsis; markReady / markUnavailable replace it.
+			tagLabel = new Label("⋯");
+			styleRefreshers.add(() -> tagLabel.setStyle("-fx-text-fill: " + toCss(
+					scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-font-weight: 600;"));
+			tagLabel.setMinWidth(Region.USE_PREF_SIZE);
+
+			VBox sizeBlock = new VBox(2, tagLabel, sizeLabel);
+			sizeBlock.setAlignment(Pos.CENTER_RIGHT);
+
+			double height = 10;
+			for (Rectangle r : new Rectangle[] {barTrack, barFill}) {
+				r.setHeight(height);
+				r.setArcWidth(height);
+				r.setArcHeight(height);
+			}
+			StackPane barStack = new StackPane(barTrack, barFill);
+			StackPane.setAlignment(barTrack, Pos.CENTER_LEFT);
+			StackPane.setAlignment(barFill, Pos.CENTER_LEFT);
+			barStack.setMinHeight(height);
+			barStack.setPrefHeight(height);
+			// Pin the bar's min width to 0. Otherwise the StackPane computes its min width from its
+			// Rectangle children — whose widths are bound right back to the StackPane's width — a
+			// feedback loop. It's harmless while the row's min width stays under the content's
+			// maxWidth, but a wide tag (e.g. "Unavailable") can push it over, at which point the loop
+			// runs away and the cards grow wider every layout pass, eating the centred margins. Hgrow
+			// still stretches the bar to fill the leftover width.
+			barStack.setMinWidth(0);
+			barTrack.widthProperty().bind(barStack.widthProperty());
+			barFill.widthProperty().bind(barStack.widthProperty().multiply(barFraction));
+			styleRefreshers.add(() -> {
+				barTrack.setFill(scheme.capacityTrack());
+				barFill.setFill(scheme.capacityFillFor(barFraction.get()));
+			});
+			HBox.setHgrow(barStack, Priority.ALWAYS);
+			HBox barRow = new HBox(12, barStack, sizeBlock);
+			barRow.setAlignment(Pos.CENTER_LEFT);
+
+			node = new VBox(4, nameLabel, pathLabel, barRow);
+			node.setPadding(new Insets(14, 16, 14, 16));
+			// Dimmed + breathing until the row is settled: bound to the shared placeholderOpacity pulse.
+			node.opacityProperty().bind(placeholderOpacity);
+
+			styleRefreshers.add(this::refreshBoxStyle);
+			node.setOnMouseEntered(e -> {
+				if (clickable())
+					node.setStyle(hoverStyle[0]);
+			});
+			node.setOnMouseExited(e -> {
+				if (clickable())
+					node.setStyle(baseStyle[0]);
+			});
+			node.setOnMouseClicked(e -> {
+				if (clickable())
+					onSelection.accept(current);
+			});
+
+			Tooltip tip = new Tooltip();
+			tip.setShowDelay(Duration.millis(300));
+			tip.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace; -fx-font-size: 12px;");
+			tip.setOnShowing(e -> tip.setText(tooltipText()));
+			Tooltip.install(node, tip);
+		}
+
+		/** Ready (resolved + classified) rows are the only ones the user can pick. */
+		private boolean clickable() {
+			return terminal && resolved && current != null;
+		}
+
+		/** Settled, but unreadable — the "Unavailable" terminal state (as opposed to a ready or still-pending row). */
+		private boolean isUnavailable() {
+			return terminal && !resolved;
+		}
+
+		private void refreshBoxStyle() {
+			String base = "-fx-background-color: " + toCss(scheme.surface()) + ";" + "-fx-background-radius: 10;";
+			if (clickable())
+				base += "-fx-cursor: hand;"; // hand only on the rows you can actually pick
+			baseStyle[0] = base;
+			hoverStyle[0] = base + "-fx-effect: dropshadow(gaussian, " + toCss(scheme.accent()) + ", 12, 0.15, 0, 0);";
+			node.setStyle(baseStyle[0]);
+		}
+
+		/**
+		 * Fills in the resolved name / size / capacity bar. The row stays dimmed + non-clickable until
+		 * {@link #markReady}.
+		 */
+		void applyResolved(Volume v) {
+			if (terminal)
+				return;
+			current = v;
+			resolved = true;
+			nameLabel.setText(v.displayName());
+			pathLabel.setText(v.root().toString());
+			sizeLabel.setText(humanSize(v.totalBytes()));
+			// Now that this row has a size, let the U-key unit toggle reformat it too.
+			sizeRefreshers.add(() -> sizeLabel.setText(humanSize(v.totalBytes())));
+			barFraction.set(v.usedFraction());
+			barFill.setFill(scheme.capacityFillFor(v.usedFraction()));
+		}
+
+		/**
+		 * Terminal: the medium is classified (possibly {@link StorageProfile#UNKNOWN}), so finalize the row — stop the
+		 * breathing, snap to full opacity, show the type tag (hidden for UNKNOWN), and enable the click. Returns
+		 * {@code true} if this call settled the row, {@code false} if it was already terminal. Valid only once
+		 * resolved.
+		 */
+		boolean markReady(StorageProfile profile) {
+			if (terminal || !resolved)
+				return false;
+			terminal = true;
+			current = current.withStorageProfile(profile);
+			node.opacityProperty().unbind();
+			node.setOpacity(1.0);
+			applyTagText(tagLabel, profile);
+			refreshBoxStyle(); // repaint with the hand cursor now that it's clickable
+			return true;
+		}
+
+		/**
+		 * Terminal alternative for a disk we couldn't read (pseudo-fs, permission denied, or hung past the watchdog): a
+		 * statically dimmed, non-clickable "Unavailable" entry. Returns {@code true} if this call settled the row.
+		 */
+		boolean markUnavailable() {
+			if (terminal)
+				return false;
+			terminal = true;
+			resolved = false;
+			node.opacityProperty().unbind();
+			node.setOpacity(0.5);
+			sizeLabel.setText("");
+			tagLabel.setText("Unavailable");
+			tagLabel.setVisible(true);
+			tagLabel.setManaged(true);
+			return true;
+		}
+
+		private String tooltipText() {
+			if (resolved && current != null)
+				return buildVolumeTooltip(current);
+			if (terminal)
+				return "Unavailable — could not read " + root;
+			return "Reading " + root + " …";
+		}
 	}
 
 	public Region getRoot() {
@@ -263,6 +679,9 @@ public final class PickerView {
 		} else if (e.getCode() == KeyCode.T) {
 			Theme.toggle();
 			e.consume();
+		} else if (e.getCode() == KeyCode.H) {
+			toggleHideUnavailable();
+			e.consume();
 		}
 	}
 
@@ -285,6 +704,9 @@ public final class PickerView {
 		MenuItem cycleStrategyItem = new MenuItem("Cycle Scan Strategy");
 		cycleStrategyItem.setOnAction(e -> toggleStrategy.run());
 
+		MenuItem toggleUnavailableItem = new MenuItem("Show / Hide Unavailable Disks");
+		toggleUnavailableItem.setOnAction(e -> toggleHideUnavailable());
+
 		MenuItem toggleThemeItem = new MenuItem("Toggle Theme");
 		toggleThemeItem.setOnAction(e -> Theme.toggle());
 
@@ -298,8 +720,8 @@ public final class PickerView {
 		quitItem.setOnAction(e -> se.hirt.diskspace.App.requestQuit());
 
 		ContextMenu menu = new ContextMenu();
-		menu.getItems().addAll(helpItem, toggleUnitsItem, cycleStrategyItem, toggleThemeItem, new SeparatorMenuItem(),
-				preferencesItem, aboutItem, new SeparatorMenuItem(), quitItem);
+		menu.getItems().addAll(helpItem, toggleUnitsItem, cycleStrategyItem, toggleUnavailableItem, toggleThemeItem,
+				new SeparatorMenuItem(), preferencesItem, aboutItem, new SeparatorMenuItem(), quitItem);
 
 		root.setOnContextMenuRequested(e -> {
 			menu.show(root, e.getScreenX(), e.getScreenY());
@@ -340,6 +762,7 @@ public final class PickerView {
 		addHelpRow(grid, row++, "Esc", "Show / hide this help");
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
 		addHelpRow(grid, row++, "S", "Cycle scan strategy (Auto / Bulk / MFT / Parallel / Sequential)");
+		addHelpRow(grid, row++, "H", "Show / hide unavailable disks");
 		addHelpRow(grid, row++, "T", "Toggle theme (dark / light)");
 		addHelpRow(grid, row++, "A", "Show About");
 		addHelpRow(grid, row++, "L", "Show license");
@@ -497,77 +920,13 @@ public final class PickerView {
 		grid.add(d, 1, row);
 	}
 
-	private Region buildRow(Volume v) {
-		Label name = new Label(v.displayName());
-		styleRefreshers.add(() -> name.setStyle("-fx-text-fill: " + toCss(
-				this.scheme.textPrimary()) + ";" + "-fx-font-size: 15px; -fx-font-weight: 600;"));
-
-		Label path = new Label(v.root().toString());
-		styleRefreshers.add(
-				() -> path.setStyle("-fx-text-fill: " + toCss(this.scheme.textMuted()) + ";" + "-fx-font-size: 11px;"));
-
-		Label total = new Label(humanSize(v.totalBytes()));
-		styleRefreshers.add(() -> total.setStyle(
-				"-fx-text-fill: " + toCss(this.scheme.textMuted()) + ";" + "-fx-font-size: 12px;"));
-		// Without this, the label keeps the width it was first laid out with and clips when
-		// the unit toggle widens the text (e.g. "228 GB" → "213 GiB").
-		total.setMinWidth(Region.USE_PREF_SIZE);
-		sizeRefreshers.add(() -> total.setText(humanSize(v.totalBytes())));
-
-		VBox sizeBlock = new VBox(2);
-		sizeBlock.setAlignment(Pos.CENTER_RIGHT);
-		String tagText = v.storageProfile() == null ? "" : v.storageProfile().shortLabel();
-		if (!tagText.isEmpty()) {
-			Label tag = new Label(tagText);
-			styleRefreshers.add(() -> tag.setStyle("-fx-text-fill: " + toCss(
-					this.scheme.textMuted()) + ";" + "-fx-font-size: 11px; -fx-font-weight: 600;"));
-			sizeBlock.getChildren().add(tag);
-		}
-		sizeBlock.getChildren().add(total);
-
-		Rectangle barTrack = new Rectangle();
-		Rectangle barFill = new Rectangle();
-		Region bar = buildCapacityBar(v.usedFraction(), barTrack, barFill);
-		styleRefreshers.add(() -> {
-			barTrack.setFill(this.scheme.capacityTrack());
-			barFill.setFill(this.scheme.capacityFillFor(v.usedFraction()));
-		});
-		HBox.setHgrow(bar, Priority.ALWAYS);
-		HBox barRow = new HBox(12, bar, sizeBlock);
-		barRow.setAlignment(Pos.CENTER_LEFT);
-
-		VBox box = new VBox(4, name, path, barRow);
-		box.setPadding(new Insets(14, 16, 14, 16));
-		// Hover state needs current colours every time the user enters/exits — bind the styles to a holder so
-		// the theme toggle can update the base + hover variants in one place.
-		final String[] baseStyleHolder = new String[1];
-		final String[] hoverStyleHolder = new String[1];
-		Runnable refreshBoxStyles = () -> {
-			baseStyleHolder[0] = "-fx-background-color: " + toCss(
-					this.scheme.surface()) + ";" + "-fx-background-radius: 10; -fx-cursor: hand;";
-			hoverStyleHolder[0] = baseStyleHolder[0] + "-fx-effect: dropshadow(gaussian, " + toCss(
-					this.scheme.accent()) + ", 12, 0.15, 0, 0);";
-			// Re-paint whichever state the row is currently in. JavaFX doesn't expose a public hover-flag on Region,
-			// but a re-set to the base style covers the common case (cursor not over the row right now); the next
-			// enter/exit will land on the right style either way.
-			box.setStyle(baseStyleHolder[0]);
-		};
-		styleRefreshers.add(refreshBoxStyles);
-		box.setOnMouseEntered(e -> box.setStyle(hoverStyleHolder[0]));
-		box.setOnMouseExited(e -> box.setStyle(baseStyleHolder[0]));
-		box.setOnMouseClicked(e -> onSelection.accept(v));
-
-		// Rich tooltip with FS, storage type, sizes (with %), and a per-profile description
-		// of how the scan will run. Regenerated on each show so it picks up the U-key unit
-		// toggle without needing a refresher hook. Monospace font so the column-style key:
-		// value lines actually line up — JavaFX's default proportional font + tab characters
-		// produces inconsistent column positions.
-		Tooltip tip = new Tooltip();
-		tip.setShowDelay(Duration.millis(300));
-		tip.setStyle("-fx-font-family: 'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace; -fx-font-size: 12px;");
-		tip.setOnShowing(e -> tip.setText(buildVolumeTooltip(v)));
-		Tooltip.install(box, tip);
-		return box;
+	/** Sets the storage-type tag's text and toggles its visibility — {@link StorageProfile#UNKNOWN} hides it entirely. */
+	private static void applyTagText(Label tag, StorageProfile profile) {
+		String text = profile == null ? "" : profile.shortLabel();
+		tag.setText(text);
+		boolean show = !text.isEmpty();
+		tag.setVisible(show);
+		tag.setManaged(show);
 	}
 
 	/** Width keys are padded to in the top key/value block. Longest = "File system". */
@@ -692,31 +1051,6 @@ public final class PickerView {
 		if (current.length() > 0)
 			lines.add(current.toString());
 		return lines;
-	}
-
-	private Region buildCapacityBar(double fraction, Rectangle track, Rectangle fill) {
-		double f = Math.max(0.0, Math.min(1.0, fraction));
-		double height = 10;
-
-		track.setHeight(height);
-		track.setArcWidth(height);
-		track.setArcHeight(height);
-		track.setFill(scheme.capacityTrack());
-
-		fill.setHeight(height);
-		fill.setArcWidth(height);
-		fill.setArcHeight(height);
-		fill.setFill(scheme.capacityFillFor(f));
-
-		StackPane stack = new StackPane(track, fill);
-		StackPane.setAlignment(track, Pos.CENTER_LEFT);
-		StackPane.setAlignment(fill, Pos.CENTER_LEFT);
-		stack.setMinHeight(height);
-		stack.setPrefHeight(height);
-
-		track.widthProperty().bind(stack.widthProperty());
-		fill.widthProperty().bind(stack.widthProperty().multiply(f));
-		return stack;
 	}
 
 	private static String humanSize(long bytes) {
