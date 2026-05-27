@@ -17,6 +17,7 @@ For contributors. End-user docs (downloading, preferences, macOS quirks) live in
 - [Releasing](#releasing)
     - [Signing Windows artifacts](#signing-windows-artifacts)
 - [Developer troubleshooting](#developer-troubleshooting)
+- [AI policy](#ai-policy)
 
 ## Building from source
 
@@ -321,3 +322,15 @@ the same curve.
 
 End-user-facing issues (blank window, Wayland pipeline fallback) live in
 [DOCUMENTATION.md § Troubleshooting](DOCUMENTATION.md#troubleshooting).
+
+## AI policy
+
+Contributions made in collaboration with AI tools are welcome. Use whatever helps you work.
+
+That said, the AI is a collaborator, not the contributor. **You** are responsible for reviewing and
+testing every change before you open a PR: read the diff line by line, understand what it does and why,
+and run it. Submitting code you haven't read or exercised, on the grounds that "the model said it
+works", is not enough.
+
+When you put your name on a PR, you are vouching for it. **You** are ultimately responsible for the
+contribution, regardless of how much of it an AI wrote.
