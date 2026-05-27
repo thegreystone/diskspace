@@ -38,6 +38,7 @@ import javafx.scene.control.ButtonType;
 import javafx.scene.image.Image;
 import javafx.stage.Stage;
 import se.hirt.diskspace.platform.Capabilities;
+import se.hirt.diskspace.settings.Settings;
 import se.hirt.diskspace.ui.MainWindow;
 import se.hirt.diskspace.ui.theme.ColorScheme;
 import se.hirt.diskspace.ui.theme.Theme;
@@ -137,43 +138,81 @@ public final class App extends Application {
 	}
 
 	/**
-	 * If we're on Windows and not already elevated, ask the user once per launch whether they'd like to restart as
-	 * administrator. Yes → {@code ShellExecute("runas")} relaunches the current command line elevated and we exit. No →
-	 * continue with the parallel scanner.
+	 * Windows-only first-run elevation offer. When un-elevated and the persisted {@link Settings.ElevationChoice} is
+	 * still {@link Settings.ElevationChoice#ASK ASK}, ask once whether to restart as administrator (so the MFT scanner
+	 * becomes available). Yes promotes the choice to {@link Settings.ElevationChoice#ALWAYS ALWAYS} and relaunches
+	 * elevated; No sets {@link Settings.ElevationChoice#NEVER NEVER} so we don't prompt again (re-enable in
+	 * Preferences). {@code ALWAYS} is handled earlier in {@link #main(String[])} before any UI is built; {@code NEVER}
+	 * returns silently.
 	 * <p>Skipped silently when {@link Capabilities#ELEVATION} reports unavailable
 	 * (non-Windows native-image, or JVM dev mode where the {@code @CFunction} bindings aren't linked). Skipped when
 	 * {@code -Ddiskspace.skipElevationPrompt=true} is set (handy for unattended runs).
 	 */
 	private void maybeOfferElevation() {
 		Capabilities.Elevation elev = Capabilities.ELEVATION;
-		if (!elev.isAvailable())
-			return;
-		if (elev.isElevated())
+		if (!elev.isAvailable() || elev.isElevated())
 			return;
 		if (Boolean.getBoolean("diskspace.skipElevationPrompt"))
 			return;
+		if (Settings.get().elevationChoice() != Settings.ElevationChoice.ASK)
+			return; // ALWAYS is auto-handled at startup in main(); NEVER means don't pester.
 		String confirmationText = """
 		                          DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as administrator. Without elevation it falls back to the directory-walking scanner.
-		                          
-		                          Restart as administrator now?""";
+
+		                          Restart as administrator now? DiskSpace will then start elevated automatically on future launches — you can change this in Preferences.""";
 		Alert alert = new Alert(AlertType.CONFIRMATION, confirmationText, ButtonType.YES, ButtonType.NO);
 		alert.setHeaderText("Run as administrator for faster scanning?");
 		alert.setTitle("DiskSpace");
 		alert.showAndWait().ifPresent(choice -> {
+			Settings settings = Settings.get();
 			if (choice == ButtonType.YES) {
-				if (elev.relaunchElevated()) {
-					requestQuit();
-				} else {
-					// User declined UAC, or the spawn failed for some other reason. Stay open.
-					Alert err = new Alert(AlertType.WARNING,
-							"Could not restart as administrator. Continuing without elevation.\n" + "You can launch DiskSpace yourself from an elevated shell to enable MFT scanning.",
-							ButtonType.OK);
-					err.setHeaderText("Elevation declined");
-					err.setTitle("DiskSpace");
-					err.showAndWait();
-				}
+				settings.setElevationChoice(Settings.ElevationChoice.ALWAYS);
+				settings.save();
+				relaunchElevatedNow();
+			} else {
+				settings.setElevationChoice(Settings.ElevationChoice.NEVER);
+				settings.save();
 			}
 		});
+	}
+
+	/**
+	 * Auto-elevate path for {@link Settings.ElevationChoice#ALWAYS}: when un-elevated on a platform that supports
+	 * elevation, relaunch this process elevated. Returns {@code true} iff an elevated copy was spawned — the caller in
+	 * {@link #main(String[])} then exits without building the UI. Returns {@code false} (caller continues a normal
+	 * un-elevated launch) when elevation is unavailable, the process is already elevated, the choice isn't
+	 * {@code ALWAYS}, {@code -Ddiskspace.skipElevationPrompt=true} is set, or the user declined the UAC prompt.
+	 */
+	private static boolean maybeAutoElevateAtStartup() {
+		if (Boolean.getBoolean("diskspace.skipElevationPrompt"))
+			return false;
+		Capabilities.Elevation elev = Capabilities.ELEVATION;
+		if (!elev.isAvailable() || elev.isElevated())
+			return false;
+		if (Settings.get().elevationChoice() != Settings.ElevationChoice.ALWAYS)
+			return false;
+		Logger.getLogger("se.hirt.diskspace").info("Auto-elevating at startup (windows.elevation.choice=ALWAYS)");
+		return elev.relaunchElevated();
+	}
+
+	/**
+	 * Relaunch the current command line elevated via {@code ShellExecute("runas")} and, on success, quit this
+	 * un-elevated copy so the user isn't left with two windows. On failure (UAC declined or spawn error) show a warning
+	 * and stay open with the fallback scanner. Must be called on the FX thread (it may show a dialog).
+	 */
+	public static void relaunchElevatedNow() {
+		if (Capabilities.ELEVATION.relaunchElevated()) {
+			requestQuit();
+		} else {
+			// User declined UAC, or the spawn failed for some other reason. Stay open.
+			Alert err = new Alert(AlertType.WARNING,
+					"Could not restart as administrator. Continuing without elevation.\n"
+							+ "You can launch DiskSpace yourself from an elevated shell to enable MFT scanning.",
+					ButtonType.OK);
+			err.setHeaderText("Elevation declined");
+			err.setTitle("DiskSpace");
+			err.showAndWait();
+		}
 	}
 
 	/**
@@ -226,6 +265,16 @@ public final class App extends Application {
 		Logger.getLogger("se.hirt.diskspace")
 				.info(() -> String.format("DiskSpace main entered (%d ms since process start)",
 						(System.nanoTime() - MAIN_START_NANOS) / 1_000_000));
+		// Windows-only: if the user previously chose "always run as administrator", relaunch elevated before building
+		// any UI (so no un-elevated window flashes up first) and exit this copy. Done here rather than after launch()
+		// for exactly that reason. The elevated copy re-enters main() already elevated, so this short-circuits and it
+		// proceeds normally — no relaunch loop. A declined UAC / failed spawn falls through to a normal un-elevated run.
+		if (maybeAutoElevateAtStartup())
+			return;
+		// Defense-in-depth: if we're running elevated, irreversibly shed every privilege except the backup-read ones
+		// the MFT scanner needs, so a dormant admin privilege (SeDebug/SeRestore/SeTakeOwnership/…) can't be enabled
+		// later. No-op when un-elevated or on non-Windows. SeBackup/SeManageVolume are kept for the scanner.
+		Capabilities.ELEVATION.dropToBackupPrivileges();
 		installShutdownNoiseFilter();
 		maybeStartJfrRecording();
 		// SizeFormat is a process-wide singleton — restore the persisted unit before any UI is built

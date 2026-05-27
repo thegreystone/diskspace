@@ -86,6 +86,14 @@ public final class Capabilities {
 		default boolean relaunchElevated() {
 			return false;
 		}
+
+		/**
+		 * Defense-in-depth: when running elevated, irreversibly drop every privilege except the backup-read ones the
+		 * MFT scanner needs, so no dormant admin privilege can be enabled later. No-op on platforms without UAC
+		 * elevation and when not already elevated.
+		 */
+		default void dropToBackupPrivileges() {
+		}
 	}
 
 	/**

@@ -103,6 +103,11 @@ public final class WindowsCapabilities {
 			public boolean relaunchElevated() {
 				return WindowsElevation.relaunchElevated();
 			}
+
+			@Override
+			public void dropToBackupPrivileges() {
+				WindowsElevation.dropToBackupPrivileges();
+			}
 		};
 	}
 

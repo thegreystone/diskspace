@@ -69,9 +69,24 @@ public final class Settings {
 	private static final String KEY_DEFAULT_SIZE_UNIT = "default.size.unit";
 	private static final String KEY_DEFAULT_COLORING_MODE = "default.coloring.mode";
 	private static final String KEY_DEFAULT_COLOR_SCHEME = "default.color.scheme";
+	private static final String KEY_ELEVATION_CHOICE = "windows.elevation.choice";
 
 	private static final RenderMode FALLBACK_VISUALIZATION = RenderMode.SUNBURST;
 	private static final SizeFormat.Mode FALLBACK_SIZE_UNIT = SizeFormat.Mode.DECIMAL;
+
+	/**
+	 * Whether DiskSpace should run elevated (so the fast MFT scanner can open raw volume handles). Windows-only in
+	 * effect; ignored on platforms without UAC elevation.
+	 * <ul>
+	 *   <li>{@link #ASK} — initial state. The first time we launch un-elevated we offer a one-time "restart as
+	 *       administrator?" dialog; the user's answer promotes this to {@link #ALWAYS} or {@link #NEVER}.</li>
+	 *   <li>{@link #ALWAYS} — auto-relaunch elevated at startup (UAC prompt each launch). Toggleable in Preferences.</li>
+	 *   <li>{@link #NEVER} — stay un-elevated and use the directory-walking fallback scanner; don't prompt.</li>
+	 * </ul>
+	 */
+	public enum ElevationChoice {
+		ASK, ALWAYS, NEVER
+	}
 
 	private static volatile Settings instance;
 
@@ -94,15 +109,17 @@ public final class Settings {
 	private SizeFormat.Mode defaultSizeUnit;
 	private ColoringMode defaultColoringMode;
 	private ColorScheme defaultColorScheme;
+	private ElevationChoice elevationChoice;
 
 	private Settings(
 			Path file, RenderMode defaultVisualization, SizeFormat.Mode defaultSizeUnit,
-			ColoringMode defaultColoringMode, ColorScheme defaultColorScheme) {
+			ColoringMode defaultColoringMode, ColorScheme defaultColorScheme, ElevationChoice elevationChoice) {
 		this.file = file;
 		this.defaultVisualization = defaultVisualization;
 		this.defaultSizeUnit = defaultSizeUnit;
 		this.defaultColoringMode = defaultColoringMode;
 		this.defaultColorScheme = defaultColorScheme;
+		this.elevationChoice = elevationChoice;
 	}
 
 	public synchronized RenderMode defaultVisualization() {
@@ -137,6 +154,14 @@ public final class Settings {
 		this.defaultColorScheme = scheme != null ? scheme : ColorSchemes.defaultMode();
 	}
 
+	public synchronized ElevationChoice elevationChoice() {
+		return elevationChoice;
+	}
+
+	public synchronized void setElevationChoice(ElevationChoice choice) {
+		this.elevationChoice = choice != null ? choice : ElevationChoice.ASK;
+	}
+
 	/**
 	 * Persist current values. Creates the parent directory if missing. Logged-and-swallowed on failure — a read-only
 	 * config dir shouldn't take the app down, the worst case is that the choice isn't remembered across launches.
@@ -147,6 +172,7 @@ public final class Settings {
 		p.setProperty(KEY_DEFAULT_SIZE_UNIT, defaultSizeUnit.name());
 		p.setProperty(KEY_DEFAULT_COLORING_MODE, defaultColoringMode.id());
 		p.setProperty(KEY_DEFAULT_COLOR_SCHEME, defaultColorScheme.id());
+		p.setProperty(KEY_ELEVATION_CHOICE, elevationChoice.name());
 		try {
 			Files.createDirectories(file.getParent());
 			try (OutputStream out = Files.newOutputStream(file)) {
@@ -173,7 +199,9 @@ public final class Settings {
 				FALLBACK_SIZE_UNIT);
 		ColoringMode coloring = ColoringModes.byId(p.getProperty(KEY_DEFAULT_COLORING_MODE));
 		ColorScheme scheme = ColorSchemes.byId(p.getProperty(KEY_DEFAULT_COLOR_SCHEME));
-		return new Settings(file, viz, unit, coloring, scheme);
+		ElevationChoice elevation = parseEnum(p.getProperty(KEY_ELEVATION_CHOICE), ElevationChoice.class,
+				ElevationChoice.ASK);
+		return new Settings(file, viz, unit, coloring, scheme, elevation);
 	}
 
 	private static <E extends Enum<E>> E parseEnum(String raw, Class<E> type, E fallback) {

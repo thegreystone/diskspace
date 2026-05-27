@@ -31,6 +31,7 @@ package se.hirt.diskspace.ui;
 import javafx.geometry.HPos;
 import javafx.geometry.Insets;
 import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
@@ -38,6 +39,8 @@ import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
 import javafx.util.StringConverter;
+import se.hirt.diskspace.App;
+import se.hirt.diskspace.platform.Capabilities;
 import se.hirt.diskspace.settings.Settings;
 import se.hirt.diskspace.ui.DiskView.RenderMode;
 import se.hirt.diskspace.ui.render.ColoringMode;
@@ -182,16 +185,49 @@ public final class PreferencesDialog {
 		grid.add(coloringChoice, 1, 6);
 		grid.add(coloringDescription, 1, 7);
 
+		// Windows-only row: run elevated so the fast NTFS (MFT) scanner can open raw volume handles. Hidden on
+		// macOS / Linux / JVM dev mode, where UAC elevation isn't a thing (Capabilities.ELEVATION.isAvailable() is
+		// false there), so the checkbox would have nothing useful to do.
+		CheckBox elevateCheck = null;
+		Settings.ElevationChoice originalElevation = settings.elevationChoice();
+		if (Capabilities.ELEVATION.isAvailable()) {
+			elevateCheck = new CheckBox("Always start with administrator rights");
+			elevateCheck.setSelected(originalElevation == Settings.ElevationChoice.ALWAYS);
+			Label elevateHint = describeLabel(
+					"Lets DiskSpace use the fast NTFS (MFT) scanner. Windows shows a UAC prompt at each launch.");
+			grid.add(new Label("Fast scanning:"), 0, 8);
+			grid.add(elevateCheck, 1, 8);
+			grid.add(elevateHint, 1, 9);
+		}
+
 		dialog.getDialogPane().setContent(grid);
 		dialog.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
 
+		final CheckBox elevateCheckFinal = elevateCheck;
 		dialog.showAndWait().ifPresent(button -> {
-			if (button == ButtonType.OK) {
-				settings.setDefaultColorScheme(themeChoice.getValue());
-				settings.setDefaultVisualization(vizChoice.getValue());
-				settings.setDefaultSizeUnit(unitChoice.getValue());
-				settings.setDefaultColoringMode(coloringChoice.getValue());
-				settings.save();
+			if (button != ButtonType.OK)
+				return;
+			settings.setDefaultColorScheme(themeChoice.getValue());
+			settings.setDefaultVisualization(vizChoice.getValue());
+			settings.setDefaultSizeUnit(unitChoice.getValue());
+			settings.setDefaultColoringMode(coloringChoice.getValue());
+			// Only touch the elevation choice when the checkbox state actually flips relative to ALWAYS, so merely
+			// opening Preferences and clicking OK doesn't silently suppress the first-run ASK prompt.
+			boolean offerRestartElevated = false;
+			if (elevateCheckFinal != null) {
+				boolean wantAlways = elevateCheckFinal.isSelected();
+				boolean wasAlways = originalElevation == Settings.ElevationChoice.ALWAYS;
+				if (wantAlways != wasAlways) {
+					settings.setElevationChoice(
+							wantAlways ? Settings.ElevationChoice.ALWAYS : Settings.ElevationChoice.NEVER);
+					// Turning it on takes effect now only if we're not already elevated; otherwise it just applies
+					// to future launches.
+					offerRestartElevated = wantAlways && !Capabilities.ELEVATION.isElevated();
+				}
+			}
+			settings.save();
+			if (offerRestartElevated) {
+				App.relaunchElevatedNow();
 			}
 		});
 	}
