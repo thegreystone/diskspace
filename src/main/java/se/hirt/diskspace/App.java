@@ -158,7 +158,7 @@ public final class App extends Application {
 			return; // ALWAYS is auto-handled at startup in main(); NEVER means don't pester.
 		String confirmationText = """
 		                          DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as administrator. Without elevation it falls back to the directory-walking scanner.
-
+		                          
 		                          Restart as administrator now? DiskSpace will then start elevated automatically on future launches — you can change this in Preferences.""";
 		Alert alert = new Alert(AlertType.CONFIRMATION, confirmationText, ButtonType.YES, ButtonType.NO);
 		alert.setHeaderText("Run as administrator for faster scanning?");
@@ -206,8 +206,7 @@ public final class App extends Application {
 		} else {
 			// User declined UAC, or the spawn failed for some other reason. Stay open.
 			Alert err = new Alert(AlertType.WARNING,
-					"Could not restart as administrator. Continuing without elevation.\n"
-							+ "You can launch DiskSpace yourself from an elevated shell to enable MFT scanning.",
+					"Could not restart as administrator. Continuing without elevation.\n" + "You can launch DiskSpace yourself from an elevated shell to enable MFT scanning.",
 					ButtonType.OK);
 			err.setHeaderText("Elevation declined");
 			err.setTitle("DiskSpace");

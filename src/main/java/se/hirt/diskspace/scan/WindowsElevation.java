@@ -79,11 +79,9 @@ public final class WindowsElevation {
 	 * {@code SeChangeNotifyPrivilege} in particular must stay — it's bypass-traverse-checking, relied on for ordinary
 	 * path resolution.
 	 */
-	private static final String[] KEEP_PRIVILEGES = {
-			"SeBackupPrivilege", "SeManageVolumePrivilege",
-			"SeChangeNotifyPrivilege", "SeShutdownPrivilege", "SeUndockPrivilege",
-			"SeIncreaseWorkingSetPrivilege", "SeTimeZonePrivilege"
-	};
+	private static final String[] KEEP_PRIVILEGES = {"SeBackupPrivilege", "SeManageVolumePrivilege",
+			"SeChangeNotifyPrivilege", "SeShutdownPrivilege", "SeUndockPrivilege", "SeIncreaseWorkingSetPrivilege",
+			"SeTimeZonePrivilege"};
 
 	/**
 	 * True iff we're on Windows AND running as a built native-image (not JVM dev mode). The {@code @CFunction} bindings
@@ -253,7 +251,8 @@ public final class WindowsElevation {
 					int adj = Win32.AdjustTokenPrivileges(token, 0, rm, rmSize, WordFactory.nullPointer(),
 							WordFactory.nullPointer());
 					int err = Win32.GetLastError();
-					LOG.fine(() -> "dropToBackupPrivileges: removed " + n + " privilege(s), adj=" + adj + " err=" + err);
+					LOG.fine(
+							() -> "dropToBackupPrivileges: removed " + n + " privilege(s), adj=" + adj + " err=" + err);
 				} finally {
 					UnmanagedMemory.free(rm);
 				}

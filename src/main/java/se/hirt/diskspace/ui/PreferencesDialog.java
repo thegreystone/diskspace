@@ -30,11 +30,7 @@ package se.hirt.diskspace.ui;
 
 import javafx.geometry.HPos;
 import javafx.geometry.Insets;
-import javafx.scene.control.ButtonType;
-import javafx.scene.control.CheckBox;
-import javafx.scene.control.ChoiceBox;
-import javafx.scene.control.Dialog;
-import javafx.scene.control.Label;
+import javafx.scene.control.*;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
@@ -185,6 +181,14 @@ public final class PreferencesDialog {
 		grid.add(coloringChoice, 1, 6);
 		grid.add(coloringDescription, 1, 7);
 
+		CheckBox hideUnavailableCheck = new CheckBox("Hide unavailable disks");
+		hideUnavailableCheck.setSelected(settings.hideUnavailableDisks());
+		Label hideUnavailableHint = describeLabel(
+				"Leave disks that can't be read (offline, disconnected, or failing media) out of the picker.");
+		grid.add(new Label("Disk picker:"), 0, 8);
+		grid.add(hideUnavailableCheck, 1, 8);
+		grid.add(hideUnavailableHint, 1, 9);
+
 		// Windows-only row: run elevated so the fast NTFS (MFT) scanner can open raw volume handles. Hidden on
 		// macOS / Linux / JVM dev mode, where UAC elevation isn't a thing (Capabilities.ELEVATION.isAvailable() is
 		// false there), so the checkbox would have nothing useful to do.
@@ -195,9 +199,9 @@ public final class PreferencesDialog {
 			elevateCheck.setSelected(originalElevation == Settings.ElevationChoice.ALWAYS);
 			Label elevateHint = describeLabel(
 					"Lets DiskSpace use the fast NTFS (MFT) scanner. Windows shows a UAC prompt at each launch.");
-			grid.add(new Label("Fast scanning:"), 0, 8);
-			grid.add(elevateCheck, 1, 8);
-			grid.add(elevateHint, 1, 9);
+			grid.add(new Label("Fast scanning:"), 0, 10);
+			grid.add(elevateCheck, 1, 10);
+			grid.add(elevateHint, 1, 11);
 		}
 
 		dialog.getDialogPane().setContent(grid);
@@ -211,6 +215,7 @@ public final class PreferencesDialog {
 			settings.setDefaultVisualization(vizChoice.getValue());
 			settings.setDefaultSizeUnit(unitChoice.getValue());
 			settings.setDefaultColoringMode(coloringChoice.getValue());
+			settings.setHideUnavailableDisks(hideUnavailableCheck.isSelected());
 			// Only touch the elevation choice when the checkbox state actually flips relative to ALWAYS, so merely
 			// opening Preferences and clicking OK doesn't silently suppress the first-run ASK prompt.
 			boolean offerRestartElevated = false;

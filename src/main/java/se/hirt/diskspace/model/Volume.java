@@ -59,40 +59,77 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 		return Math.max(0L, totalBytes - usableBytes);
 	}
 
-	public static List<Volume> enumerate() {
-		List<Volume> volumes = new ArrayList<>();
+	/**
+	 * The candidate volume roots, in the platform's natural order (drive letters on Windows, mount points elsewhere).
+	 * Cheap and non-blocking: this reads the live filesystem's root list (a {@code GetLogicalDrives} bitmask on
+	 * Windows) without touching any medium. The blocking, hang-prone work — {@link Files#getFileStore} and the
+	 * free/total-space queries — is deferred to {@link #resolve}, so callers can fan {@code resolve} out across threads
+	 * and time out a dead disk without wedging the rest.
+	 */
+	public static List<Path> rootDirectories() {
+		List<Path> roots = new ArrayList<>();
 		for (Path root : FileSystems.getDefault().getRootDirectories()) {
-			try {
-				// On macOS, "/" is a sealed APFS system snapshot. User data lives on
-				// "/System/Volumes/Data". Scanning from "/" crosses firmlinks into that
-				// volume and double-counts everything. Use Data as the scan root instead.
-				Path scanRoot = apfsDataVolumeFor(root);
-				// Query the FileStore at scanRoot, not root — APFS volumes inside one
-				// container share a free-space pool, but each volume has its own block
-				// count. Querying at "/" returns container-wide used space (System + Data
-				// + Preboot + VM + snapshots), which makes the scanner's "Unaccounted"
-				// comparison apples-to-oranges since the scanner only walks Data.
-				FileStore store = Files.getFileStore(scanRoot);
-				if (isPseudoFs(store.type())) {
-					continue;
-				}
-				String deviceName = store.name();
-				if (deviceName == null || deviceName.isBlank()) {
-					deviceName = root.toString();
-				}
-				String displayName = resolveDisplayName(root, deviceName);
-				long total = store.getTotalSpace();
-				long usable = store.getUsableSpace();
-				long used = computeUsedBytes(scanRoot, total, usable);
-				LOG.info(String.format("Volume: root=%s scanRoot=%s device=%s display=%s type=%s", root, scanRoot,
-						deviceName, displayName, store.type()));
-				volumes.add(new Volume(displayName, deviceName, scanRoot, total, usable, used, store.type(),
-						StorageProfile.UNKNOWN));
-			} catch (Exception ignore) {
-				// Volume not accessible (offline drive, permission denied) — skip silently.
-			}
+			roots.add(root);
 		}
-		return enrichWithStorageProfiles(volumes);
+		return roots;
+	}
+
+	/**
+	 * Resolves a single root into a {@link Volume} with an {@link StorageProfile#UNKNOWN} profile (call
+	 * {@link #probeStorageProfile} separately to classify the medium), or {@code null} when the root is a pseudo
+	 * filesystem or inaccessible (offline drive, permission denied, dead media).
+	 * <p><b>May block for a long time on unresponsive media</b> — the free/total-space queries on a failing SD card or
+	 * a stalled USB reader can hang for tens of seconds. Call this off the FX thread, one root per worker, so a single
+	 * bad disk can't hold up the others or the UI.
+	 */
+	public static Volume resolve(Path root) {
+		try {
+			// On macOS, "/" is a sealed APFS system snapshot. User data lives on
+			// "/System/Volumes/Data". Scanning from "/" crosses firmlinks into that
+			// volume and double-counts everything. Use Data as the scan root instead.
+			Path scanRoot = apfsDataVolumeFor(root);
+			// Query the FileStore at scanRoot, not root — APFS volumes inside one
+			// container share a free-space pool, but each volume has its own block
+			// count. Querying at "/" returns container-wide used space (System + Data
+			// + Preboot + VM + snapshots), which makes the scanner's "Unaccounted"
+			// comparison apples-to-oranges since the scanner only walks Data.
+			FileStore store = Files.getFileStore(scanRoot);
+			if (isPseudoFs(store.type())) {
+				return null;
+			}
+			String deviceName = store.name();
+			if (deviceName == null || deviceName.isBlank()) {
+				deviceName = root.toString();
+			}
+			String displayName = resolveDisplayName(root, deviceName);
+			long total = store.getTotalSpace();
+			long usable = store.getUsableSpace();
+			long used = computeUsedBytes(scanRoot, total, usable);
+			LOG.info(String.format("Volume: root=%s scanRoot=%s device=%s display=%s type=%s", root, scanRoot,
+					deviceName, displayName, store.type()));
+			return new Volume(displayName, deviceName, scanRoot, total, usable, used, store.type(),
+					StorageProfile.UNKNOWN);
+		} catch (Exception ignore) {
+			// Volume not accessible (offline drive, permission denied) — skip silently.
+			return null;
+		}
+	}
+
+	/**
+	 * Classifies the physical medium behind a single {@code volume}, reusing the same cache and native fast path (Win32
+	 * ioctls / Disk Arbitration) that {@link #enrichWithStorageProfiles} uses in bulk. Returns
+	 * {@link StorageProfile#UNKNOWN} when classification fails. Like {@link #resolve}, this can block — run it off the
+	 * FX thread.
+	 * <p><b>Per-disk by design.</b> The picker classifies one volume at a time, as each resolves, so this hands a
+	 * singleton to {@link StorageProfileProbe#probeMany}. In the native image — the shipped binary — that's exactly the
+	 * intended path: the probe is a per-drive Win32 ioctl costing a few ms, so there's nothing to batch. The only case
+	 * that loses out is JVM dev mode ({@code mvn javafx:run}), where {@code probeMany}'s reason for existing is to fold
+	 * a PowerShell launch per drive into one process; calling it per-disk gives that back up (N parallel PowerShell
+	 * starts). That's a dev-only inefficiency — mitigated by the per-mount cache and the streaming UI — not a regression
+	 * in what users run, so the simpler per-disk streaming is the deliberate trade.
+	 */
+	public static StorageProfile probeStorageProfile(Volume volume) {
+		return StorageProfileProbe.probeMany(List.of(volume)).getOrDefault(volume.root(), StorageProfile.UNKNOWN);
 	}
 
 	/**
