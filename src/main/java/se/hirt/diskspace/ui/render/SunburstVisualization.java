@@ -30,7 +30,6 @@ package se.hirt.diskspace.ui.render;
 
 import javafx.animation.AnimationTimer;
 import javafx.geometry.VPos;
-import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.ArcType;
 import javafx.scene.shape.StrokeLineCap;
@@ -159,7 +158,7 @@ public final class SunburstVisualization implements Visualization {
 	}
 
 	@Override
-	public void render(GraphicsContext g, double w, double h, RenderContext ctx) {
+	public void render(RenderSurface g, double w, double h, RenderContext ctx) {
 		sectors.clear();
 		if (ctx.scanRoot() == null) {
 			drawCenterText(g, w / 2, h / 2, "Scanning…");
@@ -337,7 +336,7 @@ public final class SunburstVisualization implements Visualization {
 	// ---- drawing --------------------------------------------------------
 
 	private void drawLayout(
-			GraphicsContext g, double cx, double cy, double normalW, double thinW,
+			RenderSurface g, double cx, double cy, double normalW, double thinW,
 			Map<DirectoryNode, Layout> layout, RenderContext ctx) {
 		// Render outer rings first so any anti-aliasing edges are overdrawn cleanly by the inner rings.
 		List<Map.Entry<DirectoryNode, Layout>> entries = new ArrayList<>(layout.entrySet());
@@ -407,7 +406,7 @@ public final class SunburstVisualization implements Visualization {
 	}
 
 	private void drawAnimatedFrame(
-			GraphicsContext g, double cx, double cy, double normalW, double thinW,
+			RenderSurface g, double cx, double cy, double normalW, double thinW,
 			RenderContext ctx) {
 		long elapsed = System.nanoTime() - animStartNanos;
 		double t = Math.min(1.0, elapsed / (double) ANIM_DURATION_NANOS);
@@ -476,7 +475,7 @@ public final class SunburstVisualization implements Visualization {
 	}
 
 	private void drawAnnularSector(
-			GraphicsContext g, double cx, double cy, double r1, double r2, double startDeg,
+			RenderSurface g, double cx, double cy, double r1, double r2, double startDeg,
 			double sweepDeg, Color fill) {
 		double a1 = Math.toRadians(startDeg);
 		double a2 = Math.toRadians(startDeg + sweepDeg);
@@ -494,7 +493,7 @@ public final class SunburstVisualization implements Visualization {
 		g.stroke();
 	}
 
-	private void drawHub(GraphicsContext g, double cx, double cy, RenderContext ctx) {
+	private void drawHub(RenderSurface g, double cx, double cy, RenderContext ctx) {
 		Color hubFill = ctx.hoveringHub() ? host.scheme().surface().brighter() : host.scheme().surface();
 		g.setFill(hubFill);
 		g.fillOval(cx - HUB_RADIUS, cy - HUB_RADIUS, HUB_RADIUS * 2, HUB_RADIUS * 2);
@@ -555,7 +554,7 @@ public final class SunburstVisualization implements Visualization {
 		}
 	}
 
-	private void drawHubProgress(GraphicsContext g, double cx, double cy, RenderContext ctx) {
+	private void drawHubProgress(RenderSurface g, double cx, double cy, RenderContext ctx) {
 		double r = HUB_RADIUS - 4;
 		double thickness = 2.5;
 
@@ -588,7 +587,7 @@ public final class SunburstVisualization implements Visualization {
 		}
 	}
 
-	private void drawCenterText(GraphicsContext g, double cx, double cy, String text) {
+	private void drawCenterText(RenderSurface g, double cx, double cy, String text) {
 		g.setFill(host.scheme().textMuted());
 		g.setTextAlign(TextAlignment.CENTER);
 		g.setTextBaseline(VPos.CENTER);

@@ -2323,12 +2323,86 @@ public final class DiskView {
 				hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles, progressBytes, progressPath,
 				scanner.hubState());
 		try {
-			currentVisualization.render(g, w, h, ctx);
+			currentVisualization.render(new CanvasSurface(g), w, h, ctx);
 		} catch (RuntimeException ex) {
 			// Wrap so a paint-time exception doesn't brick the live ticker / animation timer. Logged so we still
 			// see what blew up.
 			LOG.log(java.util.logging.Level.WARNING, currentMode + " render failed", ex);
 		}
+	}
+
+	/**
+	 * Export the active visualization as a standalone SVG. The drawing goes through {@link SvgSurface} using the exact
+	 * same {@code render(...)} code path as the live canvas, so the file matches what's on screen — only as
+	 * resolution-independent vector art. Mirrors {@link #doRedraw}'s background fill so the SVG isn't transparent.
+	 */
+	private void exportVisualizationSvg() {
+		if (scanRoot == null) {
+			Alert a = new Alert(Alert.AlertType.INFORMATION);
+			a.setTitle("Nothing to export");
+			a.setHeaderText("The scan hasn't produced anything to export yet.");
+			a.showAndWait();
+			return;
+		}
+		// Capture a static frame: exporting mid-drill would freeze a tween at an arbitrary interpolation point.
+		sunburst.cancelAnimation();
+
+		double w = canvas.getWidth();
+		double h = canvas.getHeight();
+		if (w < 10 || h < 10) {
+			// Canvas not laid out yet (or pathologically small) — fall back to a sensible square.
+			w = 900;
+			h = 900;
+		}
+
+		SvgSurface surface = new SvgSurface();
+		surface.setFill(scheme.background());
+		surface.fillRect(0, 0, w, h);
+		RenderContext ctx = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub, hoveringFreeSpace,
+				hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles, progressBytes, progressPath,
+				scanner.hubState());
+		String svg;
+		try {
+			currentVisualization.render(surface, w, h, ctx);
+			svg = surface.toSvg(w, h);
+		} catch (RuntimeException ex) {
+			LOG.log(java.util.logging.Level.WARNING, "SVG export render failed", ex);
+			showExportError("Could not render the visualization to SVG.", ex.getMessage());
+			return;
+		}
+
+		javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
+		chooser.setTitle("Export " + currentMode.displayName() + " as SVG");
+		chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter("SVG image", "*.svg"));
+		chooser.setInitialFileName(defaultExportFileName());
+		javafx.stage.Window owner = (outerRoot.getScene() != null) ? outerRoot.getScene().getWindow() : null;
+		java.io.File file = chooser.showSaveDialog(owner);
+		if (file == null)
+			return;
+		Path out = file.toPath();
+		try {
+			Files.writeString(out, svg, java.nio.charset.StandardCharsets.UTF_8);
+		} catch (java.io.IOException ex) {
+			LOG.log(java.util.logging.Level.WARNING, "SVG export write failed", ex);
+			showExportError("Could not write " + out.getFileName() + ".", ex.getMessage());
+		}
+	}
+
+	private void showExportError(String header, String detail) {
+		Alert a = new Alert(Alert.AlertType.ERROR);
+		a.setTitle("Export failed");
+		a.setHeaderText(header);
+		a.setContentText(detail);
+		a.showAndWait();
+	}
+
+	/** Default filename for an SVG export, e.g. {@code "Macintosh HD-sunburst.svg"}, sanitized for the filesystem. */
+	private String defaultExportFileName() {
+		String base = target.displayName();
+		if (base == null || base.isBlank())
+			base = "diskspace";
+		base = base.replaceAll("[\\\\/:*?\"<>|]+", "_").trim();
+		return base + "-" + currentMode.name().toLowerCase(java.util.Locale.ROOT) + ".svg";
 	}
 
 	// ---- interaction -----------------------------------------------------
@@ -2613,6 +2687,8 @@ public final class DiskView {
 		private final MenuItem rescanItem = new MenuItem("Re-scan");
 		private final MenuItem toggleUnitsItem = new MenuItem("Toggle Size Units");
 		private final MenuItem toggleVizItem = new MenuItem("Toggle Visualization");
+		// Label is rewritten on every show to name the active visualization — see install(...).
+		private final MenuItem exportSvgItem = new MenuItem("Export Visualization as SVG…");
 		private final MenuItem toggleFreeSpaceItem = new MenuItem("Hide / Show Free Space");
 		private final MenuItem toggleThemeItem = new MenuItem("Toggle Theme");
 		private final MenuItem preferencesItem = new MenuItem("Preferences…");
@@ -2691,6 +2767,10 @@ public final class DiskView {
 				emitUserAction("ContextMenu", "toggle-mode");
 				toggleRenderMode();
 			});
+			exportSvgItem.setOnAction(e -> {
+				emitUserAction("ContextMenu", "export-svg");
+				exportVisualizationSvg();
+			});
 			toggleFreeSpaceItem.setOnAction(e -> {
 				emitUserAction("ContextMenu", "toggle-hide-free-space");
 				toggleHideFreeSpace();
@@ -2760,12 +2840,15 @@ public final class DiskView {
 					pending = null;
 				}
 				if (viewActions) {
+					// Name the entry after whichever visualization is on screen (Sunburst / Squarified Treemap). The
+					// menu is rebuilt on every open, so reading currentMode here keeps the label always in sync.
+					exportSvgItem.setText("Export " + currentMode.displayName() + " as SVG…");
 					if (hasPath) {
-						// Sector menu: keep it tight. Re-scan and Toggle Visualization stay because
+						// Sector menu: keep it tight. Re-scan, Toggle Visualization and Export stay because
 						// they're the most likely "I want to do something to the view from here"
 						// follow-ups; Help / Toggle Units / Quit live on the empty-canvas menu.
 						menu.getItems().add(new SeparatorMenuItem());
-						menu.getItems().addAll(rescanItem, toggleVizItem);
+						menu.getItems().addAll(rescanItem, toggleVizItem, exportSvgItem);
 					} else {
 						// Empty-canvas menu: full set of view-level actions for mouse-only users.
 						// Preferences sits in its own section above Quit per the app's menu hierarchy:
@@ -2773,8 +2856,8 @@ public final class DiskView {
 						// as distinct from the transient view-toggle actions above it.
 						menu.getItems()
 								.addAll(helpItem, rescanItem, toggleUnitsItem, toggleVizItem, toggleFreeSpaceItem,
-										toggleThemeItem, new SeparatorMenuItem(), preferencesItem, aboutItem,
-										new SeparatorMenuItem(), quitItem);
+										toggleThemeItem, new SeparatorMenuItem(), exportSvgItem, new SeparatorMenuItem(),
+										preferencesItem, aboutItem, new SeparatorMenuItem(), quitItem);
 					}
 				}
 				menu.show(node, e.getScreenX(), e.getScreenY());

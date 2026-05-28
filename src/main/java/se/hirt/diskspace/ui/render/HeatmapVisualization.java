@@ -29,7 +29,6 @@
 package se.hirt.diskspace.ui.render;
 
 import javafx.geometry.VPos;
-import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
@@ -77,7 +76,7 @@ public final class HeatmapVisualization implements Visualization {
 	}
 
 	@Override
-	public void render(GraphicsContext g, double w, double h, RenderContext ctx) {
+	public void render(RenderSurface g, double w, double h, RenderContext ctx) {
 		rects.clear();
 		if (ctx.scanRoot() == null) {
 			drawCenterText(g, w / 2, h / 2, "Scanning…");
@@ -116,7 +115,7 @@ public final class HeatmapVisualization implements Visualization {
 
 	// ---- drawing --------------------------------------------------------
 
-	private void drawHeatmap(GraphicsContext g, double w, double h, RenderContext ctx) {
+	private void drawHeatmap(RenderSurface g, double w, double h, RenderContext ctx) {
 		DirectoryNode viewRoot = ctx.viewRoot();
 		if (viewRoot == null)
 			return;
@@ -199,7 +198,7 @@ public final class HeatmapVisualization implements Visualization {
 	 * the row's worst aspect ratio, then commits the row and continues on the remaining strip.
 	 */
 	private void squarify(
-			GraphicsContext g, List<TreemapItem> items, double x, double y, double w, double h,
+			RenderSurface g, List<TreemapItem> items, double x, double y, double w, double h,
 			double scale, int depth, RenderContext ctx) {
 		if (items.isEmpty() || w < 1 || h < 1)
 			return;
@@ -258,7 +257,7 @@ public final class HeatmapVisualization implements Visualization {
 	}
 
 	private void layoutRow(
-			GraphicsContext g, List<TreemapItem> row, double x, double y, double w, double h,
+			RenderSurface g, List<TreemapItem> row, double x, double y, double w, double h,
 			double scale, boolean rowAlongTop, int depth, RenderContext ctx) {
 		double rowSum = 0;
 		for (TreemapItem t : row)
@@ -288,7 +287,7 @@ public final class HeatmapVisualization implements Visualization {
 	}
 
 	private void drawTreemapCell(
-			GraphicsContext g, TreemapItem item, double x, double y, double w, double h, int depth,
+			RenderSurface g, TreemapItem item, double x, double y, double w, double h, int depth,
 			RenderContext ctx) {
 		// Sub-pixel cull. Anything thinner than 1 px on either axis can't render visibly (Canvas's fillRect will
 		// antialias to nothing) and we'd still pay for getNodeColor, hover-state derivation, fillRect, and a
@@ -382,7 +381,7 @@ public final class HeatmapVisualization implements Visualization {
 	}
 
 	private void drawTreemapLabel(
-			GraphicsContext g, double x, double y, double w, String name, long bytes,
+			RenderSurface g, double x, double y, double w, String name, long bytes,
 			Color fillBase) {
 		Color textColor = textOn(fillBase);
 		g.setFill(textColor);
@@ -397,7 +396,7 @@ public final class HeatmapVisualization implements Visualization {
 		g.fillText(shown, x + 6, y + 4, padded);
 	}
 
-	private void drawHoverOverlay(GraphicsContext g, double w, double h, RenderContext ctx) {
+	private void drawHoverOverlay(RenderSurface g, double w, double h, RenderContext ctx) {
 		String name;
 		long bytes;
 		DirectoryNode hoverNode = ctx.hoverNode();
@@ -432,7 +431,7 @@ public final class HeatmapVisualization implements Visualization {
 		g.fillText(text, boxX + pad, boxY + boxH / 2.0, textW - 2 * pad);
 	}
 
-	private void drawCenterText(GraphicsContext g, double cx, double cy, String text) {
+	private void drawCenterText(RenderSurface g, double cx, double cy, String text) {
 		g.setFill(host.scheme().textMuted());
 		g.setTextAlign(TextAlignment.CENTER);
 		g.setTextBaseline(VPos.CENTER);

@@ -28,7 +28,6 @@
  */
 package se.hirt.diskspace.ui.render;
 
-import javafx.scene.canvas.GraphicsContext;
 import se.hirt.diskspace.model.DirectoryNode;
 
 /**
@@ -59,7 +58,7 @@ public interface Visualization {
 	void attach(VisualizationHost host);
 
 	/** Paint the current frame. */
-	void render(GraphicsContext g, double width, double height, RenderContext ctx);
+	void render(RenderSurface g, double width, double height, RenderContext ctx);
 
 	/** Hit-test against the geometry produced by the most recent {@link #render}. */
 	HitResult hitTest(double x, double y);
