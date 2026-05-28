@@ -111,6 +111,12 @@ public final class PickerView {
 	private boolean hideUnavailableDisks = Settings.get().hideUnavailableDisks();
 	/** Every disk row, in root order. Held so the {@code H} toggle can revisit the settled-unavailable ones. */
 	private List<DiskRow> diskRows = List.of();
+	/**
+	 * Set by {@link #dispose()} when the picker's tab is swapped to a disk view or closed. The streaming callbacks
+	 * check it and become no-ops, so abandoned enumeration doesn't keep mutating detached nodes or competing with a
+	 * freshly-started scan. FX-thread-only.
+	 */
+	private boolean disposed;
 
 	public PickerView(ColorScheme scheme, Consumer<Volume> onSelection) {
 		this.scheme = scheme;
@@ -312,6 +318,8 @@ public final class PickerView {
 			Thread.ofVirtual().name("picker-resolve-" + row.root).start(() -> {
 				Volume v = Volume.resolve(row.root); // may block for a long time on dead media
 				Platform.runLater(() -> {
+					if (disposed)
+						return; // tab swapped/closed while we were resolving — drop the result
 					if (--resolvesRemaining == 0)
 						scanningLabel.setText("Identifying disk types…");
 					if (v == null) {
@@ -333,6 +341,8 @@ public final class PickerView {
 				return;
 			}
 			Platform.runLater(() -> {
+				if (disposed)
+					return;
 				for (DiskRow row : diskRows) {
 					if (row.resolved) {
 						if (row.markReady(StorageProfile.UNKNOWN))
@@ -361,6 +371,8 @@ public final class PickerView {
 			}
 			StorageProfile profile = probed == null ? StorageProfile.UNKNOWN : probed;
 			Platform.runLater(() -> {
+				if (disposed)
+					return;
 				if (row.markReady(profile))
 					rowSettled();
 			});
@@ -602,6 +614,18 @@ public final class PickerView {
 
 	public Region getRoot() {
 		return root;
+	}
+
+	/**
+	 * Releases the picker's background work when its tab is swapped to a disk view or closed (see
+	 * {@code MainWindow}). The resolve/probe virtual threads can't be interrupted mid-syscall, but this stops the
+	 * progress pulse immediately and flips {@link #disposed} so any results they post afterwards are dropped — so an
+	 * abandoned enumeration doesn't keep animating or compete for CPU with a freshly-started scan. Idempotent; must be
+	 * called on the FX thread.
+	 */
+	public void dispose() {
+		disposed = true;
+		progressPulse.stop();
 	}
 
 	/**

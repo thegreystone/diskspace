@@ -120,6 +120,13 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 	 * ioctls / Disk Arbitration) that {@link #enrichWithStorageProfiles} uses in bulk. Returns
 	 * {@link StorageProfile#UNKNOWN} when classification fails. Like {@link #resolve}, this can block — run it off the
 	 * FX thread.
+	 * <p><b>Per-disk by design.</b> The picker classifies one volume at a time, as each resolves, so this hands a
+	 * singleton to {@link StorageProfileProbe#probeMany}. In the native image — the shipped binary — that's exactly the
+	 * intended path: the probe is a per-drive Win32 ioctl costing a few ms, so there's nothing to batch. The only case
+	 * that loses out is JVM dev mode ({@code mvn javafx:run}), where {@code probeMany}'s reason for existing is to fold
+	 * a PowerShell launch per drive into one process; calling it per-disk gives that back up (N parallel PowerShell
+	 * starts). That's a dev-only inefficiency — mitigated by the per-mount cache and the streaming UI — not a regression
+	 * in what users run, so the simpler per-disk streaming is the deliberate trade.
 	 */
 	public static StorageProfile probeStorageProfile(Volume volume) {
 		return StorageProfileProbe.probeMany(List.of(volume)).getOrDefault(volume.root(), StorageProfile.UNKNOWN);

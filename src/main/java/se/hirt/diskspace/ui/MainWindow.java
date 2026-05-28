@@ -159,6 +159,17 @@ public final class MainWindow {
 		// handler) find a content object as soon as the tab becomes visible.
 		tab.setUserData(picker);
 		tab.setContent(picker.getRoot());
+		// Closing the tab directly (the X) should release whatever it holds — a picker still
+		// streaming in disks, or a disk view mid-scan — rather than leaving that work running
+		// headless until app quit. Reads userData at close time so it handles either content.
+		tab.setOnClosed(e -> {
+			Object data = tab.getUserData();
+			if (data instanceof PickerView pv) {
+				pv.dispose();
+			} else if (data instanceof DiskView dv) {
+				dv.shutdown();
+			}
+		});
 		// Insert before the "+" tab so "+" stays last.
 		int insertAt = tabs.getTabs().indexOf(plusTab);
 		tabs.getTabs().add(insertAt, tab);
@@ -166,6 +177,11 @@ public final class MainWindow {
 	}
 
 	private void swapToSunburst(Tab tab, Volume v) {
+		// The tab is handing off from the picker that fired this selection to the disk view;
+		// dispose the picker first so its in-flight enumeration stops competing with the new scan.
+		if (tab.getUserData() instanceof PickerView pv) {
+			pv.dispose();
+		}
 		tab.setText(v.displayName());
 		if (!v.deviceName().equals(v.displayName())) {
 			tab.setTooltip(new javafx.scene.control.Tooltip(v.deviceName()));
