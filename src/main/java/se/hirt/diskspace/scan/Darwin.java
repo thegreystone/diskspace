@@ -103,6 +103,12 @@ public final class Darwin {
 	 * on which attrs apply (file vs. directory).
 	 */
 	public static final int FSOPT_PACK_INVAL_ATTRS = 0x00000008;
+	/**
+	 * {@code FSOPT_ATTR_CMN_EXTENDED} — enable the {@code ATTR_CMNEXT_*} group. With this flag, the {@code forkattr}
+	 * slot in {@code struct attrlist} is reinterpreted as a bitmap of {@code ATTR_CMNEXT_*} attributes, and the
+	 * corresponding values are appended to each returned entry after the regular fileattr group. macOS 10.13+.
+	 */
+	public static final int FSOPT_ATTR_CMN_EXTENDED = 0x00000020;
 
 	// commonattr bits (subset; see <sys/attr.h>)
 	public static final int ATTR_CMN_NAME = 0x00000001;
@@ -121,6 +127,34 @@ public final class Darwin {
 	/** {@code ATTR_FILE_ALLOCSIZE} — bytes allocated on disk (physical size). uint64. */
 	public static final int ATTR_FILE_ALLOCSIZE = 0x00000004;
 
+	// commonextattr bits (only valid when FSOPT_ATTR_CMN_EXTENDED is passed; see <sys/attr.h>)
+	/**
+	 * {@code ATTR_CMNEXT_PRIVATESIZE} — {@code off_t} (uint64) count of bytes that would be freed if this file were
+	 * deleted: bytes uniquely referenced by this file and not shared via APFS cloning. For non-cloned files this equals
+	 * {@code ATTR_FILE_ALLOCSIZE}; for files in a clone family it's just the file's own CoW-modified blocks, excluding
+	 * the still-shared extents. macOS 10.10+ on APFS; returns {@code allocsize} on other filesystems.
+	 */
+	public static final int ATTR_CMNEXT_PRIVATESIZE = 0x00000008;
+	/**
+	 * {@code ATTR_CMNEXT_CLONEID} — uint64 APFS data-stream identifier. Every APFS inode has a unique non-zero
+	 * cloneid. Two files that share extents via {@code clonefile(2)} or {@code cp -c} can be grouped by their
+	 * (currently identical) cloneids only in combination with {@link #ATTR_CMNEXT_CLONE_REFCNT} &gt; 1, which is what
+	 * actually indicates the file is currently sharing extents with at least one other file in the clone family.
+	 * macOS 10.13+ on APFS; returns {@code 0} on other filesystems.
+	 */
+	public static final int ATTR_CMNEXT_CLONEID = 0x00000100;
+	/**
+	 * {@code ATTR_CMNEXT_CLONE_REFCNT} — uint32 count of files currently sharing extents via the clone family this
+	 * file belongs to. A value of {@code 1} (or {@code 0} on non-APFS / older kernels) means the file isn't currently
+	 * sharing any extents and should be charged at its full {@code allocsize}. A value of {@code 2+} means at least one
+	 * sibling shares extents with this file, and per-family dedup should fire. macOS 12+ on APFS (volume must have
+	 * {@code VOL_CAP_FMT_CLONE_MAPPING}); 0 elsewhere.
+	 */
+	public static final int ATTR_CMNEXT_CLONE_REFCNT = 0x00001000;
+
+	// ATTR_CMNEXT_EXT_FLAGS = 0x00000200 (uint64). Not bound; listed here so the adjacent CLONEID bit (0x100) and
+	// CLONE_REFCNT bit (0x1000) are unambiguous if someone adds more CMNEXT attrs in the future.
+
 	// fsobj_type_t values (vtype enum in <sys/vnode.h>) — what ATTR_CMN_OBJTYPE returns
 	/** Regular file. */
 	public static final int VREG = 1;
@@ -128,6 +162,38 @@ public final class Darwin {
 	public static final int VDIR = 2;
 	/** Symbolic link. */
 	public static final int VLNK = 5;
+
+	// ── statfs (libSystem) ────────────────────────────────────────────────
+
+	/**
+	 * {@code MFSTYPENAMELEN} from {@code <sys/mount.h>} — bytes reserved for the {@code f_fstypename} field in
+	 * {@code struct statfs} (15 chars + NUL).
+	 */
+	public static final int MFSTYPENAMELEN = 16;
+	/**
+	 * Conservative size to allocate for a {@code struct statfs} buffer. The modern (64-bit-inode) struct on Darwin is
+	 * about 2168 bytes — fixed header + two MAXPATHLEN (1024) path arrays + reserved trailer. We round up to a 4 KiB
+	 * page so the binding remains correct if Apple ever extends the trailer.
+	 */
+	public static final int STATFS_SIZE_BYTES = 4096;
+	/**
+	 * Byte offset of {@code f_fstypename} inside the modern {@code struct statfs} (the {@code __DARWIN_STRUCT_STATFS64}
+	 * layout, which is what plain {@code struct statfs} expands to on every platform we build for — arm64 macOS forces
+	 * {@code __DARWIN_ONLY_64_BIT_INO_T}). Header: 8 B (bsize+iosize) + 5×8 B (blocks/bfree/bavail/files/ffree) + 8 B
+	 * (fsid) + 4 B (owner) + 12 B (type/flags/fssubtype) = 72.
+	 */
+	public static final int STATFS_FSTYPENAME_OFFSET = 72;
+
+	/**
+	 * {@code int statfs(const char *path, struct statfs *buf)}. Fills {@code buf} with filesystem statistics for the
+	 * filesystem containing {@code path}; returns 0 on success or -1 on failure (errno via {@link #__error}). Used at
+	 * scan start to discover whether the scan root lives on APFS, so the bulk scanner can request {@code ATTR_CMNEXT_*}
+	 * attributes only when they will actually populate; on non-APFS filesystems CMNEXT is either zero-filled or returns
+	 * an error, so paying the extra per-entry bytes is wasted. Bound to the bare symbol — on arm64 macOS the
+	 * {@code $INODE64} mangling collapses to nothing because {@code __DARWIN_ONLY_64_BIT_INO_T} is 1.
+	 */
+	@CFunction(value = "statfs", transition = Transition.NO_TRANSITION)
+	public static native int statfs(CCharPointer path, PointerBase buf);
 
 	// ── POSIX open / close / errno (libSystem) ────────────────────────────
 
