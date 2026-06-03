@@ -72,14 +72,21 @@ import java.util.logging.Logger;
  * <p><b>Hardlink dedup.</b> A concurrent set of seen file IDs gates both directory
  * descent (firmlinks / bind mounts) and file accounting (multi-hardlinked files reachable via more than one path).
  * Matches the dedup semantics of {@link ParallelDirectoryScanner}.
- * <p><b>APFS clone dedup.</b> A second concurrent set tracks seen {@code ATTR_CMNEXT_CLONEID} values — files cloned
- * from a common source (via {@code clonefile(2)} or {@code cp -c}) initially share APFS blocks via copy-on-write but
- * may diverge as either side is modified. We charge the first member of each clone family at its full apparent size
- * (shared + private blocks) and subsequent members at {@code ATTR_CMNEXT_PRIVATESIZE} only (just their CoW-modified
- * blocks, excluding the still-shared extents already counted). Total for an N-member family becomes
- * {@code shared + sum(private_i)}, which matches actual on-disk usage exactly when extents haven't been further
- * shared with files outside the family. The dev-mode {@link ParallelDirectoryScanner} fallback does not have an
- * equivalent (Java NIO doesn't expose either attribute), so dev builds still overcount.
+ * <p><b>APFS clone dedup.</b> Only active when the scan root lives on APFS (probed once via {@code statfs(2)} at scan
+ * start; {@link Darwin#statfs}). On APFS we also request {@link Darwin#ATTR_CMNEXT_CLONE_REFCNT} alongside
+ * {@link Darwin#ATTR_CMNEXT_CLONEID} and {@link Darwin#ATTR_CMNEXT_PRIVATESIZE}. {@code clone_refcnt} counts how
+ * many files currently share extents via this file's clone family: {@code refcnt &le; 1} means the file is not
+ * sharing any extents (either never cloned, or all siblings have diverged) and is charged at full {@code allocsize};
+ * {@code refcnt &ge; 2} means siblings still share extents and triggers the per-family dedup path. A concurrent set
+ * tracks seen {@code cloneid}s for those refcnt-&ge;-2 files: the first member encountered in a clone family is
+ * charged its full {@code allocsize} (shared + private blocks); subsequent members are charged
+ * {@code ATTR_CMNEXT_PRIVATESIZE}
+ * only (just their CoW-modified blocks, excluding the still-shared extents already counted). Total for an N-member
+ * family becomes {@code shared + sum(private_i)}, which matches actual on-disk usage exactly when extents haven't
+ * been further shared with files outside the family. The dev-mode {@link ParallelDirectoryScanner} fallback does
+ * not have an equivalent (Java NIO doesn't expose any of these attrs), so dev builds still overcount. On non-APFS
+ * roots (HFS+, NFS, SMB, exFAT, &hellip;) the whole CMNEXT request is suppressed so those users pay zero per-entry
+ * overhead.
  */
 @Platforms(Platform.DARWIN.class)
 public final class MacBulkScanner implements Scanner {
@@ -92,11 +99,12 @@ public final class MacBulkScanner implements Scanner {
 	private static final long LARGE_FILE_THRESHOLD_BYTES = 1_000_000_000L;
 
 	/**
-	 * Output buffer size for each {@code getattrlistbulk} call. With our 72-byte fixed area (commonattr + fileattr +
-	 * 8-byte CMNEXT private_size + 8-byte CMNEXT clone_id) + name string + padding, each entry packs to ~96–136 B, so
-	 * 64 KB holds ~440–700 entries per syscall. Larger buffers don't deliver meaningful additional throughput (the cost
-	 * is dominated by the kernel's per-entry vnode lookups, not the per-syscall round-trip) and grow the unmanaged
-	 * scratch footprint linearly with pool parallelism.
+	 * Output buffer size for each {@code getattrlistbulk} call. With our up-to-76-byte fixed area (commonattr +
+	 * fileattr + 8-byte CMNEXT private_size + 8-byte CMNEXT clone_id + 4-byte CMNEXT clone_refcnt) + name string +
+	 * padding, each entry packs to ~96–140 B on APFS and ~80–120 B elsewhere, so 64 KB holds ~440–700 entries per
+	 * syscall. Larger buffers don't deliver meaningful additional throughput (the cost is dominated by the kernel's
+	 * per-entry vnode lookups, not the per-syscall round-trip) and grow the unmanaged scratch footprint linearly with
+	 * pool parallelism.
 	 */
 	private static final int BULK_BUFFER_SIZE = 64 * 1024;
 
@@ -144,7 +152,9 @@ public final class MacBulkScanner implements Scanner {
 							new RuntimeException("getattrlist(root) failed; cannot start bulk scan of " + rootPath));
 				return;
 			}
-			ScanContext ctx = new ScanContext(rootPath, root, listener, rootDev);
+			boolean isApfs = isApfsVolume(rootPath);
+			LOG.fine(() -> "Scan root fs detection: " + rootPath + " apfs=" + isApfs);
+			ScanContext ctx = new ScanContext(rootPath, root, listener, rootDev, isApfs);
 			ForkJoinPool fjp = new ForkJoinPool(parallelism);
 			pool = fjp;
 			try {
@@ -194,15 +204,22 @@ public final class MacBulkScanner implements Scanner {
 		 * detection.
 		 */
 		final long rootDev;
+		/**
+		 * Whether the scan root is on APFS. Determined once via {@code statfs(2)} at scan start. Gates the entire
+		 * {@code ATTR_CMNEXT_*} request: on non-APFS roots none of the clone attrs are meaningful (kernel returns 0
+		 * or {@code ENOTSUP}), so we skip {@code FSOPT_ATTR_CMN_EXTENDED} entirely and shrink the per-entry payload.
+		 */
+		final boolean isApfs;
 		/** Inode-set for hardlink + firmlink dedup. Used for both files (multi-link) and directories (bind mounts). */
 		final Set<Long> seenFileIds = ConcurrentHashMap.newKeySet();
 		/**
-		 * Clone-id set for APFS clone dedup. A non-zero {@code ATTR_CMNEXT_CLONEID} groups files that share APFS extents
-		 * via {@code clonefile(2)} (or {@code cp -c}). First member encountered is charged its full {@code allocsize}
-		 * (shared + private); subsequent members are charged only their {@code ATTR_CMNEXT_PRIVATESIZE} (the CoW-modified
-		 * blocks unique to them). Total for an N-member family is {@code shared + sum(private_i)}, matching actual on-disk
-		 * usage. Heavy on macOS where the OS uses cloning extensively (Library/Containers initialised at install,
-		 * build caches, local snapshots, Docker layers).
+		 * Clone-id set for APFS clone dedup. Populated only on APFS roots and only for files whose
+		 * {@code ATTR_CMNEXT_CLONE_REFCNT &ge; 2} — i.e. files currently sharing extents with at least one sibling.
+		 * For each clone family the first member encountered is charged its full {@code allocsize} (shared + private);
+		 * subsequent members are charged only their
+		 * {@code ATTR_CMNEXT_PRIVATESIZE} (the CoW-modified blocks unique to them). Total for an N-member family is
+		 * {@code shared + sum(private_i)}, matching actual on-disk usage. Heavy on macOS where the OS uses cloning
+		 * extensively (Library/Containers initialised at install, build caches, local snapshots, Docker layers).
 		 */
 		final Set<Long> seenCloneIds = ConcurrentHashMap.newKeySet();
 		final LongAdder permDeniedCount = new LongAdder();
@@ -211,11 +228,12 @@ public final class MacBulkScanner implements Scanner {
 		final Object progressLock = new Object();
 		long lastProgressNanos;
 
-		ScanContext(Path rootPath, DirectoryNode rootNode, ScanListener listener, long rootDev) {
+		ScanContext(Path rootPath, DirectoryNode rootNode, ScanListener listener, long rootDev, boolean isApfs) {
 			this.rootPath = rootPath;
 			this.rootNode = rootNode;
 			this.listener = listener;
 			this.rootDev = rootDev;
+			this.isApfs = isApfs;
 		}
 
 		void maybeEmitProgress(String path) {
@@ -226,6 +244,41 @@ public final class MacBulkScanner implements Scanner {
 				lastProgressNanos = now;
 			}
 			listener.onProgress(rootNode.totalFileCount(), rootNode.totalBytes(), path);
+		}
+	}
+
+	/**
+	 * Probes the filesystem type of {@code path} via {@code statfs(2)} and returns {@code true} if
+	 * {@code f_fstypename} equals {@code "apfs"} (lowercase, the value the kernel reports for APFS volumes). Used to
+	 * decide whether to request the {@code ATTR_CMNEXT_*} group. On any failure (statfs returns non-zero, allocation
+	 * fails) we conservatively return {@code false} so we just don't enable clone dedup — the scanner still runs, it
+	 * just falls back to baseline allocsize accounting and the user sees the same overcounting we had before this
+	 * code existed.
+	 */
+	private static boolean isApfsVolume(Path path) {
+		Pointer buf = UnmanagedMemory.malloc(Darwin.STATFS_SIZE_BYTES);
+		CCharPointer pathC = Darwin.allocCString(path.toString());
+		try {
+			int rc = Darwin.statfs(pathC, buf);
+			if (rc != 0) {
+				int err = Darwin.__error().read();
+				LOG.fine(() -> "statfs(" + path + ") failed errno=" + err);
+				return false;
+			}
+			byte[] name = new byte[Darwin.MFSTYPENAMELEN];
+			int len = 0;
+			for (int i = 0; i < Darwin.MFSTYPENAMELEN; i++) {
+				byte b = buf.readByte(Darwin.STATFS_FSTYPENAME_OFFSET + i);
+				if (b == 0)
+					break;
+				name[i] = b;
+				len++;
+			}
+			String fstype = new String(name, 0, len, StandardCharsets.US_ASCII);
+			return "apfs".equals(fstype);
+		} finally {
+			UnmanagedMemory.free(buf);
+			UnmanagedMemory.free(pathC);
 		}
 	}
 
@@ -340,10 +393,14 @@ public final class MacBulkScanner implements Scanner {
 				int commonAttrs = Darwin.ATTR_CMN_RETURNED_ATTRS | Darwin.ATTR_CMN_NAME | Darwin.ATTR_CMN_DEVID | Darwin.ATTR_CMN_OBJTYPE | Darwin.ATTR_CMN_FILEID;
 				int fileAttrs = Darwin.ATTR_FILE_ALLOCSIZE;
 				// CMNEXT bits are placed in the entry buffer in ascending bit order:
-				// PRIVATESIZE (0x08) lands at +56, CLONEID (0x200) at +64.
-				int cmnextAttrs = Darwin.ATTR_CMNEXT_PRIVATESIZE | Darwin.ATTR_CMNEXT_CLONEID;
+				// PRIVATESIZE (0x08) -> +56, CLONEID (0x100) -> +64, CLONE_REFCNT (0x1000) -> +72.
+				// Only requested on APFS; on other filesystems the values are not meaningful and the
+				// FSOPT_ATTR_CMN_EXTENDED flag is dropped to keep per-entry payload minimal.
+				int cmnextAttrs = ctx.isApfs
+						? (Darwin.ATTR_CMNEXT_PRIVATESIZE | Darwin.ATTR_CMNEXT_CLONEID | Darwin.ATTR_CMNEXT_CLONE_REFCNT)
+						: 0;
 				writeAttrList(alist, commonAttrs, fileAttrs, cmnextAttrs);
-				long opts = Darwin.FSOPT_PACK_INVAL_ATTRS | Darwin.FSOPT_ATTR_CMN_EXTENDED;
+				long opts = Darwin.FSOPT_PACK_INVAL_ATTRS | (ctx.isApfs ? Darwin.FSOPT_ATTR_CMN_EXTENDED : 0);
 
 				while (!cancelled) {
 					int count = Darwin.getattrlistbulk(fd, alist, buf, BULK_BUFFER_SIZE, opts);
@@ -373,8 +430,8 @@ public final class MacBulkScanner implements Scanner {
 		}
 
 		/**
-		 * Parses one packed entry. Layout (with {@code FSOPT_PACK_INVAL_ATTRS | FSOPT_ATTR_CMN_EXTENDED} and the attrlist
-		 * set up in {@link #readDirEntries}):
+		 * Parses one packed entry. Fixed-area layout (with {@code FSOPT_PACK_INVAL_ATTRS}; CMNEXT fields are only present
+		 * when the scan root is APFS and {@code FSOPT_ATTR_CMN_EXTENDED} is set in {@link #readDirEntries}):
 		 * <pre>
 		 *   +0   uint32 entry_length
 		 *   +4   attribute_set_t returned_attrs   (5 × uint32 = 20 B; ATTR_CMN_RETURNED_ATTRS is always first)
@@ -383,13 +440,17 @@ public final class MacBulkScanner implements Scanner {
 		 *   +36  fsobj_type_t objtype             (4 B enum; ATTR_CMN_OBJTYPE — VREG/VDIR/VLNK/…)
 		 *   +40  uint64 fileid                    (ATTR_CMN_FILEID)
 		 *   +48  off_t allocsize                  (ATTR_FILE_ALLOCSIZE — physical bytes on disk; 0 for directories)
+		 *   --- CMNEXT block (APFS only) ---
 		 *   +56  off_t private_size               (ATTR_CMNEXT_PRIVATESIZE — bytes unique to this file, not shared)
-		 *   +64  uint64 clone_id                  (ATTR_CMNEXT_CLONEID — 0 if file is not in a clone family)
-		 *   +72+ variable-length region: name string at (entry_start + 24 + name_dataoffset)
+		 *   +64  uint64 clone_id                  (ATTR_CMNEXT_CLONEID — APFS data-stream id; always non-zero on APFS)
+		 *   +72  uint32 clone_refcnt              (ATTR_CMNEXT_CLONE_REFCNT — sharers of this clone family; ≤1 means none)
+		 *   --- end CMNEXT ---
+		 *   +n+  variable-length region: name string at (entry_start + 24 + name_dataoffset)
 		 * </pre>
 		 * Attributes within each group are placed in ascending bit order; {@code ATTR_CMN_RETURNED_ATTRS} (0x80000000) is
 		 * special-cased to always appear first. CMNEXT attributes follow the fileattr group when
-		 * {@code FSOPT_ATTR_CMN_EXTENDED} is set: {@code PRIVATESIZE} (0x08) then {@code CLONEID} (0x200).
+		 * {@code FSOPT_ATTR_CMN_EXTENDED} is set: {@code PRIVATESIZE} (0x08), {@code CLONEID} (0x100),
+		 * {@code CLONE_REFCNT} (0x1000).
 		 */
 		private void processEntry(Pointer buf, int entryOff, List<DirScanTask> subTasks) {
 			int nameDataOffset = buf.readInt(entryOff + 24);
@@ -398,8 +459,18 @@ public final class MacBulkScanner implements Scanner {
 			int objtype = buf.readInt(entryOff + 36);
 			long fileid = buf.readLong(entryOff + 40);
 			long allocsize = buf.readLong(entryOff + 48);
-			long privateSize = buf.readLong(entryOff + 56);
-			long cloneId = buf.readLong(entryOff + 64);
+			long privateSize;
+			long cloneId;
+			int cloneRefcnt;
+			if (ctx.isApfs) {
+				privateSize = buf.readLong(entryOff + 56);
+				cloneId = buf.readLong(entryOff + 64);
+				cloneRefcnt = buf.readInt(entryOff + 72);
+			} else {
+				privateSize = 0L;
+				cloneId = 0L;
+				cloneRefcnt = 0;
+			}
 
 			// Only files and directories contribute to disk usage. Skip symlinks (we don't
 			// follow), sockets, fifos, char/block devices, etc. — match ParallelDirectoryScanner.
@@ -440,17 +511,19 @@ public final class MacBulkScanner implements Scanner {
 			// ParallelDirectoryScanner.processEntry's seenKeys check.
 			if (!ctx.seenFileIds.add(fileid))
 				return;
-			// APFS clone dedup. clone_id == 0 means the file isn't in a clone family at all — charge full allocsize.
-			// Otherwise: charge the first member of the family at allocsize (shared + private), and subsequent members
-			// at privatesize only (their CoW-modified blocks). Total for an N-member family becomes shared + sum(private)
-			// which equals the actual on-disk usage. This correctly handles both pristine clones (privatesize ≈ 0) and
-			// heavily-diverged clones (privatesize ≈ allocsize).
+			// APFS clone dedup. clone_refcnt <= 1 means this file is not currently sharing extents with any sibling —
+			// charge full allocsize and skip the seen-cloneIds set entirely. When refcnt >= 2: charge the first member
+			// of the family at allocsize (shared + private), and subsequent members at privatesize only
+			// (their CoW-modified blocks). Total for an N-member family becomes shared + sum(private) which equals
+			// actual on-disk usage. Handles both pristine clones (privatesize ≈ 0) and heavily-diverged clones
+			// (privatesize ≈ allocsize). On non-APFS roots ctx.isApfs is false and cloneRefcnt is zeroed above, so
+			// this also short-circuits to charging allocsize.
 			// Note: charged bytes can legitimately be 0 — empty files (allocsize == 0) and pristine
 			// non-first clone-family members (privateSize == 0) both fall here. We still call addFile()
 			// so totalFileCount reflects the real number of filesystem entries; dedup is a byte-accounting
 			// concern, not a file-existence one. Matches ParallelDirectoryScanner / MftScanner semantics.
 			long chargedSize;
-			if (cloneId == 0 || ctx.seenCloneIds.add(cloneId)) {
+			if (cloneRefcnt <= 1 || ctx.seenCloneIds.add(cloneId)) {
 				chargedSize = allocsize;
 			} else {
 				chargedSize = privateSize;

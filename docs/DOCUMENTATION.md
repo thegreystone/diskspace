@@ -122,11 +122,15 @@ each volume has its own block count. DiskSpace queries the `FileStore` at the sc
 local Time Machine snapshots aren't represented because they aren't user-deletable from a file browser anyway.
 
 **APFS clones — native binary matches OS-reported usage; JVM dev mode can over-count.** The native binary uses the
-macOS bulk scanner (`getattrlistbulk` with `ATTR_FILE_ALLOCSIZE`), which on APFS gives per-file allocation accounting
-that doesn't double-count blocks shared between clones (Xcode SDKs, simulator runtimes, `cp -c` artifacts). Scanned
-totals come out very close to what `df` and "About This Mac → Storage" report — usually within a percent or two.
-The JVM dev runner doesn't have those bindings and falls back to Java NIO's `unix:blocks × 512`, which sums each
-clone's full block count. There, totals can sit 20–30% above actual used space on a developer machine — a known
+macOS bulk scanner (`getattrlistbulk`) and, on APFS roots, asks for `ATTR_CMNEXT_CLONE_REFCNT`, `ATTR_CMNEXT_CLONEID`,
+and `ATTR_CMNEXT_PRIVATESIZE` alongside `ATTR_FILE_ALLOCSIZE`. Files currently sharing extents with at least one
+sibling (clone refcount ≥ 2) are deduplicated: the first member of each clone family is charged its full `allocsize`
+(shared + private blocks), siblings are charged only their CoW-modified private bytes. Total for an N-member family
+equals the actual on-disk usage. With heavy cloning (Xcode SDKs, simulator runtimes, `cp -c` artifacts) scanned
+totals come out within a percent or two of what `df` and "About This Mac → Storage" report. On non-APFS roots
+(HFS+, NFS, SMB, external exFAT/FAT) the CMNEXT request is suppressed automatically so there's no per-entry overhead.
+The JVM dev runner doesn't have these native bindings and falls back to Java NIO's `unix:blocks × 512`, which sums
+each clone's full block count. There, totals can sit 20–30% above actual used space on a developer machine — a known
 limitation of the dev path, not a bug to worry about. The released binary you ship is the accurate one.
 
 **Firmlinks, hard links, and bind-mounts are deduped.** The scanner tracks visited inodes (`fileKey`), so a directory
