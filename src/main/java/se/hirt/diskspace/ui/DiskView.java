@@ -1863,9 +1863,9 @@ public final class DiskView {
 			forwardStack.clear();
 
 		if (currentVisualization != sunburst) {
-			// Non-sunburst visualisations don't animate drills (the treemap layout would shuffle every
-			// rectangle, with no coherent visual map). Swap the view root and repaint statically.
+			DirectoryNode previousViewRoot = viewRoot;
 			viewRoot = newViewRoot;
+			currentVisualization.viewRootChanged(previousViewRoot, newViewRoot);
 			hoverNode = null;
 			hoveringHub = false;
 			refreshTable();
