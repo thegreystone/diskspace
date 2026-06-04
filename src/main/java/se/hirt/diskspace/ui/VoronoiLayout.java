@@ -51,7 +51,7 @@ import java.util.List;
  */
 public final class VoronoiLayout {
 
-	private static final int DEFAULT_MAX_ITERATIONS = 200;
+	private static final int DEFAULT_MAX_ITERATIONS = 50;
 	private static final double DEFAULT_THRESHOLD = 0.01;
 	private static final double STEP = 0.5;
 	private static final double LLOYD = 0.3;
@@ -103,13 +103,25 @@ public final class VoronoiLayout {
 		if (boundsArea < 1)
 			return blankCells(weights.length);
 
+		// Compute raw target areas, then apply a minimum floor of 5% of the equal-area
+		// share. Items below this threshold need 20× or more shrinkage from their initial
+		// equal-area Voronoi cell, which requires large negative power weights that remove
+		// the site from Bowyer-Watson triangulations entirely. The floor trades perfect
+		// proportionality for guaranteed visibility; labels still show the real byte count.
+		double equalShare = boundsArea / weights.length;
+		double minTargetArea = equalShare * 0.05;
 		double[] targetAreas = new double[weights.length];
+		double targetSum = 0;
 		for (int i = 0; i < weights.length; i++) {
-			targetAreas[i] = Math.max(0, weights[i]) / totalWeight * boundsArea;
+			targetAreas[i] = Math.max(minTargetArea, Math.max(0, weights[i]) / totalWeight * boundsArea);
+			targetSum += targetAreas[i];
 		}
+		// Re-normalise so targets still sum to boundsArea after flooring.
+		for (int i = 0; i < targetAreas.length; i++)
+			targetAreas[i] *= boundsArea / targetSum;
 
-		List<Site> sites = initialSitesInPolygon(weights.length, bounds);
-		List<List<Pt>> cellPolys = balance(sites, bounds, targetAreas, maxIterations, threshold);
+		List<Site> sites = initialSitesInPolygon(weights.length, bounds, weights);
+		List<List<Pt>> cellPolys = balance(sites, bounds, targetAreas, boundsArea, maxIterations, threshold);
 		List<Cell> result = new ArrayList<>(cellPolys.size());
 		for (List<Pt> p : cellPolys)
 			result.add(new Cell(p));
@@ -370,12 +382,20 @@ public final class VoronoiLayout {
 		return new Pt(x1 + t * (x2 - x1), y1 + t * (y2 - y1));
 	}
 
-	private static List<Site> initialSitesInPolygon(int k, List<Pt> bounds) {
+	private static List<Site> initialSitesInPolygon(int k, List<Pt> bounds, double[] weights) {
 		Pt c = centroid(bounds);
-		double r = Math.sqrt(polygonArea(bounds) / Math.max(1, k)) / 3.0;
+		double R = Math.sqrt(polygonArea(bounds) / Math.PI) * 0.55;
+		// Vogel / sunflower spiral: item i is placed at radius R×√((i+0.5)/k) and angle
+		// i×golden_angle. Items are assumed to arrive in weight-desc order, so the heaviest
+		// site starts near the centre (√(0.5/k) ≈ small) and smaller sites fan outward.
+		// This gives each site a distinct 2-D position, not just an angular one, so small
+		// items have spatial separation from the dominant item instead of all sitting on the
+		// same ring where the dominant item's growing weight sweeps them away.
+		final double GOLDEN_ANGLE = Math.PI * (3.0 - Math.sqrt(5.0)); // ≈ 2.399 rad
 		List<Site> out = new ArrayList<>(k);
 		for (int i = 0; i < k; i++) {
-			double angle = 2.0 * Math.PI * i / k;
+			double r = R * Math.sqrt((i + 0.5) / k);
+			double angle = i * GOLDEN_ANGLE;
 			out.add(new Site(c.x() + r * Math.cos(angle), c.y() + r * Math.sin(angle), 0));
 		}
 		return out;
@@ -383,7 +403,13 @@ public final class VoronoiLayout {
 
 	/** Iterative weight balancing. Mutates {@code sites} in place. Returns the per-site clipped cell polygons (CCW). */
 	private static List<List<Pt>> balance(
-			List<Site> sites, List<Pt> bounds, double[] targetAreas, int maxIter, double threshold) {
+			List<Site> sites, List<Pt> bounds, double[] targetAreas, double boundsArea, int maxIter, double threshold) {
+		// All weights start at 0 (standard unweighted Voronoi). The iterative step below
+		// drives each weight toward the value that makes its cell hit targetArea.
+		// Warm-starting with target-derived values looks appealing but causes dominant
+		// sites (large weight) to absorb adjacent medium sites in the first Bowyer-Watson
+		// pass, leaving those sites with zero area that the clamp then locks in permanently.
+
 		List<List<Pt>> cells = null;
 		for (int iter = 0; iter < maxIter; iter++) {
 			List<WTriangle> tris = bowyerWatsonWeighted(sites);
@@ -400,7 +426,12 @@ public final class VoronoiLayout {
 				double err = Math.abs(area - targetAreas[i]) / targetAreas[i];
 				if (err > maxRelError)
 					maxRelError = err;
-				s.weight = Math.max(0, s.weight + STEP * (targetAreas[i] - area));
+				// Allow negative weights so sites needing less than their equal-Voronoi share
+				// can give territory to neighbours. But cap the magnitude: once weight goes
+				// below -boundsArea the power circle is so large that Bowyer-Watson removes
+				// all the site's triangles, causing area to flip to 0 and the weight to
+				// reverse — the "flickering" Nocaj-Brandes warn about past 50 iterations.
+				s.weight = Math.max(-boundsArea, s.weight + STEP * (targetAreas[i] - area));
 				Pt centroidPt = centroid(cell);
 				s.x += LLOYD * (centroidPt.x() - s.x);
 				s.y += LLOYD * (centroidPt.y() - s.y);

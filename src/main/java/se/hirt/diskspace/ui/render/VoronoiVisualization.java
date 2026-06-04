@@ -49,6 +49,9 @@ import java.util.List;
  */
 public final class VoronoiVisualization implements Visualization {
 
+	private static final java.util.logging.Logger LOG =
+			java.util.logging.Logger.getLogger(VoronoiVisualization.class.getName());
+
 	private static final double TOP_INSET = 36.0;
 	private static final int DISK_SIDES = 64;
 
@@ -61,6 +64,7 @@ public final class VoronoiVisualization implements Visualization {
 	private DirectoryNode lastViewRoot;
 	private double lastW, lastH;
 	private long lastTotalBytes;
+	private boolean lastHideFreeSpace;
 
 	@Override
 	public void attach(VisualizationHost host) {
@@ -127,12 +131,17 @@ public final class VoronoiVisualization implements Visualization {
 			return;
 		}
 
-		if (viewRoot != lastViewRoot || w != lastW || h != lastH || viewRoot.totalBytes() != lastTotalBytes) {
-			cellHits = computeLayout(items, cx, cy, radius);
+		// Key the cache on the sum of individual item bytes, not the root total.
+		// viewRoot.totalBytes() stays constant when dedup or streaming redistributes bytes
+		// across children; itemsBytesSum catches those per-item changes.
+		if (viewRoot != lastViewRoot || w != lastW || h != lastH || totalBytes != lastTotalBytes
+				|| ctx.hideFreeSpace() != lastHideFreeSpace) {
+			cellHits = computeLayout(items, cx, cy, radius, totalBytes);
 			lastViewRoot = viewRoot;
 			lastW = w;
 			lastH = h;
-			lastTotalBytes = viewRoot.totalBytes();
+			lastTotalBytes = totalBytes;
+			lastHideFreeSpace = ctx.hideFreeSpace();
 		}
 
 		g.setStroke(host.scheme().background().brighter());
@@ -141,6 +150,10 @@ public final class VoronoiVisualization implements Visualization {
 
 		for (CellHit hit : cellHits)
 			drawCellFill(g, hit, ctx);
+		for (CellHit hit : cellHits)
+			drawSubCells(g, hit);
+		for (CellHit hit : cellHits)
+			drawCellStroke(g, hit);
 		DirectoryNode hoverNode = ctx.hoverNode();
 		if (hoverNode != null) {
 			for (CellHit hit : cellHits) {
@@ -154,18 +167,55 @@ public final class VoronoiVisualization implements Visualization {
 			drawCellLabel(g, hit, ctx);
 	}
 
-	private List<CellHit> computeLayout(List<TreemapItem> items, double cx, double cy, double radius) {
+	private List<CellHit> computeLayout(List<TreemapItem> items, double cx, double cy, double radius, long totalBytes) {
+		items.sort((a, b) -> Long.compare(b.bytes(), a.bytes()));
 		double[] weights = new double[items.size()];
 		for (int i = 0; i < items.size(); i++)
 			weights[i] = Math.max(1.0, items.get(i).bytes());
 		List<VoronoiLayout.Pt> bounds = VoronoiLayout.approximateDisk(cx, cy, radius, DISK_SIDES);
 		List<VoronoiLayout.Cell> cells = VoronoiLayout.compute(bounds, weights);
 		List<CellHit> hits = new ArrayList<>(cells.size());
+		if (LOG.isLoggable(java.util.logging.Level.FINE)) {
+			double diskArea = VoronoiLayout.polygonArea(bounds);
+			StringBuilder sb = new StringBuilder("Voronoi layout (totalBytes=")
+					.append(SizeFormat.format(totalBytes)).append(", items=").append(items.size()).append("):\n");
+			for (int i = 0; i < cells.size(); i++) {
+				TreemapItem item = items.get(i);
+				double cellArea = VoronoiLayout.polygonArea(cells.get(i).polygon());
+				double targetArea = diskArea * weights[i] / totalBytes;
+				String label = item.freeSpace() ? "Free" : item.unaccounted() ? "Unaccounted"
+						: item.node() != null ? item.node().name() : "?";
+				sb.append(String.format("  [%2d] %-35s bytes=%-12s weight=%-12.0f targetArea=%7.1f cellArea=%7.1f ratio=%.2f%n",
+						i, label, SizeFormat.format(item.bytes()), weights[i], targetArea, cellArea,
+						targetArea > 0 ? cellArea / targetArea : 0));
+			}
+			LOG.fine(sb.toString());
+		}
 		for (int i = 0; i < cells.size(); i++) {
 			TreemapItem item = items.get(i);
-			hits.add(new CellHit(item.node(), cells.get(i).polygon(), item.unaccounted(), item.freeSpace()));
+			List<VoronoiLayout.Pt> poly = cells.get(i).polygon();
+			List<CellHit> subCells = computeSubCells(item.node(), poly);
+			hits.add(new CellHit(item.node(), poly, item.unaccounted(), item.freeSpace(), subCells));
 		}
 		return hits;
+	}
+
+	private List<CellHit> computeSubCells(DirectoryNode node, List<VoronoiLayout.Pt> parentPoly) {
+		if (node == null || parentPoly.size() < 3)
+			return List.of();
+		List<DirectoryNode> children = node.children();
+		if (children.size() < 2)
+			return List.of();
+		if (VoronoiLayout.polygonArea(parentPoly) < 400)
+			return List.of();
+		double[] weights = new double[children.size()];
+		for (int i = 0; i < children.size(); i++)
+			weights[i] = Math.max(1.0, children.get(i).totalBytes());
+		List<VoronoiLayout.Cell> cells = VoronoiLayout.compute(parentPoly, weights);
+		List<CellHit> sub = new ArrayList<>(cells.size());
+		for (int i = 0; i < cells.size(); i++)
+			sub.add(new CellHit(children.get(i), cells.get(i).polygon(), false, false, List.of()));
+		return sub;
 	}
 
 	private void drawCellFill(GraphicsContext g, CellHit hit, RenderContext ctx) {
@@ -196,9 +246,46 @@ public final class VoronoiVisualization implements Visualization {
 		Color fill = (alpha >= 1.0) ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
 		g.setFill(fill);
 		g.fillPolygon(xs, ys, poly.size());
+	}
+
+	private void drawCellStroke(GraphicsContext g, CellHit hit) {
+		List<VoronoiLayout.Pt> poly = hit.polygon();
+		if (poly.size() < 3)
+			return;
 		g.setStroke(host.scheme().background());
-		g.setLineWidth(2.0);
-		g.strokePolygon(xs, ys, poly.size());
+		g.setLineWidth(3.0);
+		g.strokePolygon(toXs(poly), toYs(poly), poly.size());
+	}
+
+	private void drawSubCells(GraphicsContext g, CellHit parent) {
+		Color bg = host.scheme().background();
+		for (CellHit sub : parent.subCells()) {
+			List<VoronoiLayout.Pt> poly = sub.polygon();
+			if (poly.size() < 3)
+				continue;
+			double[] xs = toXs(poly);
+			double[] ys = toYs(poly);
+			Color base = host.colors().colorFor(sub.node());
+			// Blend 40% toward the theme background so sub-cells read as a quieter
+			// echo of the parent palette — automatically muted in dark mode and
+			// lightened in light mode.
+			Color muted = blend(base, bg, 0.40);
+			double alpha = (sub.node() == null || sub.node().isDone()) ? 1.0 : 0.45;
+			Color fill = (alpha >= 1.0) ? muted : new Color(muted.getRed(), muted.getGreen(), muted.getBlue(), alpha);
+			g.setFill(fill);
+			g.fillPolygon(xs, ys, poly.size());
+			g.setStroke(host.scheme().background().brighter().brighter());
+			g.setLineWidth(0.75);
+			g.strokePolygon(xs, ys, poly.size());
+		}
+	}
+
+	private static Color blend(Color a, Color b, double t) {
+		return new Color(
+				a.getRed()   * (1 - t) + b.getRed()   * t,
+				a.getGreen() * (1 - t) + b.getGreen() * t,
+				a.getBlue()  * (1 - t) + b.getBlue()  * t,
+				1.0);
 	}
 
 	private void drawCellHover(GraphicsContext g, CellHit hit) {
@@ -276,8 +363,10 @@ public final class VoronoiVisualization implements Visualization {
 		DirectoryNode viewRoot = ctx.viewRoot();
 		NodeColorResolver colors = host.colors();
 		List<TreemapItem> items = new ArrayList<>();
-		for (DirectoryNode child : viewRoot.children())
-			items.add(new TreemapItem(child, child.totalBytes(), false, false));
+		for (DirectoryNode child : viewRoot.children()) {
+			if (child.totalBytes() > 0)
+				items.add(new TreemapItem(child, child.totalBytes(), false, false));
+		}
 		if (viewRoot == ctx.scanRoot() && ctx.target().totalBytes() > 0) {
 			long unaccounted = Math.max(0L, ctx.target().usedBytes() - viewRoot.totalBytes());
 			if (unaccounted > 0)
@@ -331,7 +420,7 @@ public final class VoronoiVisualization implements Visualization {
 	// ---- value types ----------------------------------------------------
 
 	private record CellHit(DirectoryNode node, List<VoronoiLayout.Pt> polygon, boolean unaccounted,
-	                        boolean freeSpace) {
+	                        boolean freeSpace, List<CellHit> subCells) {
 	}
 
 	private record TreemapItem(DirectoryNode node, long bytes, boolean unaccounted, boolean freeSpace) {
