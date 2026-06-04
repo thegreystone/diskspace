@@ -42,15 +42,13 @@ public final class MainWindow {
 
 	private final BorderPane root;
 	private final TabPane tabs;
-	private final ColorScheme scheme;
+	private ColorScheme scheme;
 	private final Tab plusTab;
 
 	public MainWindow(ColorScheme scheme) {
 		this.scheme = scheme;
 
 		tabs = new TabPane();
-		tabs.setStyle("-fx-background-color: " + toCss(
-				scheme.background()) + ";" + "-fx-tab-min-height: 28; -fx-tab-max-height: 28;");
 		tabs.setTabClosingPolicy(TabPane.TabClosingPolicy.ALL_TABS);
 
 		plusTab = new Tab("+");
@@ -71,7 +69,7 @@ public final class MainWindow {
 		tabs.getSelectionModel().select(first);
 
 		root = new BorderPane(tabs);
-		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+		restyle();
 
 		// Single-key shortcuts should reach the active tab's content (DiskView or
 		// PickerView) even when focus is on the TabPane header. Each content also
@@ -111,6 +109,32 @@ public final class MainWindow {
 	}
 
 	/**
+	 * Live theme handoff. Called by {@code App}'s {@link se.hirt.diskspace.ui.theme.Theme} listener after the new
+	 * scheme has been stored. Refreshes our own inline styles, rebuilds the "+" hint pane (a transient label — cheaper
+	 * to recreate than to restyle in place), and fans out to every open tab so per-view inline styles get re-applied
+	 * too.
+	 */
+	public void applyTheme(ColorScheme newScheme) {
+		this.scheme = newScheme;
+		restyle();
+		plusTab.setContent(buildHint());
+		for (Tab t : tabs.getTabs()) {
+			Object data = t.getUserData();
+			if (data instanceof DiskView dv) {
+				dv.applyTheme(newScheme);
+			} else if (data instanceof PickerView pv) {
+				pv.applyTheme(newScheme);
+			}
+		}
+	}
+
+	private void restyle() {
+		tabs.setStyle("-fx-background-color: " + toCss(
+				scheme.background()) + ";" + "-fx-tab-min-height: 28; -fx-tab-max-height: 28;");
+		root.setStyle("-fx-background-color: " + toCss(scheme.background()) + ";");
+	}
+
+	/**
 	 * Cancel all in-flight scans and stop animation timers across open tabs. Called from
 	 * {@link se.hirt.diskspace.App#requestQuit()} so background callbacks aren't still firing when the toolkit starts
 	 * tearing down.
@@ -135,6 +159,17 @@ public final class MainWindow {
 		// handler) find a content object as soon as the tab becomes visible.
 		tab.setUserData(picker);
 		tab.setContent(picker.getRoot());
+		// Closing the tab directly (the X) should release whatever it holds — a picker still
+		// streaming in disks, or a disk view mid-scan — rather than leaving that work running
+		// headless until app quit. Reads userData at close time so it handles either content.
+		tab.setOnClosed(e -> {
+			Object data = tab.getUserData();
+			if (data instanceof PickerView pv) {
+				pv.dispose();
+			} else if (data instanceof DiskView dv) {
+				dv.shutdown();
+			}
+		});
 		// Insert before the "+" tab so "+" stays last.
 		int insertAt = tabs.getTabs().indexOf(plusTab);
 		tabs.getTabs().add(insertAt, tab);
@@ -142,6 +177,11 @@ public final class MainWindow {
 	}
 
 	private void swapToSunburst(Tab tab, Volume v) {
+		// The tab is handing off from the picker that fired this selection to the disk view;
+		// dispose the picker first so its in-flight enumeration stops competing with the new scan.
+		if (tab.getUserData() instanceof PickerView pv) {
+			pv.dispose();
+		}
 		tab.setText(v.displayName());
 		if (!v.deviceName().equals(v.displayName())) {
 			tab.setTooltip(new javafx.scene.control.Tooltip(v.deviceName()));

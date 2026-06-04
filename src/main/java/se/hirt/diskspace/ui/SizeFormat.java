@@ -35,7 +35,27 @@ package se.hirt.diskspace.ui;
  */
 public final class SizeFormat {
 
-	public enum Mode {DECIMAL, BINARY}
+	public enum Mode {
+		DECIMAL("Decimal (GB)",
+				"Base-1000 SI units (KB, MB, GB, TB). Matches Finder, Disk Utility, and how drive manufacturers spec capacity."),
+		BINARY("Binary (GiB)", "Base-1024 IEC units (KiB, MiB, GiB, TiB). Matches `df -h` and `du -h` on Unix shells.");
+
+		private final String displayName;
+		private final String description;
+
+		Mode(String displayName, String description) {
+			this.displayName = displayName;
+			this.description = description;
+		}
+
+		public String displayName() {
+			return displayName;
+		}
+
+		public String description() {
+			return description;
+		}
+	}
 
 	private static volatile Mode mode = Mode.DECIMAL;
 
@@ -44,6 +64,15 @@ public final class SizeFormat {
 
 	public static Mode mode() {
 		return mode;
+	}
+
+	/**
+	 * Applies a specific mode. Used at startup to restore the persisted default; the user can still toggle from there
+	 * with the {@code U} shortcut.
+	 */
+	public static void setMode(Mode next) {
+		if (next != null)
+			mode = next;
 	}
 
 	public static Mode toggle() {

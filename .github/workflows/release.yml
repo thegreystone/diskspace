@@ -28,7 +28,16 @@ jobs:
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '21'
-          distribution: 'graalvm-community'
+          # macOS + Windows use Oracle GraalVM: CE Substrate did not link the JFR JNI
+          # symbols (jdk.jfr.internal.JVM.isExcluded et al.) on darwin, breaking <clinit>
+          # of every jdk.jfr.Event subclass — that was the 0.2.7 regression. Windows
+          # Oracle builds fine and presumably wouldn't hit the same JFR gap on CE either,
+          # but we standardise on Oracle there too for symmetry with Mac.
+          # Linux stays on graalvm-community because the Oracle Linux tarball doesn't
+          # ship lib/svm/clibraries/linux-amd64/libjvm.a at the path Gluon Substrate 0.0.67
+          # expects (PosixTargetConfiguration.checkPlatformSpecificClibs fails pre-link).
+          # DiskView's defensive JFR guard backs us up if Linux CE has a JFR gap too.
+          distribution: ${{ runner.os == 'Linux' && 'graalvm-community' || 'graalvm' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 
@@ -49,6 +58,11 @@ jobs:
         shell: bash
         run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
 
+      # Workaround for gluonhq/substrate#1318: see scripts/ header for details.
+      - name: Patch GraalVM static-libs layout (Linux)
+        if: runner.os == 'Linux'
+        run: bash scripts/patch-graalvm-static-libs-linux.sh
+
       - name: Native build
         run: mvn -B -Pnative gluonfx:build
 
@@ -66,14 +80,14 @@ jobs:
           fi
           cp "$SRC" "$DST"
 
-      - name: Build Windows installer (Inno Setup)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          cp "target/diskspace-${VERSION}-${{ matrix.suffix }}.exe" installer/diskspace.exe
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "//DMyVersion=${VERSION}" installer/diskspace.iss
-          cp "installer/Output/diskspace-${VERSION}-${{ matrix.suffix }}-setup.exe" target/
+      # Windows: only the bare .exe is built+uploaded here, unsigned. The Inno Setup
+      # installer is built locally by scripts/sign-release.ps1 *after* the bare .exe
+      # has been signed — that way the installer wraps a signed binary, not an
+      # unsigned one (which AV/SmartScreen would flag once extracted to Program
+      # Files). Certum SimplySign needs an OTP-from-phone step that doesn't have a
+      # clean headless path on GitHub-hosted runners, so signing + installer build
+      # both happen on the maintainer's machine. See docs/DEVGUIDE.md
+      # § Signing Windows artifacts.
 
       - name: Import signing certificate (macOS)
         if: runner.os == 'macOS'
@@ -149,7 +163,6 @@ jobs:
           path: |
             target/diskspace-*-${{ matrix.suffix }}
             target/diskspace-*-${{ matrix.suffix }}.exe
-            target/diskspace-*-${{ matrix.suffix }}-setup.exe
             target/diskspace-*-${{ matrix.suffix }}.dmg
 
   # ── Create GitHub release with all artifacts ─────────────────────────

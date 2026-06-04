@@ -1,39 +1,39 @@
-/* Dark theme — covers all JavaFX-rendered chrome.
- * Component-specific colors drawn in code come from ColorScheme.DARK.
+/* Light theme — covers all JavaFX-rendered chrome.
+ * Component-specific colors drawn in code come from ColorScheme.LIGHT.
  */
 
 .root {
-    -fx-base: #121214;
-    -fx-background: #000000;
-    -fx-control-inner-background: #000000;
-    -fx-control-inner-background-alt: #0A0A0C;
-    -fx-accent: #7AD3D9;
-    -fx-default-button: #7AD3D9;
-    -fx-focus-color: #7AD3D9;
-    -fx-faint-focus-color: #7AD3D922;
-    -fx-text-fill: #EDEDED;
-    -fx-text-base-color: #EDEDED;
-    -fx-text-background-color: #EDEDED;
-    -fx-mark-color: #EDEDED;
-    -fx-mark-highlight-color: #EDEDED;
-    -fx-selection-bar: #7AD3D9;
-    -fx-selection-bar-non-focused: #2A2A30;
-    -fx-cell-hover-color: #1A1A1E;
-    -fx-cell-focus-inner-border: #7AD3D9;
+    -fx-base: #F4F4F5;
+    -fx-background: #FFFFFF;
+    -fx-control-inner-background: #FFFFFF;
+    -fx-control-inner-background-alt: #FAFAFB;
+    -fx-accent: #1F8E96;
+    -fx-default-button: #1F8E96;
+    -fx-focus-color: #1F8E96;
+    -fx-faint-focus-color: #1F8E9622;
+    -fx-text-fill: #1A1A1A;
+    -fx-text-base-color: #1A1A1A;
+    -fx-text-background-color: #1A1A1A;
+    -fx-mark-color: #1A1A1A;
+    -fx-mark-highlight-color: #1A1A1A;
+    -fx-selection-bar: #1F8E96;
+    -fx-selection-bar-non-focused: #D8D8DE;
+    -fx-cell-hover-color: #ECECEF;
+    -fx-cell-focus-inner-border: #1F8E96;
     -fx-font-family: "Segoe UI", "SF Pro Text", "Inter", system, sans-serif;
 }
 
 /* ---------------- TabPane ---------------- */
 
 .tab-pane {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
     -fx-tab-min-height: 30;
     -fx-tab-max-height: 30;
 }
 
 .tab-pane > .tab-header-area {
     -fx-padding: 6 8 0 8;
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
 }
 
 .tab-pane > .tab-header-area > .headers-region {
@@ -41,33 +41,33 @@
 }
 
 .tab-pane > .tab-header-area > .tab-header-background {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
 }
 
 .tab-pane > .tab-header-area > .headers-region > .tab {
-    -fx-background-color: #121214;
+    -fx-background-color: #F4F4F5;
     -fx-background-radius: 6 6 0 0;
     -fx-padding: 4 14 4 14;
     -fx-background-insets: 0 1 0 1;
 }
 
 .tab-pane > .tab-header-area > .headers-region > .tab:hover {
-    -fx-background-color: #1C1C20;
+    -fx-background-color: #E8E8EC;
 }
 
 .tab-pane > .tab-header-area > .headers-region > .tab:selected {
-    -fx-background-color: #1F1F23;
-    -fx-border-color: transparent transparent #7AD3D9 transparent;
+    -fx-background-color: #E5E5E8;
+    -fx-border-color: transparent transparent #1F8E96 transparent;
     -fx-border-width: 0 0 2 0;
 }
 
 .tab-pane > .tab-header-area > .headers-region > .tab .tab-label {
-    -fx-text-fill: #B5B5BD;
+    -fx-text-fill: #5C5C66;
     -fx-font-size: 12px;
 }
 
 .tab-pane > .tab-header-area > .headers-region > .tab:selected .tab-label {
-    -fx-text-fill: #EDEDED;
+    -fx-text-fill: #1A1A1A;
 }
 
 .tab-pane > .tab-header-area > .headers-region > .tab .tab-close-button {
@@ -75,60 +75,60 @@
 }
 
 .tab-pane > .tab-header-area > .headers-region > .tab:hover .tab-close-button {
-    -fx-background-color: #EDEDED;
+    -fx-background-color: #1A1A1A;
 }
 
 .tab-pane > .tab-header-area > .control-buttons-tab {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
 }
 
 /* ---------------- SplitPane ---------------- */
 
 .split-pane {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
     -fx-padding: 0;
 }
 
 .split-pane > .split-pane-divider {
-    -fx-background-color: #1F1F23;
+    -fx-background-color: #E5E5E8;
     -fx-padding: 0 1 0 1;
 }
 
 /* ---------------- ScrollPane ---------------- */
 
 .scroll-pane {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
     -fx-background-insets: 0;
     -fx-padding: 0;
 }
 
 .scroll-pane > .viewport {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
 }
 
 .scroll-pane > .corner {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
 }
 
 /* ---------------- ScrollBar ---------------- */
 
 .scroll-bar {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
 }
 
 .scroll-bar > .thumb {
-    -fx-background-color: #2A2A30;
+    -fx-background-color: #C8C8CE;
     -fx-background-radius: 4;
     -fx-background-insets: 2;
 }
 
 .scroll-bar > .thumb:hover {
-    -fx-background-color: #3A3A42;
+    -fx-background-color: #A8A8B0;
 }
 
 .scroll-bar > .track,
 .scroll-bar > .track-background {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
     -fx-border-color: transparent;
 }
 
@@ -147,40 +147,40 @@
 /* ---------------- ListView ---------------- */
 
 .list-view {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
     -fx-background-insets: 0;
     -fx-padding: 0;
 }
 
 .list-cell {
-    -fx-background-color: #000000;
-    -fx-text-fill: #EDEDED;
+    -fx-background-color: #FFFFFF;
+    -fx-text-fill: #1A1A1A;
     -fx-padding: 6 14 6 14;
 }
 
 .list-cell:filled:hover {
-    -fx-background-color: #121214;
+    -fx-background-color: #F4F4F5;
 }
 
 .list-cell:filled:selected {
-    -fx-background-color: #1F1F23;
-    -fx-text-fill: #EDEDED;
+    -fx-background-color: #E5E5E8;
+    -fx-text-fill: #1A1A1A;
 }
 
 .list-cell:filled:selected:focused {
-    -fx-background-color: #25252B;
+    -fx-background-color: #D8D8DE;
 }
 
 .list-cell:empty {
-    -fx-background-color: #000000;
+    -fx-background-color: #FFFFFF;
 }
 
 /* ---------------- Button ---------------- */
 
 .button {
     -fx-background-color: transparent;
-    -fx-text-fill: #7AD3D9;
-    -fx-border-color: #7AD3D9;
+    -fx-text-fill: #1F8E96;
+    -fx-border-color: #1F8E96;
     -fx-border-radius: 6;
     -fx-background-radius: 6;
     -fx-padding: 6 14 6 14;
@@ -188,49 +188,28 @@
 }
 
 .button:hover {
-    -fx-background-color: #7AD3D922;
+    -fx-background-color: #1F8E9618;
 }
 
 .button:focused {
-    -fx-border-color: #7AD3D9;
-    -fx-effect: dropshadow(gaussian, #7AD3D966, 6, 0.3, 0, 0);
+    -fx-border-color: #1F8E96;
+    -fx-effect: dropshadow(gaussian, #1F8E9655, 6, 0.3, 0, 0);
 }
 
 .button:armed {
-    -fx-background-color: #7AD3D944;
+    -fx-background-color: #1F8E9633;
 }
 
 /* ---------------- TableView ---------------- */
 
-/* Scope-override the selection-bar variables for TableView only. Modena propagates
- * -fx-background = -fx-selection-bar (or -fx-selection-bar-non-focused, when the
- * table isn't the focus owner — the more common case after a click) onto selected
- * rows, and then its high-specificity cell rules paint each cell with that
- * variable. The row factory in DiskView paints its own translucent tint inline,
- * so we don't want modena's cell paint to fight it — making the variables
- * transparent collapses modena's chain to a no-op for TableView.
- *
- * Other controls (ListView, TreeView, ComboBox dropdowns) use the global
- * -fx-selection-bar from .root above and are unaffected. */
+/* Scope-override the selection-bar variables for TableView only. See dark.css for the
+ * full rationale — same chain applies here, just with light-mode neutral fills. */
 .table-view {
     -fx-selection-bar: transparent;
     -fx-selection-bar-non-focused: transparent;
 }
 
 
-/* DiskView's row factory paints the row's selection / hover / alt-row tint
- * inline on the TableRow. By default modena uses high-specificity rules that
- * paint cells (and rows) with their own backgrounds, masking the row tint.
- *
- * Modena's actual selectors are deeply-nested — e.g. for selected cells it uses
- *
- *   .table-view > .virtual-flow > .clipped-container > .sheet >
- *           .table-row-cell .table-cell:selected
- *
- * with specificity ~70. To win the cascade we either need !important or a
- * selector with matching specificity. We mirror modena's chain verbatim below:
- * an author stylesheet beats the user-agent stylesheet at equal specificity, so
- * these rules will reliably override modena. */
 .table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell,
 .table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled,
 .table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:selected,
@@ -242,10 +221,6 @@
     -fx-background-insets: 0;
 }
 
-/* Same approach for the row itself — modena sets -fx-background on selected
- * rows, and the row's modena rule then paints with that. We'd rather only the
- * inline setStyle from the row factory paint, so neutralize modena's row
- * background variants. */
 .table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell,
 .table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:odd,
 .table-view > .virtual-flow > .clipped-container > .sheet > .table-row-cell:filled,
@@ -256,9 +231,6 @@
     -fx-background-insets: 0;
 }
 
-/* Focused-table variants — modena has a separate :focused chain for both rows
- * and cells. Mirror those too so an actively-focused TableView selection still
- * lets the row tint through. */
 .table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:selected,
 .table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:selected,
 .table-view:focused > .virtual-flow > .clipped-container > .sheet > .table-row-cell .table-cell:filled:focused:selected {
@@ -272,42 +244,40 @@
     -fx-background-insets: 0;
 }
 
-/* TableView column header — modena gives it a chunky gradient that doesn't
- * match the rest of the theme. Flatten it. */
 .table-view .column-header,
 .table-view .column-header-background,
 .table-view .column-header-background .filler {
-    -fx-background-color: #121214;
+    -fx-background-color: #F4F4F5;
     -fx-border-color: transparent;
 }
 
 .table-view .column-header .label {
-    -fx-text-fill: #B5B5BD;
+    -fx-text-fill: #5C5C66;
 }
 
 /* ---------------- Tooltip & ContextMenu ---------------- */
 
 .tooltip {
-    -fx-background-color: #1F1F23;
+    -fx-background-color: #2A2A30;
     -fx-text-fill: #EDEDED;
     -fx-background-radius: 4;
     -fx-padding: 4 8 4 8;
 }
 
 .context-menu {
-    -fx-background-color: #121214;
-    -fx-border-color: #1F1F23;
-    -fx-text-fill: #EDEDED;
+    -fx-background-color: #FFFFFF;
+    -fx-border-color: #E5E5E8;
+    -fx-text-fill: #1A1A1A;
 }
 
 .menu-item {
-    -fx-background-color: #121214;
+    -fx-background-color: #FFFFFF;
 }
 
 .menu-item:focused {
-    -fx-background-color: #1F1F23;
+    -fx-background-color: #E5E5E8;
 }
 
 .menu-item .label {
-    -fx-text-fill: #EDEDED;
+    -fx-text-fill: #1A1A1A;
 }

@@ -29,6 +29,7 @@
 package se.hirt.diskspace;
 
 import javafx.application.Application;
+import javafx.application.HostServices;
 import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
@@ -37,8 +38,10 @@ import javafx.scene.control.ButtonType;
 import javafx.scene.image.Image;
 import javafx.stage.Stage;
 import se.hirt.diskspace.platform.Capabilities;
+import se.hirt.diskspace.settings.Settings;
 import se.hirt.diskspace.ui.MainWindow;
 import se.hirt.diskspace.ui.theme.ColorScheme;
+import se.hirt.diskspace.ui.theme.Theme;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -63,21 +66,38 @@ public final class App extends Application {
 
 	private static volatile MainWindow mainWindow;
 	private static volatile boolean shuttingDown;
+	/**
+	 * JavaFX-provided launcher for opening URIs through the platform's native handler — internally routes through
+	 * {@code LSOpenCFURLRef} on macOS, {@code ShellExecute} on Windows, and {@code xdg-open} on Linux. We stash it here
+	 * so any UI code can reach it without dragging in AWT's {@code Desktop} (which would initialise AppKit on macOS and
+	 * clash with JavaFX's main thread). Set in {@link #start} before the first window is shown.
+	 */
+	private static volatile HostServices hostServices;
+
+	public static HostServices hostServices() {
+		return hostServices;
+	}
 
 	@Override
 	public void start(Stage stage) {
-		ColorScheme scheme = ColorScheme.DARK;
+		hostServices = getHostServices();
+		ColorScheme scheme = Theme.current();
 
 		MainWindow main = new MainWindow(scheme);
 		mainWindow = main;
 		Scene scene = new Scene(main.getRoot(), 1100, 700);
 		scene.setFill(scheme.background());
-		if (scheme.stylesheet() != null) {
-			var url = App.class.getResource(scheme.stylesheet());
-			if (url != null) {
-				scene.getStylesheets().add(url.toExternalForm());
-			}
-		}
+		applyStylesheet(scene, scheme);
+
+		// Live theme switching. Subscribed before the stage is shown so a T press that
+		// somehow lands during startup still propagates. Swap the Scene's stylesheet, repaint
+		// its fill, and fan out to the view tree — MainWindow.applyTheme re-runs each tab's
+		// inline-style blocks so colours baked in at construction time pick up the new scheme.
+		Theme.addListener(newScheme -> {
+			scene.setFill(newScheme.background());
+			applyStylesheet(scene, newScheme);
+			main.applyTheme(newScheme);
+		});
 
 		stage.setTitle("DiskSpace");
 		stage.getIcons().addAll(loadAppIcons());
@@ -92,43 +112,106 @@ public final class App extends Application {
 	}
 
 	/**
-	 * If we're on Windows and not already elevated, ask the user once per launch whether they'd like to restart as
-	 * administrator. Yes → {@code ShellExecute("runas")} relaunches the current command line elevated and we exit. No →
-	 * continue with the parallel scanner.
+	 * Drop any stylesheet from a previously-active {@link ColorScheme} and install the one for {@code scheme}, if any.
+	 * Called at startup and from the {@link Theme} listener on every {@code T} toggle. Iterating over both registered
+	 * stylesheets (rather than tracking "the last URL added") keeps this resilient if more themes appear later — any
+	 * stylesheet not belonging to {@code scheme} is removed.
+	 */
+	private static void applyStylesheet(Scene scene, ColorScheme scheme) {
+		java.util.List<String> toRemove = new java.util.ArrayList<>();
+		for (var s : se.hirt.diskspace.ui.theme.ColorSchemes.all()) {
+			if (s == scheme || s.stylesheet() == null)
+				continue;
+			var url = App.class.getResource(s.stylesheet());
+			if (url != null)
+				toRemove.add(url.toExternalForm());
+		}
+		scene.getStylesheets().removeAll(toRemove);
+		if (scheme.stylesheet() != null) {
+			var url = App.class.getResource(scheme.stylesheet());
+			if (url != null) {
+				String href = url.toExternalForm();
+				if (!scene.getStylesheets().contains(href))
+					scene.getStylesheets().add(href);
+			}
+		}
+	}
+
+	/**
+	 * Windows-only first-run elevation offer. When un-elevated and the persisted {@link Settings.ElevationChoice} is
+	 * still {@link Settings.ElevationChoice#ASK ASK}, ask once whether to restart as administrator (so the MFT scanner
+	 * becomes available). Yes promotes the choice to {@link Settings.ElevationChoice#ALWAYS ALWAYS} and relaunches
+	 * elevated; No sets {@link Settings.ElevationChoice#NEVER NEVER} so we don't prompt again (re-enable in
+	 * Preferences). {@code ALWAYS} is handled earlier in {@link #main(String[])} before any UI is built; {@code NEVER}
+	 * returns silently.
 	 * <p>Skipped silently when {@link Capabilities#ELEVATION} reports unavailable
 	 * (non-Windows native-image, or JVM dev mode where the {@code @CFunction} bindings aren't linked). Skipped when
 	 * {@code -Ddiskspace.skipElevationPrompt=true} is set (handy for unattended runs).
 	 */
 	private void maybeOfferElevation() {
 		Capabilities.Elevation elev = Capabilities.ELEVATION;
-		if (!elev.isAvailable())
-			return;
-		if (elev.isElevated())
+		if (!elev.isAvailable() || elev.isElevated())
 			return;
 		if (Boolean.getBoolean("diskspace.skipElevationPrompt"))
 			return;
+		if (Settings.get().elevationChoice() != Settings.ElevationChoice.ASK)
+			return; // ALWAYS is auto-handled at startup in main(); NEVER means don't pester.
 		String confirmationText = """
-								  DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as administrator. Without elevation it falls back to the directory-walking scanner.
-								  
-								  Restart as administrator now?""";
+		                          DiskSpace can scan NTFS volumes much faster (via the MFT scanner) when run as administrator. Without elevation it falls back to the directory-walking scanner.
+		                          
+		                          Restart as administrator now? DiskSpace will then start elevated automatically on future launches — you can change this in Preferences.""";
 		Alert alert = new Alert(AlertType.CONFIRMATION, confirmationText, ButtonType.YES, ButtonType.NO);
 		alert.setHeaderText("Run as administrator for faster scanning?");
 		alert.setTitle("DiskSpace");
 		alert.showAndWait().ifPresent(choice -> {
+			Settings settings = Settings.get();
 			if (choice == ButtonType.YES) {
-				if (elev.relaunchElevated()) {
-					requestQuit();
-				} else {
-					// User declined UAC, or the spawn failed for some other reason. Stay open.
-					Alert err = new Alert(AlertType.WARNING,
-							"Could not restart as administrator. Continuing without elevation.\n" + "You can launch DiskSpace yourself from an elevated shell to enable MFT scanning.",
-							ButtonType.OK);
-					err.setHeaderText("Elevation declined");
-					err.setTitle("DiskSpace");
-					err.showAndWait();
-				}
+				settings.setElevationChoice(Settings.ElevationChoice.ALWAYS);
+				settings.save();
+				relaunchElevatedNow();
+			} else {
+				settings.setElevationChoice(Settings.ElevationChoice.NEVER);
+				settings.save();
 			}
 		});
+	}
+
+	/**
+	 * Auto-elevate path for {@link Settings.ElevationChoice#ALWAYS}: when un-elevated on a platform that supports
+	 * elevation, relaunch this process elevated. Returns {@code true} iff an elevated copy was spawned — the caller in
+	 * {@link #main(String[])} then exits without building the UI. Returns {@code false} (caller continues a normal
+	 * un-elevated launch) when elevation is unavailable, the process is already elevated, the choice isn't
+	 * {@code ALWAYS}, {@code -Ddiskspace.skipElevationPrompt=true} is set, or the user declined the UAC prompt.
+	 */
+	private static boolean maybeAutoElevateAtStartup() {
+		if (Boolean.getBoolean("diskspace.skipElevationPrompt"))
+			return false;
+		Capabilities.Elevation elev = Capabilities.ELEVATION;
+		if (!elev.isAvailable() || elev.isElevated())
+			return false;
+		if (Settings.get().elevationChoice() != Settings.ElevationChoice.ALWAYS)
+			return false;
+		Logger.getLogger("se.hirt.diskspace").info("Auto-elevating at startup (windows.elevation.choice=ALWAYS)");
+		return elev.relaunchElevated();
+	}
+
+	/**
+	 * Relaunch the current command line elevated via {@code ShellExecute("runas")} and, on success, quit this
+	 * un-elevated copy so the user isn't left with two windows. On failure (UAC declined or spawn error) show a warning
+	 * and stay open with the fallback scanner. Must be called on the FX thread (it may show a dialog).
+	 */
+	public static void relaunchElevatedNow() {
+		if (Capabilities.ELEVATION.relaunchElevated()) {
+			requestQuit();
+		} else {
+			// User declined UAC, or the spawn failed for some other reason. Stay open.
+			Alert err = new Alert(AlertType.WARNING,
+					"Could not restart as administrator. Continuing without elevation.\n" + "You can launch DiskSpace yourself from an elevated shell to enable MFT scanning.",
+					ButtonType.OK);
+			err.setHeaderText("Elevation declined");
+			err.setTitle("DiskSpace");
+			err.showAndWait();
+		}
 	}
 
 	/**
@@ -181,8 +264,24 @@ public final class App extends Application {
 		Logger.getLogger("se.hirt.diskspace")
 				.info(() -> String.format("DiskSpace main entered (%d ms since process start)",
 						(System.nanoTime() - MAIN_START_NANOS) / 1_000_000));
+		// Windows-only: if the user previously chose "always run as administrator", relaunch elevated before building
+		// any UI (so no un-elevated window flashes up first) and exit this copy. Done here rather than after launch()
+		// for exactly that reason. The elevated copy re-enters main() already elevated, so this short-circuits and it
+		// proceeds normally — no relaunch loop. A declined UAC / failed spawn falls through to a normal un-elevated run.
+		if (maybeAutoElevateAtStartup())
+			return;
+		// Defense-in-depth: if we're running elevated, irreversibly shed every privilege except the backup-read ones
+		// the MFT scanner needs, so a dormant admin privilege (SeDebug/SeRestore/SeTakeOwnership/…) can't be enabled
+		// later. No-op when un-elevated or on non-Windows. SeBackup/SeManageVolume are kept for the scanner.
+		Capabilities.ELEVATION.dropToBackupPrivileges();
 		installShutdownNoiseFilter();
 		maybeStartJfrRecording();
+		// SizeFormat is a process-wide singleton — restore the persisted unit before any UI is built
+		// so the first scan's formatting matches the user's preference instead of the DECIMAL default.
+		se.hirt.diskspace.ui.SizeFormat.setMode(se.hirt.diskspace.settings.Settings.get().defaultSizeUnit());
+		// Same dance for the theme: seed Theme.current() from the persisted preference before any view is constructed
+		// so the very first paint uses the user's chosen scheme rather than DARK-by-default.
+		Theme.set(se.hirt.diskspace.settings.Settings.get().defaultColorScheme());
 		launch(args);
 	}
 
@@ -198,8 +297,9 @@ public final class App extends Application {
 	 * ignores unknown CLI arguments.
 	 * <p>Use:
 	 * <pre>
-	 *   DiskSpace.exe -debug                    (native binary)
-	 *   mvn javafx:run -Dexec.args="-debug"     (JVM dev)
+	 *   DiskSpace.exe -debug                     (native binary)
+	 *   mvn javafx:run -Djavafx.args="-debug"    (JVM dev — javafx-maven-plugin reads `javafx.args`,
+	 *                                             NOT `exec.args` which belongs to the exec plugin)
 	 * </pre>
 	 */
 	private static void applyDebugFlagIfPresent(String[] args) {
@@ -228,30 +328,44 @@ public final class App extends Application {
 	 * <p>We drive the JFR API instead of {@code -XX:StartFlightRecording=...} because
 	 * Substrate VM (GraalVM 21 LTS) doesn't honour that command-line flag in native-image mode — both the {@code -XX:}
 	 * runtime form and the {@code -R:} build-time baked-in form are silently no-ops.
-	 * <p>On HotSpot the API path works as expected. On Gluon Substrate native images the
-	 * API is also broken right now: {@code new Recording().start()} throws "Flight Recorder is not supported on this
-	 * VM" even when {@code --enable-monitoring=jfr} was passed at build time (our {@code native-jfr} profile). Tracked
-	 * at
-	 * <a href="https://github.com/gluonhq/substrate/issues/1354">gluonhq/substrate#1354</a>;
+	 * <p>On HotSpot and on Oracle GraalVM 21+ Substrate (our CI distribution),
+	 * the API path Just Works once the build has {@code --enable-monitoring=jfr} + {@code -R:+FlightRecorder} (set in
+	 * the {@code native} profile) plus {@code -lmanagement_ext} in the link step (set in {@code native-mac}, since JFR
+	 * pulls in {@code com.sun.management.OperatingSystemImpl}'s JNI methods which aren't on Substrate's default macOS
+	 * link line). The Gluon-distributed GraalVM build used to ship a broken FlightRecorder engine (see
+	 * <a href="https://github.com/gluonhq/substrate/issues/1354">gluonhq/substrate#1354</a>,
 	 * minimal reproducer at
-	 * <a href="https://github.com/thegreystone/jfr-gluonfx-repro">thegreystone/jfr-gluonfx-repro</a>.
-	 * The catch block below swallows that exception, so once Gluon picks up the upstream fix this code path will Just
-	 * Work in native binaries too.
-	 * <p>If JFR isn't compiled into the binary (default {@code native} build), the
-	 * {@code Recording} call throws and we swallow it — JFR is strictly opt-in. Dump-on-exit is enabled so the file
-	 * appears when the user closes the app normally.
+	 * <a href="https://github.com/thegreystone/jfr-gluonfx-repro">thegreystone/jfr-gluonfx-repro</a>);
+	 * we sidestep that by building with Oracle GraalVM directly.
+	 * <p>The catch block remains as a defence-in-depth measure: if a build ever
+	 * ships without JFR compiled in (a different Substrate distribution, a different graalvmHome on a contributor's
+	 * box), {@code new Recording()} throws and we swallow it — JFR is strictly opt-in. Dump-on-exit is enabled so the
+	 * file appears when the user closes the app normally.
 	 */
 	private static void maybeStartJfrRecording() {
 		String filename = System.getProperty("diskspace.jfr.file");
 		if (filename == null)
 			return;
 		try {
-			jdk.jfr.Recording r = new jdk.jfr.Recording();
+			// Use the "profile" preset (method profiling at higher rates, lock contention, TLAB allocations)
+			// rather than JFR's default ("continuous") settings. -debug is opt-in and short-lived, so the
+			// extra few percent CPU is worth the much richer data when someone is actually investigating a
+			// performance issue. Configuration.getConfiguration loads the preset shipped with the JDK; if it
+			// can't be loaded for some reason, fall back to default settings rather than failing the recording.
+			jdk.jfr.Recording r;
+			try {
+				r = new jdk.jfr.Recording(jdk.jfr.Configuration.getConfiguration("profile"));
+			} catch (Throwable presetErr) {
+				Logger.getLogger("se.hirt.diskspace")
+						.fine(() -> "JFR 'profile' preset unavailable, falling back to default: " + presetErr);
+				r = new jdk.jfr.Recording();
+			}
 			r.setName("diskspace");
 			r.setDestination(java.nio.file.Paths.get(filename).toAbsolutePath());
 			r.setDumpOnExit(true);
 			r.start();
-			Logger.getLogger("se.hirt.diskspace").info(() -> "JFR recording started -> " + r.getDestination());
+			jdk.jfr.Recording finalR = r;
+			Logger.getLogger("se.hirt.diskspace").info(() -> "JFR recording started -> " + finalR.getDestination());
 		} catch (Throwable t) {
 			// JFR not compiled into this binary (default native build does not include
 			// --enable-monitoring=jfr) or the runtime rejected the request. Either way,
