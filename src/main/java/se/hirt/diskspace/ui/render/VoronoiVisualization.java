@@ -28,6 +28,7 @@
  */
 package se.hirt.diskspace.ui.render;
 
+import javafx.animation.AnimationTimer;
 import javafx.geometry.VPos;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.paint.Color;
@@ -39,13 +40,15 @@ import se.hirt.diskspace.ui.SizeFormat;
 import se.hirt.diskspace.ui.VoronoiLayout;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Voronoi (weighted power-diagram) treemap visualization. Renders the directory tree as a circular partition whose
  * cells have areas proportional to {@code totalBytes()}, computed by {@link VoronoiLayout}.
- * <p>No animation — Voronoi cell shapes shuffle entirely on drill, so coordinate interpolation is not coherent.
- * {@link #viewRootChanged} invalidates the layout cache; {@link #isAnimating} always returns {@code false}.</p>
+ * <p>Drill-in / drill-out transitions are animated: each cell's polygon morphs from its old centroid and area to
+ * its new centroid and area over {@link #ANIM_DURATION_NANOS} ns, eased with a smooth-step curve.</p>
  */
 public final class VoronoiVisualization implements Visualization {
 
@@ -54,6 +57,7 @@ public final class VoronoiVisualization implements Visualization {
 
 	private static final double TOP_INSET = 36.0;
 	private static final int DISK_SIDES = 64;
+	private static final long ANIM_DURATION_NANOS = 350_000_000L;
 
 	private VisualizationHost host;
 
@@ -66,18 +70,57 @@ public final class VoronoiVisualization implements Visualization {
 	private long lastTotalBytes;
 	private boolean lastHideFreeSpace;
 
+	// ---- animation state ------------------------------------------------
+
+	private boolean animating;
+	private long animStartNanos;
+	/** Polygons from the layout immediately before the drill. */
+	private List<CellHit> animOldCells = List.of();
+	/** Polygons for the new layout; null until computed on the first animation frame. */
+	private List<CellHit> animNewCells;
+	/** The node that was drilled into (new viewRoot); used to identify which cell "blows up". */
+	private DirectoryNode animDrillNode;
+
+	private final AnimationTimer animTimer = new AnimationTimer() {
+		@Override
+		public void handle(long now) {
+			if (now - animStartNanos >= ANIM_DURATION_NANOS) {
+				animating = false;
+				stop();
+			}
+			if (host != null)
+				host.requestRedraw("voronoi-anim");
+		}
+	};
+
 	@Override
 	public void attach(VisualizationHost host) {
 		this.host = host;
 	}
 
 	@Override
+	public void shutdown() {
+		animTimer.stop();
+		animating = false;
+	}
+
+	@Override
 	public boolean isAnimating() {
-		return false;
+		return animating;
 	}
 
 	@Override
 	public void viewRootChanged(DirectoryNode previous, DirectoryNode current) {
+		if (previous == null || current == null || previous == current || cellHits.isEmpty()) {
+			lastViewRoot = null;
+			return;
+		}
+		animOldCells = List.copyOf(cellHits);
+		animNewCells = null;
+		animDrillNode = current;
+		animStartNanos = System.nanoTime();
+		animating = true;
+		animTimer.start();
 		lastViewRoot = null;
 	}
 
@@ -87,7 +130,11 @@ public final class VoronoiVisualization implements Visualization {
 			drawCenterText(g, w / 2, h / 2, "Scanning…");
 			return;
 		}
-		drawVoronoi(g, w, h, ctx);
+		if (animating) {
+			drawVoronoiAnimated(g, w, h, ctx);
+		} else {
+			drawVoronoi(g, w, h, ctx);
+		}
 		drawHoverOverlay(g, w, h, ctx);
 	}
 
@@ -165,6 +212,274 @@ public final class VoronoiVisualization implements Visualization {
 		}
 		for (CellHit hit : cellHits)
 			drawCellLabel(g, hit, ctx);
+	}
+
+	private void drawVoronoiAnimated(GraphicsContext g, double w, double h, RenderContext ctx) {
+		DirectoryNode viewRoot = ctx.viewRoot();
+		if (viewRoot == null)
+			return;
+		double cx = w / 2.0;
+		double cy = (h + TOP_INSET) / 2.0;
+		double radius = Math.min(w / 2.0, (h - TOP_INSET) / 2.0) - 12;
+		if (radius < 40)
+			return;
+
+		List<TreemapItem> items = buildTopLevelTreemapItems(ctx);
+		long totalBytes = 0;
+		for (TreemapItem it : items)
+			totalBytes += Math.max(0, it.bytes());
+		if (items.isEmpty() || totalBytes <= 0)
+			return;
+
+		if (animNewCells == null) {
+			animNewCells = computeLayout(items, cx, cy, radius, totalBytes);
+			cellHits = animNewCells;
+			lastViewRoot = viewRoot;
+			lastW = w; lastH = h;
+			lastTotalBytes = totalBytes;
+			lastHideFreeSpace = ctx.hideFreeSpace();
+		}
+
+		double elapsed = System.nanoTime() - animStartNanos;
+		double rawT = Math.min(1.0, elapsed / (double) ANIM_DURATION_NANOS);
+
+		g.setStroke(host.scheme().background().brighter());
+		g.setLineWidth(1.0);
+		g.strokeOval(cx - radius, cy - radius, 2 * radius, 2 * radius);
+
+		// Find the old polygon for the cell that was drilled into (may be null for drill-out).
+		List<VoronoiLayout.Pt> drillOldPoly = null;
+		for (CellHit hit : animOldCells) {
+			if (hit.node() == animDrillNode) {
+				drillOldPoly = hit.polygon();
+				break;
+			}
+		}
+		boolean drillIn = drillOldPoly != null && drillOldPoly.size() >= 3;
+
+		if (drillIn) {
+			drawDrillIn(g, ctx, rawT, cx, cy, radius, drillOldPoly);
+		} else {
+			drawDrillOut(g, ctx, rawT, cx, cy, radius);
+		}
+	}
+
+	/**
+	 * Drill-in: two phases.
+	 * Phase 1 (0→0.5): the clicked cell expands to fill the whole disk while siblings collapse and fade.
+	 * Phase 2 (0.5→1): the new children grow from their centroids into their final positions.
+	 */
+	private void drawDrillIn(GraphicsContext g, RenderContext ctx, double rawT,
+	                          double cx, double cy, double radius,
+	                          List<VoronoiLayout.Pt> drillOldPoly) {
+		if (rawT <= 0.5) {
+			double p = smoothStep(rawT * 2);
+
+			VoronoiLayout.Pt diskC = new VoronoiLayout.Pt(cx, cy);
+
+			// Phase 1a: siblings collapse to their centroids and fade out.
+			for (CellHit hit : animOldCells) {
+				if (hit.polygon() == drillOldPoly) continue;
+				List<VoronoiLayout.Pt> poly = hit.polygon();
+				if (poly.size() < 3) continue;
+				VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
+				List<VoronoiLayout.Pt> collapsed = scalePoly(poly, c, c, 1.0 - p);
+				double alpha = 1.0 - p;
+				drawCellFillAlpha(g, hit, collapsed, alpha, ctx);
+			}
+			// Sibling strokes on top of fills.
+			for (CellHit hit : animOldCells) {
+				if (hit.polygon() == drillOldPoly) continue;
+				List<VoronoiLayout.Pt> poly = hit.polygon();
+				if (poly.size() < 3) continue;
+				VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
+				List<VoronoiLayout.Pt> collapsed = scalePoly(poly, c, c, 1.0 - p);
+				drawStrokeAlpha(g, collapsed, 3.0, host.scheme().background(), 1.0 - p);
+			}
+
+			// Phase 1b: clicked cell morphs from its polygon shape into a circle filling the disk.
+			List<VoronoiLayout.Pt> expanded = morphToCircle(drillOldPoly, diskC, radius, p);
+			// Find this cell's hit to get its color.
+			CellHit drillHit = null;
+			for (CellHit hit : animOldCells)
+				if (hit.polygon() == drillOldPoly) { drillHit = hit; break; }
+			if (drillHit != null) {
+				CellHit fake = new CellHit(drillHit.node(), expanded, drillHit.unaccounted(), drillHit.freeSpace(), List.of());
+				drawCellFill(g, fake, ctx);
+				drawCellStroke(g, fake);
+			}
+
+		} else {
+			double p = smoothStep((rawT - 0.5) * 2);
+
+			// Phase 2: new children grow from their centroids.
+			List<CellHit> growing = new ArrayList<>(animNewCells.size());
+			for (CellHit newHit : animNewCells) {
+				VoronoiLayout.Pt c = VoronoiLayout.centroid(newHit.polygon());
+				List<VoronoiLayout.Pt> poly = scalePoly(newHit.polygon(), c, c, p);
+				growing.add(new CellHit(newHit.node(), poly, newHit.unaccounted(), newHit.freeSpace(), newHit.subCells()));
+			}
+			for (CellHit hit : growing) drawCellFill(g, hit, ctx);
+			for (CellHit hit : growing) drawSubCells(g, hit);
+			for (CellHit hit : growing) drawCellStroke(g, hit);
+			for (CellHit hit : growing) drawCellLabel(g, hit, ctx);
+		}
+	}
+
+	/**
+	 * Drill-out: two phases.
+	 * Phase 1 (0→0.5): current children collapse toward the disk centre.
+	 * Phase 2 (0.5→1): new parent-level cells grow from their centroids.
+	 */
+	private void drawDrillOut(GraphicsContext g, RenderContext ctx, double rawT,
+	                           double cx, double cy, double radius) {
+		VoronoiLayout.Pt diskC = new VoronoiLayout.Pt(cx, cy);
+
+		if (rawT <= 0.5) {
+			double p = smoothStep(rawT * 2);
+			for (CellHit hit : animOldCells) {
+				List<VoronoiLayout.Pt> poly = hit.polygon();
+				if (poly.size() < 3) continue;
+				VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
+				// Move centroid toward disk centre and shrink.
+				VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(
+						lerp(c.x(), diskC.x(), p), lerp(c.y(), diskC.y(), p));
+				List<VoronoiLayout.Pt> collapsed = scalePoly(poly, c, lerpC, 1.0 - p * 0.7);
+				double alpha = 1.0 - p;
+				drawCellFillAlpha(g, hit, collapsed, alpha, ctx);
+			}
+			for (CellHit hit : animOldCells) {
+				List<VoronoiLayout.Pt> poly = hit.polygon();
+				if (poly.size() < 3) continue;
+				VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
+				VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(
+						lerp(c.x(), diskC.x(), p), lerp(c.y(), diskC.y(), p));
+				List<VoronoiLayout.Pt> collapsed = scalePoly(poly, c, lerpC, 1.0 - p * 0.7);
+				drawStrokeAlpha(g, collapsed, 3.0, host.scheme().background(), 1.0 - p);
+			}
+		} else {
+			double p = smoothStep((rawT - 0.5) * 2);
+			List<CellHit> growing = new ArrayList<>(animNewCells.size());
+			for (CellHit newHit : animNewCells) {
+				VoronoiLayout.Pt c = VoronoiLayout.centroid(newHit.polygon());
+				// The cell for the drilled-out node expands from full disk; others from centroid.
+				List<VoronoiLayout.Pt> poly;
+				if (newHit.node() == animDrillNode) {
+					// Morph from full circle back to the cell polygon.
+					poly = morphFromCircle(newHit.polygon(), diskC, radius, p);
+				} else {
+					poly = scalePoly(newHit.polygon(), c, c, p);
+				}
+				growing.add(new CellHit(newHit.node(), poly, newHit.unaccounted(), newHit.freeSpace(), newHit.subCells()));
+			}
+			for (CellHit hit : growing) drawCellFill(g, hit, ctx);
+			for (CellHit hit : growing) drawSubCells(g, hit);
+			for (CellHit hit : growing) drawCellStroke(g, hit);
+			for (CellHit hit : growing) drawCellLabel(g, hit, ctx);
+		}
+	}
+
+	private void drawCellFillAlpha(GraphicsContext g, CellHit hit, List<VoronoiLayout.Pt> poly, double alpha, RenderContext ctx) {
+		if (poly.size() < 3 || alpha <= 0.01) return;
+		CellHit fake = new CellHit(hit.node(), poly, hit.unaccounted(), hit.freeSpace(), List.of());
+		// Temporarily scale alpha by multiplying into the fill — reuse drawCellFill but clip alpha.
+		// We draw a plain colored fill here to control opacity independently.
+		Color base;
+		if (hit.freeSpace())        base = host.scheme().capacityTrack();
+		else if (hit.unaccounted()) base = host.scheme().surface().brighter();
+		else if (hit.node() != null) base = host.colors().colorFor(hit.node());
+		else                         base = host.scheme().surface();
+		boolean hovered = (hit.node() != null && hit.node() == ctx.hoverNode());
+		if (hovered) base = base.deriveColor(0, 1.20, 0.85, 1.0);
+		double nodeAlpha = (hit.node() == null || hit.node().isDone()) ? 1.0 : 0.45;
+		Color fill = new Color(base.getRed(), base.getGreen(), base.getBlue(), nodeAlpha * alpha);
+		g.setFill(fill);
+		g.fillPolygon(toXs(poly), toYs(poly), poly.size());
+	}
+
+	private void drawStrokeAlpha(GraphicsContext g, List<VoronoiLayout.Pt> poly, double lineWidth, Color color, double alpha) {
+		if (poly.size() < 3 || alpha <= 0.01) return;
+		g.setStroke(new Color(color.getRed(), color.getGreen(), color.getBlue(), alpha));
+		g.setLineWidth(lineWidth);
+		g.strokePolygon(toXs(poly), toYs(poly), poly.size());
+	}
+
+	/**
+	 * Morphs {@code oldPoly} toward {@code newPoly} at interpolation factor {@code t} (0 = old, 1 = new).
+	 * Uses centroid translation + area-proportional scale applied to the new polygon's shape, so vertex-count
+	 * differences between old and new are not an issue. Cells with no old polygon (newly appeared) grow from
+	 * their centroid; cells with no new polygon collapse to a point.
+	 */
+	private static List<VoronoiLayout.Pt> lerpPolygon(
+			List<VoronoiLayout.Pt> oldPoly, List<VoronoiLayout.Pt> newPoly, double t) {
+		if (newPoly == null || newPoly.size() < 3)
+			return List.of();
+		VoronoiLayout.Pt newC = VoronoiLayout.centroid(newPoly);
+		if (oldPoly == null || oldPoly.size() < 3) {
+			return scalePoly(newPoly, newC, newC, t);
+		}
+		VoronoiLayout.Pt oldC = VoronoiLayout.centroid(oldPoly);
+		VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(
+				lerp(oldC.x(), newC.x(), t),
+				lerp(oldC.y(), newC.y(), t));
+		double oldA = VoronoiLayout.polygonArea(oldPoly);
+		double newA = VoronoiLayout.polygonArea(newPoly);
+		double scale = (oldA > 0 && newA > 0) ? lerp(Math.sqrt(oldA / newA), 1.0, t) : 1.0;
+		return scalePoly(newPoly, newC, lerpC, scale);
+	}
+
+	/**
+	 * Morphs a polygon toward a circle. Each vertex is lerped toward the point on the target circle
+	 * at the same angle from the polygon's centroid, so at t=1 every vertex lies exactly on the circle
+	 * and the shape is a smooth disc.
+	 */
+	private static List<VoronoiLayout.Pt> morphToCircle(
+			List<VoronoiLayout.Pt> poly, VoronoiLayout.Pt circleCenter, double circleRadius, double t) {
+		VoronoiLayout.Pt centroid = VoronoiLayout.centroid(poly);
+		List<VoronoiLayout.Pt> out = new ArrayList<>(poly.size());
+		for (VoronoiLayout.Pt v : poly) {
+			double angle = Math.atan2(v.y() - centroid.y(), v.x() - centroid.x());
+			double tx = circleCenter.x() + circleRadius * Math.cos(angle);
+			double ty = circleCenter.y() + circleRadius * Math.sin(angle);
+			out.add(new VoronoiLayout.Pt(lerp(v.x(), tx, t), lerp(v.y(), ty, t)));
+		}
+		return out;
+	}
+
+	/**
+	 * Reverse of {@link #morphToCircle}: each vertex of {@code poly} is lerped from the point on the
+	 * source circle at that vertex's angle to its final polygon position.
+	 */
+	private static List<VoronoiLayout.Pt> morphFromCircle(
+			List<VoronoiLayout.Pt> poly, VoronoiLayout.Pt circleCenter, double circleRadius, double t) {
+		VoronoiLayout.Pt centroid = VoronoiLayout.centroid(poly);
+		List<VoronoiLayout.Pt> out = new ArrayList<>(poly.size());
+		for (VoronoiLayout.Pt v : poly) {
+			double angle = Math.atan2(v.y() - centroid.y(), v.x() - centroid.x());
+			double sx = circleCenter.x() + circleRadius * Math.cos(angle);
+			double sy = circleCenter.y() + circleRadius * Math.sin(angle);
+			out.add(new VoronoiLayout.Pt(lerp(sx, v.x(), t), lerp(sy, v.y(), t)));
+		}
+		return out;
+	}
+
+	/** Scale {@code poly} around {@code anchor}, then translate so the anchor lands at {@code center}. */
+	private static List<VoronoiLayout.Pt> scalePoly(
+			List<VoronoiLayout.Pt> poly, VoronoiLayout.Pt anchor, VoronoiLayout.Pt center, double scale) {
+		List<VoronoiLayout.Pt> out = new ArrayList<>(poly.size());
+		for (VoronoiLayout.Pt v : poly)
+			out.add(new VoronoiLayout.Pt(
+					center.x() + (v.x() - anchor.x()) * scale,
+					center.y() + (v.y() - anchor.y()) * scale));
+		return out;
+	}
+
+	private static double smoothStep(double t) {
+		return t * t * (3.0 - 2.0 * t);
+	}
+
+	private static double lerp(double a, double b, double t) {
+		return a + (b - a) * t;
 	}
 
 	private List<CellHit> computeLayout(List<TreemapItem> items, double cx, double cy, double radius, long totalBytes) {
