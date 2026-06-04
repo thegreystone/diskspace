@@ -107,6 +107,18 @@ public final class HeatmapVisualization implements Visualization {
 	}
 
 	@Override
+	public void layoutWillChange() {
+		if (rects.isEmpty()) return;
+		animOldCells = rectsToLayoutCells();
+		animNewCells = null;
+		animDrillRect = null;
+		animFromNode = null;
+		animStartNanos = System.nanoTime();
+		animating = true;
+		animTimer.start();
+	}
+
+	@Override
 	public void viewRootChanged(DirectoryNode previous, DirectoryNode current) {
 		if (previous == null || current == null || previous == current)
 			return;
@@ -176,7 +188,32 @@ public final class HeatmapVisualization implements Visualization {
 
 		double availH = canvasH - HEATMAP_TOP_INSET;
 
-		if (animDrillRect != null) {
+		if (animDrillRect == null && animFromNode == null) {
+			// ---- Layout change (same viewRoot, e.g. hide-free-space toggle) --------
+			// Build a key→cell map for both old and new so we can match by identity.
+			java.util.Map<Object, LayoutCell> oldByKey = buildCellMap(animOldCells);
+			java.util.Map<Object, LayoutCell> newByKey = buildCellMap(animNewCells);
+
+			// Disappearing cells (e.g. free-space being hidden): shrink in place.
+			for (LayoutCell old : animOldCells) {
+				if (old.node() != null && old.node().parent() != null) continue; // only top-level
+				if (!newByKey.containsKey(cellKey(old))) {
+					double cx = old.x() + old.w() / 2, cy = old.y() + old.h() / 2;
+					drawCellAlpha(g, old, lerp(old.x(), cx, t), lerp(old.y(), cy, t),
+							lerp(old.w(), 0, t), lerp(old.h(), 0, t), 1.0 - t);
+				}
+			}
+			// All new cells: lerp from old position (if matched) or grow from centroid.
+			for (LayoutCell newCell : animNewCells) {
+				LayoutCell oldCell = oldByKey.get(cellKey(newCell));
+				double sx = oldCell != null ? oldCell.x() : newCell.x() + newCell.w() / 2;
+				double sy = oldCell != null ? oldCell.y() : newCell.y() + newCell.h() / 2;
+				double sw = oldCell != null ? oldCell.w() : 0;
+				double sh = oldCell != null ? oldCell.h() : 0;
+				drawCell(g, newCell, lerp(sx, newCell.x(), t), lerp(sy, newCell.y(), t),
+						lerp(sw, newCell.w(), t), lerp(sh, newCell.h(), t));
+			}
+		} else if (animDrillRect != null) {
 			// ---- Drill-in ------------------------------------------------
 			// Treat the drill rect as the new viewport. Old sibling cells are pushed off the
 			// canvas edges by the same zoom that brings new cells in from inside the drill rect.
@@ -277,6 +314,18 @@ public final class HeatmapVisualization implements Visualization {
 				g.fillText(truncate(name, chars) + suf, x + 6, y + 4, Math.max(0, w - 12));
 			}
 		}
+	}
+
+	private static Object cellKey(LayoutCell c) {
+		if (c.node() != null) return c.node();
+		if (c.freeSpace()) return "FREE";
+		return "UNACCOUNTED";
+	}
+
+	private static java.util.Map<Object, LayoutCell> buildCellMap(List<LayoutCell> cells) {
+		java.util.Map<Object, LayoutCell> map = new java.util.LinkedHashMap<>();
+		for (LayoutCell c : cells) map.putIfAbsent(cellKey(c), c);
+		return map;
 	}
 
 	private static double lerp(double a, double b, double t) { return a + (b - a) * t; }

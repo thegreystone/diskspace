@@ -78,6 +78,13 @@ public interface Visualization {
 	/** {@code true} while an animation pulse sequence is in flight. The host should not deliver input during this. */
 	boolean isAnimating();
 
+	/**
+	 * Notify the visualization that the layout will change without a view-root change — e.g. the
+	 * hide-free-space toggle. The visualization may capture the current geometry and animate toward
+	 * the new layout on the next render call. Default is no-op.
+	 */
+	default void layoutWillChange() {}
+
 	/** Optional cleanup hook — stop timers, commit pending JFR events, etc. Default is no-op. */
 	default void shutdown() {
 		// no-op
