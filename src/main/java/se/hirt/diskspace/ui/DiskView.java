@@ -1500,6 +1500,18 @@ public final class DiskView {
 			return;
 		}
 
+		if (currentMode == RenderMode.VORONOI) {
+			invalidateVoronoiCache();
+			viewRoot = newViewRoot;
+			hoverNode = null;
+			hoveringHub = false;
+			refreshTable();
+			rebuildBreadcrumb();
+			redraw();
+			root.requestFocus();
+			return;
+		}
+
 		Map<DirectoryNode, Layout> oldL = computeLayout(viewRoot);
 		Map<DirectoryNode, Layout> newL = computeLayout(newViewRoot);
 
@@ -2018,6 +2030,7 @@ public final class DiskView {
 		if (currentMode == RenderMode.VORONOI) {
 			try {
 				drawVoronoi(g, w, h);
+				drawVoronoiHoverOverlay(g, w, h);
 			} catch (RuntimeException ex) {
 				LOG.log(java.util.logging.Level.WARNING, "Voronoi render failed", ex);
 				drawCenterText(g, w / 2, h / 2, "Voronoi render error — see logs");
@@ -2778,6 +2791,39 @@ public final class DiskView {
 		g.fillText(name, c.x(), c.y());
 		g.setTextAlign(TextAlignment.LEFT);
 		g.setTextBaseline(VPos.BASELINE);
+	}
+
+	private void drawVoronoiHoverOverlay(GraphicsContext g, double w, double h) {
+		String name;
+		long bytes;
+		if (hoverNode != null) {
+			name = hoverNode.name();
+			bytes = hoverNode.totalBytes();
+		} else if (hoveringFreeSpace) {
+			name = "Free";
+			bytes = target.usableBytes();
+		} else if (hoveringUnaccounted) {
+			name = "Other";
+			bytes = Math.max(0, target.usedBytes() - (scanRoot != null ? scanRoot.totalBytes() : 0));
+		} else if (scanning && progressPath != null) {
+			name = tailPath(progressPath);
+			bytes = progressBytes;
+		} else {
+			return;
+		}
+		String text = truncate(name, 60) + "  —  " + humanSize(bytes);
+		g.setFont(Font.font("Segoe UI", 11));
+		double pad = 8;
+		double textW = Math.min(w - 24, 6.5 * text.length() + 2 * pad);
+		double boxH = 22;
+		double boxX = 12;
+		double boxY = h - boxH - 12;
+		g.setFill(scheme.surface().deriveColor(0, 1, 1, 0.85));
+		g.fillRoundRect(boxX, boxY, textW, boxH, 6, 6);
+		g.setFill(scheme.textPrimary());
+		g.setTextAlign(TextAlignment.LEFT);
+		g.setTextBaseline(VPos.CENTER);
+		g.fillText(text, boxX + pad, boxY + boxH / 2.0, textW - 2 * pad);
 	}
 
 	// ---- interaction -----------------------------------------------------
