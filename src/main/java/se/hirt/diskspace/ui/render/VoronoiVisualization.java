@@ -40,9 +40,7 @@ import se.hirt.diskspace.ui.SizeFormat;
 import se.hirt.diskspace.ui.VoronoiLayout;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Voronoi (weighted power-diagram) treemap visualization. Renders the directory tree as a circular partition whose
@@ -52,12 +50,42 @@ import java.util.Map;
  */
 public final class VoronoiVisualization implements Visualization {
 
-	private static final java.util.logging.Logger LOG =
-			java.util.logging.Logger.getLogger(VoronoiVisualization.class.getName());
+	private static final java.util.logging.Logger LOG = java.util.logging.Logger.getLogger(
+			VoronoiVisualization.class.getName());
 
 	private static final double TOP_INSET = 36.0;
 	private static final int DISK_SIDES = 64;
 	private static final long ANIM_DURATION_NANOS = 350_000_000L;
+
+	// ---- LOD / aggregation knobs ----------------------------------------
+	// Weighted Voronoi (Bowyer-Watson + Lloyd relaxation) is O(n²) per layout call and the Lloyd loop
+	// multiplies that by the iteration count, so site count is the only knob that materially controls
+	// wall-clock cost. D3-voronoi-treemap's design centre is ~500 sites; we cap per-level and aggregate
+	// the rest into a "Smaller" cell. Tunable at runtime via system property so values can be benchmarked
+	// without recompile — pick the smallest number that still looks meaningful for the data.
+	/** Max top-level cells (direct children of the view root). Extras roll up into a single "Smaller" cell. */
+	private static final int TOP_LEVEL_MAX_SITES = readPositiveIntProperty("diskspace.voronoi.maxSites.top", 128);
+	/** Max sub-cells per top-level parent. Extras roll up into a single "Smaller" sub-cell. */
+	private static final int SUB_CELL_MAX_SITES = readPositiveIntProperty("diskspace.voronoi.maxSites.sub", 64);
+	/** Minimum parent-polygon area (px²) below which sub-cells are skipped entirely. ~50×50 px by default. */
+	private static final int SUB_CELL_MIN_PARENT_AREA = readPositiveIntProperty("diskspace.voronoi.subCellMinArea",
+			2500);
+
+	private static int readPositiveIntProperty(String name, int defaultValue) {
+		String v = System.getProperty(name);
+		if (v == null || v.isBlank())
+			return defaultValue;
+		try {
+			int parsed = Integer.parseInt(v.trim());
+			if (parsed > 0)
+				return parsed;
+			LOG.warning(() -> "Ignoring non-positive value for " + name + "=" + v + "; using default " + defaultValue);
+			return defaultValue;
+		} catch (NumberFormatException e) {
+			LOG.warning(() -> "Ignoring non-numeric value for " + name + "=" + v + "; using default " + defaultValue);
+			return defaultValue;
+		}
+	}
 
 	private VisualizationHost host;
 
@@ -107,6 +135,23 @@ public final class VoronoiVisualization implements Visualization {
 	@Override
 	public boolean isAnimating() {
 		return animating;
+	}
+
+	/**
+	 * Total layout sites (top-level cells + all sub-cells) the Voronoi computed for the most recently painted frame,
+	 * post-LOD aggregation. Differs from {@code nodeCount} on the same Render event because the visualizer caps each
+	 * level via the {@code diskspace.voronoi.maxSites.*} properties and rolls the remainder into a single "Smaller"
+	 * cell — so for a folder with millions of children this will be at most {@code top + top × sub} regardless of tree
+	 * size. During a drill animation the count comes from the in-flight {@code animNewCells} so the value reflects the
+	 * *target* layout rather than the fading old one.
+	 */
+	@Override
+	public int lastRenderSiteCount() {
+		List<CellHit> active = (animNewCells != null) ? animNewCells : cellHits;
+		int total = active.size();
+		for (CellHit hit : active)
+			total += hit.subCells().size();
+		return total;
 	}
 
 	@Override
@@ -181,8 +226,7 @@ public final class VoronoiVisualization implements Visualization {
 		// Key the cache on the sum of individual item bytes, not the root total.
 		// viewRoot.totalBytes() stays constant when dedup or streaming redistributes bytes
 		// across children; itemsBytesSum catches those per-item changes.
-		if (viewRoot != lastViewRoot || w != lastW || h != lastH || totalBytes != lastTotalBytes
-				|| ctx.hideFreeSpace() != lastHideFreeSpace) {
+		if (viewRoot != lastViewRoot || w != lastW || h != lastH || totalBytes != lastTotalBytes || ctx.hideFreeSpace() != lastHideFreeSpace) {
 			cellHits = computeLayout(items, cx, cy, radius, totalBytes);
 			lastViewRoot = viewRoot;
 			lastW = w;
@@ -235,7 +279,8 @@ public final class VoronoiVisualization implements Visualization {
 			animNewCells = computeLayout(items, cx, cy, radius, totalBytes);
 			cellHits = animNewCells;
 			lastViewRoot = viewRoot;
-			lastW = w; lastH = h;
+			lastW = w;
+			lastH = h;
 			lastTotalBytes = totalBytes;
 			lastHideFreeSpace = ctx.hideFreeSpace();
 		}
@@ -265,13 +310,12 @@ public final class VoronoiVisualization implements Visualization {
 	}
 
 	/**
-	 * Drill-in: two phases.
-	 * Phase 1 (0→0.5): the clicked cell expands to fill the whole disk while siblings collapse and fade.
-	 * Phase 2 (0.5→1): the new children grow from their centroids into their final positions.
+	 * Drill-in: two phases. Phase 1 (0→0.5): the clicked cell expands to fill the whole disk while siblings collapse
+	 * and fade. Phase 2 (0.5→1): the new children grow from their centroids into their final positions.
 	 */
-	private void drawDrillIn(GraphicsContext g, RenderContext ctx, double rawT,
-	                          double cx, double cy, double radius,
-	                          List<VoronoiLayout.Pt> drillOldPoly) {
+	private void drawDrillIn(
+			GraphicsContext g, RenderContext ctx, double rawT, double cx, double cy, double radius,
+			List<VoronoiLayout.Pt> drillOldPoly) {
 		if (rawT <= 0.5) {
 			double p = smoothStep(rawT * 2);
 
@@ -279,9 +323,11 @@ public final class VoronoiVisualization implements Visualization {
 
 			// Phase 1a: siblings collapse to their centroids and fade out.
 			for (CellHit hit : animOldCells) {
-				if (hit.polygon() == drillOldPoly) continue;
+				if (hit.polygon() == drillOldPoly)
+					continue;
 				List<VoronoiLayout.Pt> poly = hit.polygon();
-				if (poly.size() < 3) continue;
+				if (poly.size() < 3)
+					continue;
 				VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
 				List<VoronoiLayout.Pt> collapsed = scalePoly(poly, c, c, 1.0 - p);
 				double alpha = 1.0 - p;
@@ -289,9 +335,11 @@ public final class VoronoiVisualization implements Visualization {
 			}
 			// Sibling strokes on top of fills.
 			for (CellHit hit : animOldCells) {
-				if (hit.polygon() == drillOldPoly) continue;
+				if (hit.polygon() == drillOldPoly)
+					continue;
 				List<VoronoiLayout.Pt> poly = hit.polygon();
-				if (poly.size() < 3) continue;
+				if (poly.size() < 3)
+					continue;
 				VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
 				List<VoronoiLayout.Pt> collapsed = scalePoly(poly, c, c, 1.0 - p);
 				drawStrokeAlpha(g, collapsed, 3.0, host.scheme().background(), 1.0 - p);
@@ -302,9 +350,13 @@ public final class VoronoiVisualization implements Visualization {
 			// Find this cell's hit to get its color.
 			CellHit drillHit = null;
 			for (CellHit hit : animOldCells)
-				if (hit.polygon() == drillOldPoly) { drillHit = hit; break; }
+				if (hit.polygon() == drillOldPoly) {
+					drillHit = hit;
+					break;
+				}
 			if (drillHit != null) {
-				CellHit fake = new CellHit(drillHit.node(), expanded, drillHit.unaccounted(), drillHit.freeSpace(), List.of());
+				CellHit fake = new CellHit(drillHit.node(), expanded, drillHit.unaccounted(), drillHit.freeSpace(),
+						List.of());
 				drawCellFill(g, fake, ctx);
 				drawCellStroke(g, fake);
 			}
@@ -317,43 +369,46 @@ public final class VoronoiVisualization implements Visualization {
 			for (CellHit newHit : animNewCells) {
 				VoronoiLayout.Pt c = VoronoiLayout.centroid(newHit.polygon());
 				List<VoronoiLayout.Pt> poly = scalePoly(newHit.polygon(), c, c, p);
-				growing.add(new CellHit(newHit.node(), poly, newHit.unaccounted(), newHit.freeSpace(), newHit.subCells()));
+				growing.add(new CellHit(newHit.node(), poly, newHit.unaccounted(), newHit.freeSpace(), newHit.smaller(),
+						newHit.subCells()));
 			}
-			for (CellHit hit : growing) drawCellFill(g, hit, ctx);
-			for (CellHit hit : growing) drawSubCells(g, hit);
-			for (CellHit hit : growing) drawCellStroke(g, hit);
-			for (CellHit hit : growing) drawCellLabel(g, hit, ctx);
+			for (CellHit hit : growing)
+				drawCellFill(g, hit, ctx);
+			for (CellHit hit : growing)
+				drawSubCells(g, hit);
+			for (CellHit hit : growing)
+				drawCellStroke(g, hit);
+			for (CellHit hit : growing)
+				drawCellLabel(g, hit, ctx);
 		}
 	}
 
 	/**
-	 * Drill-out: two phases.
-	 * Phase 1 (0→0.5): current children collapse toward the disk centre.
-	 * Phase 2 (0.5→1): new parent-level cells grow from their centroids.
+	 * Drill-out: two phases. Phase 1 (0→0.5): current children collapse toward the disk centre. Phase 2 (0.5→1): new
+	 * parent-level cells grow from their centroids.
 	 */
-	private void drawDrillOut(GraphicsContext g, RenderContext ctx, double rawT,
-	                           double cx, double cy, double radius) {
+	private void drawDrillOut(GraphicsContext g, RenderContext ctx, double rawT, double cx, double cy, double radius) {
 		VoronoiLayout.Pt diskC = new VoronoiLayout.Pt(cx, cy);
 
 		if (rawT <= 0.5) {
 			double p = smoothStep(rawT * 2);
 			for (CellHit hit : animOldCells) {
 				List<VoronoiLayout.Pt> poly = hit.polygon();
-				if (poly.size() < 3) continue;
+				if (poly.size() < 3)
+					continue;
 				VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
 				// Move centroid toward disk centre and shrink.
-				VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(
-						lerp(c.x(), diskC.x(), p), lerp(c.y(), diskC.y(), p));
+				VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(lerp(c.x(), diskC.x(), p), lerp(c.y(), diskC.y(), p));
 				List<VoronoiLayout.Pt> collapsed = scalePoly(poly, c, lerpC, 1.0 - p * 0.7);
 				double alpha = 1.0 - p;
 				drawCellFillAlpha(g, hit, collapsed, alpha, ctx);
 			}
 			for (CellHit hit : animOldCells) {
 				List<VoronoiLayout.Pt> poly = hit.polygon();
-				if (poly.size() < 3) continue;
+				if (poly.size() < 3)
+					continue;
 				VoronoiLayout.Pt c = VoronoiLayout.centroid(poly);
-				VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(
-						lerp(c.x(), diskC.x(), p), lerp(c.y(), diskC.y(), p));
+				VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(lerp(c.x(), diskC.x(), p), lerp(c.y(), diskC.y(), p));
 				List<VoronoiLayout.Pt> collapsed = scalePoly(poly, c, lerpC, 1.0 - p * 0.7);
 				drawStrokeAlpha(g, collapsed, 3.0, host.scheme().background(), 1.0 - p);
 			}
@@ -370,45 +425,61 @@ public final class VoronoiVisualization implements Visualization {
 				} else {
 					poly = scalePoly(newHit.polygon(), c, c, p);
 				}
-				growing.add(new CellHit(newHit.node(), poly, newHit.unaccounted(), newHit.freeSpace(), newHit.subCells()));
+				growing.add(new CellHit(newHit.node(), poly, newHit.unaccounted(), newHit.freeSpace(), newHit.smaller(),
+						newHit.subCells()));
 			}
-			for (CellHit hit : growing) drawCellFill(g, hit, ctx);
-			for (CellHit hit : growing) drawSubCells(g, hit);
-			for (CellHit hit : growing) drawCellStroke(g, hit);
-			for (CellHit hit : growing) drawCellLabel(g, hit, ctx);
+			for (CellHit hit : growing)
+				drawCellFill(g, hit, ctx);
+			for (CellHit hit : growing)
+				drawSubCells(g, hit);
+			for (CellHit hit : growing)
+				drawCellStroke(g, hit);
+			for (CellHit hit : growing)
+				drawCellLabel(g, hit, ctx);
 		}
 	}
 
-	private void drawCellFillAlpha(GraphicsContext g, CellHit hit, List<VoronoiLayout.Pt> poly, double alpha, RenderContext ctx) {
-		if (poly.size() < 3 || alpha <= 0.01) return;
+	private void drawCellFillAlpha(
+			GraphicsContext g, CellHit hit, List<VoronoiLayout.Pt> poly, double alpha, RenderContext ctx) {
+		if (poly.size() < 3 || alpha <= 0.01)
+			return;
 		CellHit fake = new CellHit(hit.node(), poly, hit.unaccounted(), hit.freeSpace(), List.of());
 		// Temporarily scale alpha by multiplying into the fill — reuse drawCellFill but clip alpha.
 		// We draw a plain colored fill here to control opacity independently.
 		Color base;
-		if (hit.freeSpace())        base = host.scheme().capacityTrack();
-		else if (hit.unaccounted()) base = host.scheme().surface().brighter();
-		else if (hit.node() != null) base = host.colors().colorFor(hit.node());
-		else                         base = host.scheme().surface();
+		if (hit.freeSpace())
+			base = host.scheme().capacityTrack();
+		else if (hit.unaccounted())
+			base = host.scheme().surface().brighter();
+		else if (hit.smaller())
+			base = host.scheme().surface().darker();
+		else if (hit.node() != null)
+			base = host.colors().colorFor(hit.node());
+		else
+			base = host.scheme().surface();
 		boolean hovered = (hit.node() != null && hit.node() == ctx.hoverNode());
-		if (hovered) base = base.deriveColor(0, 1.20, 0.85, 1.0);
+		if (hovered)
+			base = base.deriveColor(0, 1.20, 0.85, 1.0);
 		double nodeAlpha = (hit.node() == null || hit.node().isDone()) ? 1.0 : 0.45;
 		Color fill = new Color(base.getRed(), base.getGreen(), base.getBlue(), nodeAlpha * alpha);
 		g.setFill(fill);
 		g.fillPolygon(toXs(poly), toYs(poly), poly.size());
 	}
 
-	private void drawStrokeAlpha(GraphicsContext g, List<VoronoiLayout.Pt> poly, double lineWidth, Color color, double alpha) {
-		if (poly.size() < 3 || alpha <= 0.01) return;
+	private void drawStrokeAlpha(
+			GraphicsContext g, List<VoronoiLayout.Pt> poly, double lineWidth, Color color, double alpha) {
+		if (poly.size() < 3 || alpha <= 0.01)
+			return;
 		g.setStroke(new Color(color.getRed(), color.getGreen(), color.getBlue(), alpha));
 		g.setLineWidth(lineWidth);
 		g.strokePolygon(toXs(poly), toYs(poly), poly.size());
 	}
 
 	/**
-	 * Morphs {@code oldPoly} toward {@code newPoly} at interpolation factor {@code t} (0 = old, 1 = new).
-	 * Uses centroid translation + area-proportional scale applied to the new polygon's shape, so vertex-count
-	 * differences between old and new are not an issue. Cells with no old polygon (newly appeared) grow from
-	 * their centroid; cells with no new polygon collapse to a point.
+	 * Morphs {@code oldPoly} toward {@code newPoly} at interpolation factor {@code t} (0 = old, 1 = new). Uses centroid
+	 * translation + area-proportional scale applied to the new polygon's shape, so vertex-count differences between old
+	 * and new are not an issue. Cells with no old polygon (newly appeared) grow from their centroid; cells with no new
+	 * polygon collapse to a point.
 	 */
 	private static List<VoronoiLayout.Pt> lerpPolygon(
 			List<VoronoiLayout.Pt> oldPoly, List<VoronoiLayout.Pt> newPoly, double t) {
@@ -419,9 +490,7 @@ public final class VoronoiVisualization implements Visualization {
 			return scalePoly(newPoly, newC, newC, t);
 		}
 		VoronoiLayout.Pt oldC = VoronoiLayout.centroid(oldPoly);
-		VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(
-				lerp(oldC.x(), newC.x(), t),
-				lerp(oldC.y(), newC.y(), t));
+		VoronoiLayout.Pt lerpC = new VoronoiLayout.Pt(lerp(oldC.x(), newC.x(), t), lerp(oldC.y(), newC.y(), t));
 		double oldA = VoronoiLayout.polygonArea(oldPoly);
 		double newA = VoronoiLayout.polygonArea(newPoly);
 		double scale = (oldA > 0 && newA > 0) ? lerp(Math.sqrt(oldA / newA), 1.0, t) : 1.0;
@@ -429,9 +498,8 @@ public final class VoronoiVisualization implements Visualization {
 	}
 
 	/**
-	 * Morphs a polygon toward a circle. Each vertex is lerped toward the point on the target circle
-	 * at the same angle from the polygon's centroid, so at t=1 every vertex lies exactly on the circle
-	 * and the shape is a smooth disc.
+	 * Morphs a polygon toward a circle. Each vertex is lerped toward the point on the target circle at the same angle
+	 * from the polygon's centroid, so at t=1 every vertex lies exactly on the circle and the shape is a smooth disc.
 	 */
 	private static List<VoronoiLayout.Pt> morphToCircle(
 			List<VoronoiLayout.Pt> poly, VoronoiLayout.Pt circleCenter, double circleRadius, double t) {
@@ -447,8 +515,8 @@ public final class VoronoiVisualization implements Visualization {
 	}
 
 	/**
-	 * Reverse of {@link #morphToCircle}: each vertex of {@code poly} is lerped from the point on the
-	 * source circle at that vertex's angle to its final polygon position.
+	 * Reverse of {@link #morphToCircle}: each vertex of {@code poly} is lerped from the point on the source circle at
+	 * that vertex's angle to its final polygon position.
 	 */
 	private static List<VoronoiLayout.Pt> morphFromCircle(
 			List<VoronoiLayout.Pt> poly, VoronoiLayout.Pt circleCenter, double circleRadius, double t) {
@@ -468,8 +536,7 @@ public final class VoronoiVisualization implements Visualization {
 			List<VoronoiLayout.Pt> poly, VoronoiLayout.Pt anchor, VoronoiLayout.Pt center, double scale) {
 		List<VoronoiLayout.Pt> out = new ArrayList<>(poly.size());
 		for (VoronoiLayout.Pt v : poly)
-			out.add(new VoronoiLayout.Pt(
-					center.x() + (v.x() - anchor.x()) * scale,
+			out.add(new VoronoiLayout.Pt(center.x() + (v.x() - anchor.x()) * scale,
 					center.y() + (v.y() - anchor.y()) * scale));
 		return out;
 	}
@@ -483,6 +550,10 @@ public final class VoronoiVisualization implements Visualization {
 	}
 
 	private List<CellHit> computeLayout(List<TreemapItem> items, double cx, double cy, double radius, long totalBytes) {
+		// Cap top-level cell count before handing to the O(n²) weighted Voronoi: extras roll up into a
+		// single "Smaller" cell carrying the summed bytes. Without this, drilling into a folder with ~50k
+		// direct children stalls the UI thread for minutes (see JFR profile diskspace-fixed.jfr).
+		items = aggregateSmaller(items, TOP_LEVEL_MAX_SITES);
 		items.sort((a, b) -> Long.compare(b.bytes(), a.bytes()));
 		double[] weights = new double[items.size()];
 		for (int i = 0; i < items.size(); i++)
@@ -492,16 +563,18 @@ public final class VoronoiVisualization implements Visualization {
 		List<CellHit> hits = new ArrayList<>(cells.size());
 		if (LOG.isLoggable(java.util.logging.Level.FINE)) {
 			double diskArea = VoronoiLayout.polygonArea(bounds);
-			StringBuilder sb = new StringBuilder("Voronoi layout (totalBytes=")
-					.append(SizeFormat.format(totalBytes)).append(", items=").append(items.size()).append("):\n");
+			StringBuilder sb = new StringBuilder("Voronoi layout (totalBytes=").append(SizeFormat.format(totalBytes))
+					.append(", items=").append(items.size()).append("):\n");
 			for (int i = 0; i < cells.size(); i++) {
 				TreemapItem item = items.get(i);
 				double cellArea = VoronoiLayout.polygonArea(cells.get(i).polygon());
 				double targetArea = diskArea * weights[i] / totalBytes;
 				String label = item.freeSpace() ? "Free" : item.unaccounted() ? "Unaccounted"
-						: item.node() != null ? item.node().name() : "?";
-				sb.append(String.format("  [%2d] %-35s bytes=%-12s weight=%-12.0f targetArea=%7.1f cellArea=%7.1f ratio=%.2f%n",
-						i, label, SizeFormat.format(item.bytes()), weights[i], targetArea, cellArea,
+						: item.smaller() ? "Smaller (" + item.aggregatedChildCount() + " items)"
+								: item.node() != null ? item.node().name() : "?";
+				sb.append(String.format(
+						"  [%2d] %-35s bytes=%-12s weight=%-12.0f targetArea=%7.1f cellArea=%7.1f ratio=%.2f%n", i,
+						label, SizeFormat.format(item.bytes()), weights[i], targetArea, cellArea,
 						targetArea > 0 ? cellArea / targetArea : 0));
 			}
 			LOG.fine(sb.toString());
@@ -510,7 +583,7 @@ public final class VoronoiVisualization implements Visualization {
 			TreemapItem item = items.get(i);
 			List<VoronoiLayout.Pt> poly = cells.get(i).polygon();
 			List<CellHit> subCells = computeSubCells(item.node(), poly);
-			hits.add(new CellHit(item.node(), poly, item.unaccounted(), item.freeSpace(), subCells));
+			hits.add(new CellHit(item.node(), poly, item.unaccounted(), item.freeSpace(), item.smaller(), subCells));
 		}
 		return hits;
 	}
@@ -521,15 +594,29 @@ public final class VoronoiVisualization implements Visualization {
 		List<DirectoryNode> children = node.children();
 		if (children.size() < 2)
 			return List.of();
-		if (VoronoiLayout.polygonArea(parentPoly) < 400)
+		// Pixel-area gate: parents too small to read a label inside don't get a sub-Voronoi computed at
+		// all. Cheap children == cheap render. Threshold is tunable via -Ddiskspace.voronoi.subCellMinArea.
+		if (VoronoiLayout.polygonArea(parentPoly) < SUB_CELL_MIN_PARENT_AREA)
 			return List.of();
-		double[] weights = new double[children.size()];
-		for (int i = 0; i < children.size(); i++)
-			weights[i] = Math.max(1.0, children.get(i).totalBytes());
+
+		// Build TreemapItems for the children and aggregate the tail into a single "Smaller" sub-cell so
+		// the per-parent Voronoi never exceeds SUB_CELL_MAX_SITES. Mirrors what computeLayout does at the
+		// top level; both are the same Bowyer-Watson + Lloyd loop and both blow up the same way without
+		// a cap.
+		List<TreemapItem> subItems = new ArrayList<>(children.size());
+		for (DirectoryNode child : children)
+			subItems.add(new TreemapItem(child, Math.max(1L, child.totalBytes()), false, false));
+		subItems = aggregateSmaller(subItems, SUB_CELL_MAX_SITES);
+
+		double[] weights = new double[subItems.size()];
+		for (int i = 0; i < subItems.size(); i++)
+			weights[i] = Math.max(1.0, subItems.get(i).bytes());
 		List<VoronoiLayout.Cell> cells = VoronoiLayout.compute(parentPoly, weights);
 		List<CellHit> sub = new ArrayList<>(cells.size());
-		for (int i = 0; i < cells.size(); i++)
-			sub.add(new CellHit(children.get(i), cells.get(i).polygon(), false, false, List.of()));
+		for (int i = 0; i < cells.size(); i++) {
+			TreemapItem item = subItems.get(i);
+			sub.add(new CellHit(item.node(), cells.get(i).polygon(), false, false, item.smaller(), List.of()));
+		}
 		return sub;
 	}
 
@@ -545,15 +632,17 @@ public final class VoronoiVisualization implements Visualization {
 			base = host.scheme().capacityTrack();
 		} else if (hit.unaccounted()) {
 			base = host.scheme().surface().brighter();
+		} else if (hit.smaller()) {
+			// "Smaller" aggregate cell — neutral muted tone, distinct from both real-node colors and from
+			// the lighter unaccounted/free shades. Tracks the active theme via scheme().surface().
+			base = host.scheme().surface().darker();
 		} else if (hit.node() != null) {
 			base = host.colors().colorFor(hit.node());
 		} else {
 			base = host.scheme().surface();
 		}
 
-		boolean hovered = (hit.node() != null && hit.node() == ctx.hoverNode())
-				|| (hit.freeSpace() && ctx.hoveringFreeSpace())
-				|| (hit.unaccounted() && ctx.hoveringUnaccounted());
+		boolean hovered = (hit.node() != null && hit.node() == ctx.hoverNode()) || (hit.freeSpace() && ctx.hoveringFreeSpace()) || (hit.unaccounted() && ctx.hoveringUnaccounted());
 		if (hovered)
 			base = base.deriveColor(0, 1.20, 0.85, 1.0);
 
@@ -580,7 +669,10 @@ public final class VoronoiVisualization implements Visualization {
 				continue;
 			double[] xs = toXs(poly);
 			double[] ys = toYs(poly);
-			Color base = host.colors().colorFor(sub.node());
+			// Smaller sub-cells (the per-parent aggregate of all tiny children) have no node — use the
+			// theme's surface darker as a neutral base instead of calling colorFor(null).
+			Color base = sub.smaller() || sub.node() == null ? host.scheme().surface().darker()
+					: host.colors().colorFor(sub.node());
 			// Blend 40% toward the theme background so sub-cells read as a quieter
 			// echo of the parent palette — automatically muted in dark mode and
 			// lightened in light mode.
@@ -596,11 +688,8 @@ public final class VoronoiVisualization implements Visualization {
 	}
 
 	private static Color blend(Color a, Color b, double t) {
-		return new Color(
-				a.getRed()   * (1 - t) + b.getRed()   * t,
-				a.getGreen() * (1 - t) + b.getGreen() * t,
-				a.getBlue()  * (1 - t) + b.getBlue()  * t,
-				1.0);
+		return new Color(a.getRed() * (1 - t) + b.getRed() * t, a.getGreen() * (1 - t) + b.getGreen() * t,
+				a.getBlue() * (1 - t) + b.getBlue() * t, 1.0);
 	}
 
 	private void drawCellHover(GraphicsContext g, CellHit hit) {
@@ -734,10 +823,52 @@ public final class VoronoiVisualization implements Visualization {
 
 	// ---- value types ----------------------------------------------------
 
-	private record CellHit(DirectoryNode node, List<VoronoiLayout.Pt> polygon, boolean unaccounted,
-	                        boolean freeSpace, List<CellHit> subCells) {
+	private record CellHit(DirectoryNode node, List<VoronoiLayout.Pt> polygon, boolean unaccounted, boolean freeSpace,
+	                       boolean smaller, List<CellHit> subCells) {
+		/** Convenience constructor for the historical 5-arg shape; defaults {@code smaller} to {@code false}. */
+		CellHit(
+				DirectoryNode node, List<VoronoiLayout.Pt> polygon, boolean unaccounted, boolean freeSpace,
+				List<CellHit> subCells) {
+			this(node, polygon, unaccounted, freeSpace, false, subCells);
+		}
 	}
 
-	private record TreemapItem(DirectoryNode node, long bytes, boolean unaccounted, boolean freeSpace) {
+	private record TreemapItem(DirectoryNode node, long bytes, boolean unaccounted, boolean freeSpace, boolean smaller,
+	                           int aggregatedChildCount) {
+		/**
+		 * Convenience constructor for the historical 4-arg shape; defaults {@code smaller} and the aggregate count to
+		 * zero.
+		 */
+		TreemapItem(DirectoryNode node, long bytes, boolean unaccounted, boolean freeSpace) {
+			this(node, bytes, unaccounted, freeSpace, false, 0);
+		}
+	}
+
+	/**
+	 * Caps a list of treemap items to {@code maxSites} by keeping the (max−1) largest and rolling everything else into
+	 * a single trailing {@code smaller} item carrying the summed bytes and the count of rolled-up siblings. Returns the
+	 * original list unchanged when it already fits. Mutates the input by sorting it descending by bytes — caller
+	 * doesn't reuse it afterwards. Sites that are special (free space, unaccounted) are kept as-is and counted toward
+	 * the cap; aggregation only collapses real children whose individual bytes are too small to be worth a dedicated
+	 * cell.
+	 */
+	private static List<TreemapItem> aggregateSmaller(List<TreemapItem> items, int maxSites) {
+		if (items.size() <= maxSites)
+			return items;
+		items.sort((a, b) -> Long.compare(b.bytes(), a.bytes()));
+		List<TreemapItem> kept = new ArrayList<>(maxSites);
+		long aggregatedBytes = 0;
+		int aggregatedCount = 0;
+		for (int i = 0; i < items.size(); i++) {
+			if (i < maxSites - 1) {
+				kept.add(items.get(i));
+			} else {
+				aggregatedBytes += items.get(i).bytes();
+				aggregatedCount++;
+			}
+		}
+		if (aggregatedBytes > 0 && aggregatedCount > 0)
+			kept.add(new TreemapItem(null, aggregatedBytes, false, false, true, aggregatedCount));
+		return kept;
 	}
 }

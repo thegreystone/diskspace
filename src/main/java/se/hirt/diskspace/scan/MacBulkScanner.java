@@ -74,19 +74,17 @@ import java.util.logging.Logger;
  * Matches the dedup semantics of {@link ParallelDirectoryScanner}.
  * <p><b>APFS clone dedup.</b> Only active when the scan root lives on APFS (probed once via {@code statfs(2)} at scan
  * start; {@link Darwin#statfs}). On APFS we also request {@link Darwin#ATTR_CMNEXT_CLONE_REFCNT} alongside
- * {@link Darwin#ATTR_CMNEXT_CLONEID} and {@link Darwin#ATTR_CMNEXT_PRIVATESIZE}. {@code clone_refcnt} counts how
- * many files currently share extents via this file's clone family: {@code refcnt &le; 1} means the file is not
- * sharing any extents (either never cloned, or all siblings have diverged) and is charged at full {@code allocsize};
+ * {@link Darwin#ATTR_CMNEXT_CLONEID} and {@link Darwin#ATTR_CMNEXT_PRIVATESIZE}. {@code clone_refcnt} counts how many
+ * files currently share extents via this file's clone family: {@code refcnt &le; 1} means the file is not sharing any
+ * extents (either never cloned, or all siblings have diverged) and is charged at full {@code allocsize};
  * {@code refcnt &ge; 2} means siblings still share extents and triggers the per-family dedup path. A concurrent set
- * tracks seen {@code cloneid}s for those refcnt-&ge;-2 files: the first member encountered in a clone family is
- * charged its full {@code allocsize} (shared + private blocks); subsequent members are charged
- * {@code ATTR_CMNEXT_PRIVATESIZE}
+ * tracks seen {@code cloneid}s for those refcnt-&ge;-2 files: the first member encountered in a clone family is charged
+ * its full {@code allocsize} (shared + private blocks); subsequent members are charged {@code ATTR_CMNEXT_PRIVATESIZE}
  * only (just their CoW-modified blocks, excluding the still-shared extents already counted). Total for an N-member
- * family becomes {@code shared + sum(private_i)}, which matches actual on-disk usage exactly when extents haven't
- * been further shared with files outside the family. The dev-mode {@link ParallelDirectoryScanner} fallback does
- * not have an equivalent (Java NIO doesn't expose any of these attrs), so dev builds still overcount. On non-APFS
- * roots (HFS+, NFS, SMB, exFAT, &hellip;) the whole CMNEXT request is suppressed so those users pay zero per-entry
- * overhead.
+ * family becomes {@code shared + sum(private_i)}, which matches actual on-disk usage exactly when extents haven't been
+ * further shared with files outside the family. The dev-mode {@link ParallelDirectoryScanner} fallback does not have an
+ * equivalent (Java NIO doesn't expose any of these attrs), so dev builds still overcount. On non-APFS roots (HFS+, NFS,
+ * SMB, exFAT, &hellip;) the whole CMNEXT request is suppressed so those users pay zero per-entry overhead.
  */
 @Platforms(Platform.DARWIN.class)
 public final class MacBulkScanner implements Scanner {
@@ -206,20 +204,20 @@ public final class MacBulkScanner implements Scanner {
 		final long rootDev;
 		/**
 		 * Whether the scan root is on APFS. Determined once via {@code statfs(2)} at scan start. Gates the entire
-		 * {@code ATTR_CMNEXT_*} request: on non-APFS roots none of the clone attrs are meaningful (kernel returns 0
-		 * or {@code ENOTSUP}), so we skip {@code FSOPT_ATTR_CMN_EXTENDED} entirely and shrink the per-entry payload.
+		 * {@code ATTR_CMNEXT_*} request: on non-APFS roots none of the clone attrs are meaningful (kernel returns 0 or
+		 * {@code ENOTSUP}), so we skip {@code FSOPT_ATTR_CMN_EXTENDED} entirely and shrink the per-entry payload.
 		 */
 		final boolean isApfs;
 		/** Inode-set for hardlink + firmlink dedup. Used for both files (multi-link) and directories (bind mounts). */
 		final Set<Long> seenFileIds = ConcurrentHashMap.newKeySet();
 		/**
 		 * Clone-id set for APFS clone dedup. Populated only on APFS roots and only for files whose
-		 * {@code ATTR_CMNEXT_CLONE_REFCNT &ge; 2} — i.e. files currently sharing extents with at least one sibling.
-		 * For each clone family the first member encountered is charged its full {@code allocsize} (shared + private);
-		 * subsequent members are charged only their
-		 * {@code ATTR_CMNEXT_PRIVATESIZE} (the CoW-modified blocks unique to them). Total for an N-member family is
-		 * {@code shared + sum(private_i)}, matching actual on-disk usage. Heavy on macOS where the OS uses cloning
-		 * extensively (Library/Containers initialised at install, build caches, local snapshots, Docker layers).
+		 * {@code ATTR_CMNEXT_CLONE_REFCNT &ge; 2} — i.e. files currently sharing extents with at least one sibling. For
+		 * each clone family the first member encountered is charged its full {@code allocsize} (shared + private);
+		 * subsequent members are charged only their {@code ATTR_CMNEXT_PRIVATESIZE} (the CoW-modified blocks unique to
+		 * them). Total for an N-member family is {@code shared + sum(private_i)}, matching actual on-disk usage. Heavy
+		 * on macOS where the OS uses cloning extensively (Library/Containers initialised at install, build caches,
+		 * local snapshots, Docker layers).
 		 */
 		final Set<Long> seenCloneIds = ConcurrentHashMap.newKeySet();
 		final LongAdder permDeniedCount = new LongAdder();
@@ -248,12 +246,11 @@ public final class MacBulkScanner implements Scanner {
 	}
 
 	/**
-	 * Probes the filesystem type of {@code path} via {@code statfs(2)} and returns {@code true} if
-	 * {@code f_fstypename} equals {@code "apfs"} (lowercase, the value the kernel reports for APFS volumes). Used to
-	 * decide whether to request the {@code ATTR_CMNEXT_*} group. On any failure (statfs returns non-zero, allocation
-	 * fails) we conservatively return {@code false} so we just don't enable clone dedup — the scanner still runs, it
-	 * just falls back to baseline allocsize accounting and the user sees the same overcounting we had before this
-	 * code existed.
+	 * Probes the filesystem type of {@code path} via {@code statfs(2)} and returns {@code true} if {@code f_fstypename}
+	 * equals {@code "apfs"} (lowercase, the value the kernel reports for APFS volumes). Used to decide whether to
+	 * request the {@code ATTR_CMNEXT_*} group. On any failure (statfs returns non-zero, allocation fails) we
+	 * conservatively return {@code false} so we just don't enable clone dedup — the scanner still runs, it just falls
+	 * back to baseline allocsize accounting and the user sees the same overcounting we had before this code existed.
 	 */
 	private static boolean isApfsVolume(Path path) {
 		Pointer buf = UnmanagedMemory.malloc(Darwin.STATFS_SIZE_BYTES);
@@ -311,8 +308,8 @@ public final class MacBulkScanner implements Scanner {
 	}
 
 	/**
-	 * Fills the 24-byte {@code struct attrlist} at {@code alist} with the requested commonattr + fileattr bits, and
-	 * — when {@code FSOPT_ATTR_CMN_EXTENDED} is in the options passed to {@code getattrlist[bulk]} — a bitmap of
+	 * Fills the 24-byte {@code struct attrlist} at {@code alist} with the requested commonattr + fileattr bits, and —
+	 * when {@code FSOPT_ATTR_CMN_EXTENDED} is in the options passed to {@code getattrlist[bulk]} — a bitmap of
 	 * {@code ATTR_CMNEXT_*} bits in the {@code forkattr} slot. Callers that don't want the CMNEXT group should pass
 	 * {@code 0} for {@code cmnextAttrs}.
 	 */
@@ -430,8 +427,8 @@ public final class MacBulkScanner implements Scanner {
 		}
 
 		/**
-		 * Parses one packed entry. Fixed-area layout (with {@code FSOPT_PACK_INVAL_ATTRS}; CMNEXT fields are only present
-		 * when the scan root is APFS and {@code FSOPT_ATTR_CMN_EXTENDED} is set in {@link #readDirEntries}):
+		 * Parses one packed entry. Fixed-area layout (with {@code FSOPT_PACK_INVAL_ATTRS}; CMNEXT fields are only
+		 * present when the scan root is APFS and {@code FSOPT_ATTR_CMN_EXTENDED} is set in {@link #readDirEntries}):
 		 * <pre>
 		 *   +0   uint32 entry_length
 		 *   +4   attribute_set_t returned_attrs   (5 × uint32 = 20 B; ATTR_CMN_RETURNED_ATTRS is always first)
@@ -447,8 +444,8 @@ public final class MacBulkScanner implements Scanner {
 		 *   --- end CMNEXT ---
 		 *   +n+  variable-length region: name string at (entry_start + 24 + name_dataoffset)
 		 * </pre>
-		 * Attributes within each group are placed in ascending bit order; {@code ATTR_CMN_RETURNED_ATTRS} (0x80000000) is
-		 * special-cased to always appear first. CMNEXT attributes follow the fileattr group when
+		 * Attributes within each group are placed in ascending bit order; {@code ATTR_CMN_RETURNED_ATTRS} (0x80000000)
+		 * is special-cased to always appear first. CMNEXT attributes follow the fileattr group when
 		 * {@code FSOPT_ATTR_CMN_EXTENDED} is set: {@code PRIVATESIZE} (0x08), {@code CLONEID} (0x100),
 		 * {@code CLONE_REFCNT} (0x1000).
 		 */

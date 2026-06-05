@@ -79,14 +79,27 @@ public interface Visualization {
 	boolean isAnimating();
 
 	/**
-	 * Notify the visualization that the layout will change without a view-root change — e.g. the
-	 * hide-free-space toggle. The visualization may capture the current geometry and animate toward
-	 * the new layout on the next render call. Default is no-op.
+	 * Notify the visualization that the layout will change without a view-root change — e.g. the hide-free-space
+	 * toggle. The visualization may capture the current geometry and animate toward the new layout on the next render
+	 * call. Default is no-op.
 	 */
-	default void layoutWillChange() {}
+	default void layoutWillChange() {
+	}
 
 	/** Optional cleanup hook — stop timers, commit pending JFR events, etc. Default is no-op. */
 	default void shutdown() {
 		// no-op
+	}
+
+	/**
+	 * Number of layout sites the visualization had to compute geometry for in its most recent render. This is the value
+	 * that drives the layout algorithm's cost — distinct from the total {@code nodeCount} in the underlying data tree,
+	 * which is typically much larger when a visualization aggregates / LOD-caps its inputs (Voronoi rolls everything
+	 * past N largest into a single "Smaller" cell). Returning {@code 0} is a "not reported / no aggregation in play"
+	 * signal — the consumer (JFR / JMC) should fall back to the {@code nodeCount} field on the same Render event for
+	 * visualizations that lay out everything verbatim. Default {@code 0}.
+	 */
+	default int lastRenderSiteCount() {
+		return 0;
 	}
 }

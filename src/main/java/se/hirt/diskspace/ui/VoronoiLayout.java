@@ -28,8 +28,7 @@
  */
 package se.hirt.diskspace.ui;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 /**
  * Weighted Voronoi (power diagram) treemap layout. Computes a partition of a convex bounding polygon into N cells whose
@@ -319,7 +318,15 @@ public final class VoronoiLayout {
 						holeEdges.add(e);
 				}
 			}
-			tris.removeAll(bad);
+			// Wrap `bad` in an identity-keyed Set before removeAll: ArrayList.removeAll() walks
+			// the receiver and calls bad.contains() on every element, which is O(|bad|) when
+			// `bad` is an ArrayList. With ~2n triangles in `tris` and ~5-10 in `bad` per site,
+			// that's an extra ~10× factor on top of the already-O(n²) outer loop -- the dominant
+			// frame in JFR profiles of the hang on millions-of-nodes scans. Identity hashing is
+			// safe because WTriangles are created in this method; no equals/hashCode reliance.
+			Set<WTriangle> badSet = Collections.newSetFromMap(new IdentityHashMap<>(bad.size() * 2));
+			badSet.addAll(bad);
+			tris.removeAll(badSet);
 			for (Site[] e : holeEdges)
 				tris.add(new WTriangle(e[0], e[1], site));
 		}
