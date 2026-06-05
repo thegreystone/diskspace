@@ -1872,8 +1872,8 @@ public final class DiskView {
 			forwardStack.clear();
 
 		if (currentVisualization != sunburst) {
-			// Non-sunburst visualisations don't animate drills (the treemap layout would shuffle every
-			// rectangle, with no coherent visual map). Swap the view root and repaint statically.
+			// Heatmap and Voronoi run their own AnimationTimers internally via viewRootChanged();
+			// only sunburst needs host-side layout pre-compute and the cross-layout lerp below.
 			DirectoryNode previousViewRoot = viewRoot;
 			viewRoot = newViewRoot;
 			currentVisualization.viewRootChanged(previousViewRoot, newViewRoot);
@@ -2126,9 +2126,24 @@ public final class DiskView {
 	 * / cell isn't drawn) and triggers a redraw so the layout re-flows immediately.
 	 */
 	private void toggleHideFreeSpace() {
-		hideFreeSpace = !hideFreeSpace;
-		if (hideFreeSpace) {
-			hoveringFreeSpace = false;
+		if (currentVisualization == sunburst) {
+			// Compute old layout before the flag flips, new layout after, then animate between them.
+			double w = canvas.getWidth(), h = canvas.getHeight();
+			RenderContext before = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
+					hoveringFreeSpace, hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles,
+					progressBytes, progressPath, scanner.hubState());
+			Map<DirectoryNode, SunburstVisualization.Layout> oldL = sunburst.computeLayout(viewRoot, w, h, before);
+			hideFreeSpace = !hideFreeSpace;
+			if (hideFreeSpace) hoveringFreeSpace = false;
+			RenderContext after = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
+					hoveringFreeSpace, hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles,
+					progressBytes, progressPath, scanner.hubState());
+			Map<DirectoryNode, SunburstVisualization.Layout> newL = sunburst.computeLayout(viewRoot, w, h, after);
+			sunburst.beginAnimation(viewRoot, viewRoot, oldL, newL);
+		} else {
+			currentVisualization.layoutWillChange();
+			hideFreeSpace = !hideFreeSpace;
+			if (hideFreeSpace) hoveringFreeSpace = false;
 		}
 		root.requestFocus();
 		redrawWith("hide-free-space-change");
