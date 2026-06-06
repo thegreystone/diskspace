@@ -2938,7 +2938,7 @@ public final class DiskView {
 		@jdk.jfr.Description("Approximate live file count in the underlying data at render time (tracks tree growth during a scan). This is the data size, not the layout-input size — see Site Count for the count of cells the layout algorithm actually processed.")
 		long nodeCount;
 		@jdk.jfr.Label("Site Count")
-		@jdk.jfr.Description("Number of layout cells the visualization computed geometry for this paint, after any LOD aggregation. Voronoi caps each level via the diskspace.voronoi.maxSites.* properties and rolls the rest into a single 'Smaller' cell, so this is typically much smaller than Node Count on large trees. Compare Site Count to Node Count to see how aggressively the visualization is aggregating. 0 means the visualization doesn't report a separate site count (e.g. lays out everything verbatim) — fall back to Node Count in that case.")
+		@jdk.jfr.Description("Number of geometric primitives the visualization actually drew this paint — Voronoi cells, sunburst sectors, or heatmap rectangles depending on mode. For Voronoi this is the post-LOD count (capped by diskspace.voronoi.maxSites.* properties, with the long tail rolled into a single 'Smaller' cell); for sunburst and heatmap it's the rendered count after sub-pixel culling and any 'Smaller files' leaf aggregate. Compare to Node Count to see the LOD ratio (Voronoi) or the visual-detail level (others). 0 is a fallback sentinel for any future visualization that doesn't override Visualization.lastRenderSiteCount() — use Node Count in that case.")
 		int siteCount;
 		@jdk.jfr.Label("Width")
 		@jdk.jfr.Description("Canvas width in pixels at render time.")
@@ -3045,7 +3045,7 @@ public final class DiskView {
 		@jdk.jfr.Description("Approximate live file count in the underlying data at the time the navigation completed. The data size, not the layout-input size — see Site Count for the count of cells the layout algorithm actually processed when this navigation's closing render finished.")
 		long nodeCount;
 		@jdk.jfr.Label("Site Count")
-		@jdk.jfr.Description("Number of layout cells the visualization computed geometry for in the render that closed this navigation, after any LOD aggregation. Lets you see how aggressively the visualization is rolling up data: a 3.78M-Node-Count drill-in completing with Site Count = 129 means the LOD cap reduced the layout's input by ~4 orders of magnitude. 0 means the visualization doesn't report a separate site count (e.g. lays out everything verbatim).")
+		@jdk.jfr.Description("Number of geometric primitives the visualization actually drew in the render that closed this navigation — Voronoi cells, sunburst sectors, or heatmap rectangles depending on mode. For Voronoi this reflects post-LOD aggregation: e.g. a 3.78M-Node-Count drill-in completing with Site Count = 129 means the LOD cap reduced the layout's input by ~4 orders of magnitude. Sunburst and heatmap report their rendered count after sub-pixel culling. 0 is a fallback sentinel for any future visualization that doesn't override Visualization.lastRenderSiteCount().")
 		int siteCount;
 		@jdk.jfr.Label("Scan ID")
 		@jdk.jfr.Description("Correlation ID matching the Scan event of the in-flight scan, or 0 if scan is complete or not yet started.")

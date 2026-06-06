@@ -106,6 +106,18 @@ public final class HeatmapVisualization implements Visualization {
 		return animating;
 	}
 
+	/**
+	 * Total rectangles in the most recently rendered treemap across all visible depths. Unlike Voronoi this
+	 * visualization does no LOD aggregation — every visible directory and large file contributes one rectangle — so the
+	 * value scales with the rendered subset of the tree. Differs from the {@code nodeCount} field on the same Render
+	 * event by the depth-limited recursion and the sub-pixel cull (cells projecting too small to be drawn don't enter
+	 * the hit-test cache).
+	 */
+	@Override
+	public int lastRenderSiteCount() {
+		return rects.size();
+	}
+
 	@Override
 	public void layoutWillChange() {
 		if (rects.isEmpty())

@@ -94,12 +94,12 @@ looking at.
 Right-click anywhere on the picker or in the empty space of an open disk view and choose **Preferences…** to set
 startup defaults:
 
-| Setting                | What it controls                                                     |
-|------------------------|----------------------------------------------------------------------|
+| Setting                | What it controls                                                            |
+|------------------------|-----------------------------------------------------------------------------|
 | Default visualization  | Sunburst (radial), Squarified Treemap, or Voronoi on each newly opened tab. |
-| Default size unit      | Decimal (GB) or Binary (GiB) — applied at process start.             |
-| Default coloring       | Coloring mode used by each newly opened tab.                         |
-| Hide unavailable disks | Whether unreadable disks are left out of the picker (on by default). |
+| Default size unit      | Decimal (GB) or Binary (GiB) — applied at process start.                    |
+| Default coloring       | Coloring mode used by each newly opened tab.                                |
+| Hide unavailable disks | Whether unreadable disks are left out of the picker (on by default).        |
 
 The `V` / `U` / `C` shortcuts still toggle the same things in-session without touching the persisted defaults, and `H`
 does the same for hiding unavailable disks in the picker.
@@ -150,11 +150,11 @@ under 50 ms regardless of folder size.
 Three system properties tune the LOD behaviour — pass them at JVM startup if you want different trade-offs between
 detail and speed:
 
-| Property                            | Default | What it controls                                                                                                                  |
-|-------------------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `diskspace.voronoi.maxSites.top`    | `128`   | Maximum top-level cells (direct children of the current view root). Children past this rank roll up into one "Smaller" cell.      |
-| `diskspace.voronoi.maxSites.sub`    | `64`    | Maximum sub-cells inside each top-level cell. Children past this rank roll up into a "Smaller" sub-cell.                          |
-| `diskspace.voronoi.subCellMinArea`  | `2500`  | Pixel-area floor (in px²) for triggering sub-cell layout. Parents projecting smaller than this skip the sub-Voronoi (≈ 50×50 px). |
+| Property                           | Default | What it controls                                                                                                                  |
+|------------------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------|
+| `diskspace.voronoi.maxSites.top`   | `128`   | Maximum top-level cells (direct children of the current view root). Children past this rank roll up into one "Smaller" cell.      |
+| `diskspace.voronoi.maxSites.sub`   | `64`    | Maximum sub-cells inside each top-level cell. Children past this rank roll up into a "Smaller" sub-cell.                          |
+| `diskspace.voronoi.subCellMinArea` | `2500`  | Pixel-area floor (in px²) for triggering sub-cell layout. Parents projecting smaller than this skip the sub-Voronoi (≈ 50×50 px). |
 
 Non-numeric or non-positive values log a warning and fall back to the default.
 
