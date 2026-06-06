@@ -162,11 +162,27 @@ public final class VoronoiVisualization implements Visualization {
 		}
 		animOldCells = List.copyOf(cellHits);
 		animNewCells = null;
-		animDrillNode = current;
+		// For drill-in: the cell to morph IS `current` — it was visible in the old layout as a child of
+		// `previous`. drillOldPoly will be found in animOldCells and drawDrillIn fires.
+		// For drill-out: the cell to morph is `previous` — it's now visible in the NEW layout as a child of
+		// `current`. drillOldPoly is not in animOldCells (an ancestor isn't its own descendant), so drillIn
+		// goes false, drawDrillOut fires, and in drawDrillOut Phase 2 the `newHit.node() == animDrillNode`
+		// check matches the cell representing where we came from — giving it the morph-from-full-disk
+		// effect instead of the generic grow-from-centroid.
+		animDrillNode = isAncestorOf(current, previous) ? previous : current;
 		animStartNanos = System.nanoTime();
 		animating = true;
 		animTimer.start();
 		lastViewRoot = null;
+	}
+
+	/** Walks {@code descendant}'s parent chain looking for {@code candidate}. Returns false for self-pair. */
+	private static boolean isAncestorOf(DirectoryNode candidate, DirectoryNode descendant) {
+		for (DirectoryNode w = descendant.parent(); w != null; w = w.parent()) {
+			if (w == candidate)
+				return true;
+		}
+		return false;
 	}
 
 	@Override
@@ -602,10 +618,17 @@ public final class VoronoiVisualization implements Visualization {
 		// Build TreemapItems for the children and aggregate the tail into a single "Smaller" sub-cell so
 		// the per-parent Voronoi never exceeds SUB_CELL_MAX_SITES. Mirrors what computeLayout does at the
 		// top level; both are the same Bowyer-Watson + Lloyd loop and both blow up the same way without
-		// a cap.
+		// a cap. Skip 0-byte children to match buildTopLevelTreemapItems — otherwise empty subdirectories
+		// would render as tiny visible cells at the sub-level but be silently dropped at the top level.
 		List<TreemapItem> subItems = new ArrayList<>(children.size());
-		for (DirectoryNode child : children)
-			subItems.add(new TreemapItem(child, Math.max(1L, child.totalBytes()), false, false));
+		for (DirectoryNode child : children) {
+			long bytes = child.totalBytes();
+			if (bytes > 0)
+				subItems.add(new TreemapItem(child, bytes, false, false));
+		}
+		// Re-check after the zero-byte filter — children.size() >= 2 didn't guarantee at least 2 contribute area.
+		if (subItems.size() < 2)
+			return List.of();
 		subItems = aggregateSmaller(subItems, SUB_CELL_MAX_SITES);
 
 		double[] weights = new double[subItems.size()];

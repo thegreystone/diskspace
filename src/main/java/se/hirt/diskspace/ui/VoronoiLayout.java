@@ -335,9 +335,18 @@ public final class VoronoiLayout {
 
 	private static List<Pt> cellAroundSite(List<WTriangle> tris, Site site) {
 		List<Pt> centers = new ArrayList<>();
-		for (WTriangle t : tris)
-			if (t.has(site))
-				centers.add(t.powerCenter);
+		for (WTriangle t : tris) {
+			if (!t.has(site))
+				continue;
+			Pt pc = t.powerCenter;
+			// powerCenter() returns (NaN, NaN) for degenerate (near-collinear) triangles. Including those
+			// here would propagate NaN through atan2 sort comparisons (non-transitive, can hit TimSort's
+			// "comparison method violates its general contract" exception) and through polygonArea /
+			// centroid / contains on the resulting cell. Drop them — the cell ends up with one fewer
+			// vertex, which is the right outcome for a triangle that contributed no geometric content.
+			if (Double.isFinite(pc.x()) && Double.isFinite(pc.y()))
+				centers.add(pc);
+		}
 		if (centers.size() < 3)
 			return List.of();
 		final double sx = site.x, sy = site.y;

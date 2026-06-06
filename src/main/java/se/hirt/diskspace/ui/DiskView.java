@@ -2366,8 +2366,10 @@ public final class DiskView {
 			doRedraw();
 		} finally {
 			// Snapshot the post-paint site count once and reuse across both events so they agree even if a
-			// later visualization mutation changes it. Voronoi reports its aggregate-capped count; sunburst
-			// and heatmap default to 0 (no LOD in play — fall back to nodeCount on the analysis side).
+			// later visualization mutation changes it. Voronoi reports its aggregate-capped cell count;
+			// sunburst returns its rendered sector count (post sub-pixel-arc cull and "Smaller files"
+			// aggregate); heatmap returns its hit-test rectangle count across all visible depths. A future
+			// visualization that doesn't override Visualization.lastRenderSiteCount() falls back to 0.
 			int siteCount = (currentVisualization != null) ? currentVisualization.lastRenderSiteCount() : 0;
 			if (renderEvent != null) {
 				try {
