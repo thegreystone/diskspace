@@ -10,6 +10,8 @@ table; contributors will want [DEVGUIDE.md](DEVGUIDE.md) instead.
 - [Preferences](#preferences)
     - [Storage location](#storage-location)
     - [Coloring modes](#coloring-modes)
+- [Voronoi visualization](#voronoi-visualization)
+    - [Level of detail (LOD)](#level-of-detail-lod)
 - [Mac notes](#mac-notes)
 - [Troubleshooting](#troubleshooting)
 
@@ -81,10 +83,10 @@ flaky USB card reader — never holds up the others. A disk that can't be read (
 is **left out of the picker by default**; press `H` to toggle showing it, where it appears as a dimmed, non-selectable
 **Unavailable** entry. The default is configurable under **Preferences → Disk picker → Hide unavailable disks**.
 
-**The visualizations.** A scan streams its results into the sunburst / heatmap as it walks the tree, so the picture
-builds up live instead of appearing only once the scan finishes. You can **interact with the view the whole time** —
-drill into a folder, navigate up and down with the arrow keys, hover for details, or toggle visualization (`V`) and
-coloring (`C`) — all while data is still being gathered underneath. The view keeps updating around whatever you're
+**The visualizations.** A scan streams its results into the sunburst / heatmap / Voronoi view as it walks the tree, so
+the picture builds up live instead of appearing only once the scan finishes. You can **interact with the view the whole
+time** — drill into a folder, navigate up and down with the arrow keys, hover for details, or cycle visualization (`V`)
+and coloring (`C`) — all while data is still being gathered underneath. The view keeps updating around whatever you're
 looking at.
 
 ## Preferences
@@ -94,7 +96,7 @@ startup defaults:
 
 | Setting                | What it controls                                                     |
 |------------------------|----------------------------------------------------------------------|
-| Default visualization  | Sunburst (radial) or Squarified Treemap on each newly opened tab.    |
+| Default visualization  | Sunburst (radial), Squarified Treemap, or Voronoi on each newly opened tab. |
 | Default size unit      | Decimal (GB) or Binary (GiB) — applied at process start.             |
 | Default coloring       | Coloring mode used by each newly opened tab.                         |
 | Hide unavailable disks | Whether unreadable disks are left out of the picker (on by default). |
@@ -128,6 +130,53 @@ Press `C` to cycle the current tab's mode in-session, or set the persistent defa
 
 More modes will land over time. If you'd like to contribute one — or have an idea — see
 [DEVGUIDE § Adding a coloring mode](DEVGUIDE.md#adding-a-coloring-mode) for the recipe.
+
+## Voronoi visualization
+
+The Voronoi mode (cycled to via `V`) renders the directory tree as a circular partition of polygonal cells whose areas
+are proportional to byte counts — a weighted power diagram with two hierarchy levels visible at once: the current view
+root's direct children, then their own children inside each top-level cell. Compared to the sunburst and the
+squarified-treemap heatmap, it has no built-in depth bias and tends to make dominant subtrees pop visually.
+
+### Level of detail (LOD)
+
+The underlying weighted-Voronoi algorithm (Bowyer-Watson + Lloyd relaxation) is `O(n²)` per layout call, so handing it
+a folder with tens or hundreds of thousands of direct children would freeze the UI for minutes (the layout runs on the
+JavaFX application thread). DiskSpace caps the per-level cell count and rolls everything below the cut into a single
+aggregate **Smaller** cell, then renders only that bounded set. With the defaults, a folder with millions of underlying
+files is laid out as **at most ~129 top-level cells** (128 largest + 1 "Smaller"), keeping any single navigation well
+under 50 ms regardless of folder size.
+
+Three system properties tune the LOD behaviour — pass them at JVM startup if you want different trade-offs between
+detail and speed:
+
+| Property                            | Default | What it controls                                                                                                                  |
+|-------------------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------|
+| `diskspace.voronoi.maxSites.top`    | `128`   | Maximum top-level cells (direct children of the current view root). Children past this rank roll up into one "Smaller" cell.      |
+| `diskspace.voronoi.maxSites.sub`    | `64`    | Maximum sub-cells inside each top-level cell. Children past this rank roll up into a "Smaller" sub-cell.                          |
+| `diskspace.voronoi.subCellMinArea`  | `2500`  | Pixel-area floor (in px²) for triggering sub-cell layout. Parents projecting smaller than this skip the sub-Voronoi (≈ 50×50 px). |
+
+Non-numeric or non-positive values log a warning and fall back to the default.
+
+To experiment from the native binary, append them to the launch command:
+
+```
+diskspace -Ddiskspace.voronoi.maxSites.top=256 -Ddiskspace.voronoi.maxSites.sub=128
+```
+
+Or from a JVM dev run:
+
+```
+mvn javafx:run -Djavafx.options="-Ddiskspace.voronoi.maxSites.top=256"
+```
+
+Higher values give more individual cells (more detail) but cost more per render; lower values render faster and feel
+snappier on navigation but show fewer distinct items per view. The pixel-area floor is a separate guard: even with a
+huge `maxSites.sub` you won't pay sub-cell layout cost on parents too small to read a label inside anyway.
+
+**Smaller cells** render in a muted theme shade (surface, darker) so they're visually distinct from real per-node
+cells. They aren't clickable — there's no single node to drill into — but the rolled-up children are still in the file
+table on the right with their actual byte counts. So the LOD only hides the *geometry*, not the data.
 
 ## Mac notes
 
