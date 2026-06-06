@@ -72,7 +72,9 @@ public final class DiskView {
 		SUNBURST("Sunburst",
 				"Hierarchical radial layout. Good for spotting depth-imbalanced subtrees and proportional weight at a glance."),
 		HEATMAP("Squarified Treemap",
-				"Squarified-treemap heatmap. Good for finding the largest individual cells across the whole tree.");
+				"Squarified-treemap heatmap. Good for finding the largest individual cells across the whole tree."),
+		VORONOI("Voronoi Treemap",
+				"Weighted Voronoi (power diagram) treemap. Circular layout with cells proportional to directory size.");
 
 		private final String displayName;
 		private final String description;
@@ -191,6 +193,7 @@ public final class DiskView {
 	 */
 	private final SunburstVisualization sunburst = new SunburstVisualization();
 	private final HeatmapVisualization heatmap = new HeatmapVisualization();
+	private final VoronoiVisualization voronoi = new VoronoiVisualization();
 	private Visualization currentVisualization;
 	private RenderMode currentMode;
 	/**
@@ -221,6 +224,21 @@ public final class DiskView {
 	 * {@code onError}.
 	 */
 	private ScanEvent currentScanEvent;
+	/**
+	 * In-flight {@link NavigationEvent}, begun in {@link #select} at the start of a user-driven navigation and
+	 * committed at the end of the next {@link #redraw()} — so the duration captures the full user-perceived latency
+	 * from click to "I can see the new folder", including any synchronous layout cost a visualization may incur on the
+	 * first render at the new view root (the Voronoi hang lands here).
+	 */
+	private NavigationEvent pendingNavigation;
+	/**
+	 * Correlation ID for the in-flight {@link NavigationEvent}, or {@code 0} when no navigation is in flight. Stamped
+	 * onto every {@link RenderEvent} that fires during the navigation so JMC can join Render → Navigation by ID instead
+	 * of timestamp overlap. Generated fresh per {@link #select} call.
+	 */
+	private long currentNavId;
+	/** Monotonic counter for {@link #currentNavId}. Incremented at the start of each navigation. */
+	private long navIdSeq;
 	private DirectoryNode scanRoot;
 	private DirectoryNode viewRoot;
 	private DirectoryNode hoverNode;
@@ -302,7 +320,11 @@ public final class DiskView {
 		// Honour the persisted "default visualization" preference for newly opened tabs.
 		// Existing tabs retain whatever mode they were in — only new constructions consult Settings.
 		this.currentMode = se.hirt.diskspace.settings.Settings.get().defaultVisualization();
-		this.currentVisualization = (this.currentMode == RenderMode.SUNBURST) ? sunburst : heatmap;
+		this.currentVisualization = switch (this.currentMode) {
+			case SUNBURST -> sunburst;
+			case HEATMAP -> heatmap;
+			case VORONOI -> voronoi;
+		};
 		// Visualization host — visualisations call back here for redraws + colour lookup. Wiring this up before
 		// they're used downstream (they're constructed via field initialisers above).
 		VisualizationHost vizHost = new VisualizationHost() {
@@ -323,6 +345,7 @@ public final class DiskView {
 		};
 		sunburst.attach(vizHost);
 		heatmap.attach(vizHost);
+		voronoi.attach(vizHost);
 
 		canvas = new Canvas();
 		Pane canvasHolder = new Pane(canvas);
@@ -539,6 +562,7 @@ public final class DiskView {
 		try {
 			sunburst.shutdown();
 			heatmap.shutdown();
+			voronoi.shutdown();
 		} catch (RuntimeException ignored) {
 		}
 		try {
@@ -1862,7 +1886,32 @@ public final class DiskView {
 		if (clearForward)
 			forwardStack.clear();
 
+		// JFR Navigation event begins here and is committed at the end of the next redraw() — captures
+		// the full user-perceived navigation latency, including any synchronous layout cost on the first
+		// paint at the new view root. currentNavId is stamped onto every RenderEvent fired while the
+		// navigation is in flight so JMC can join Render → Navigation by ID rather than timestamp overlap.
+		DirectoryNode previousForEvent = viewRoot;
+		long navId = ++navIdSeq;
+		currentNavId = navId;
+		if (!jfrBroken) {
+			try {
+				NavigationEvent nav = new NavigationEvent();
+				nav.navId = navId;
+				nav.fromPath = pathLabel(previousForEvent);
+				nav.toPath = pathLabel(newViewRoot);
+				nav.direction = navDirection(previousForEvent, newViewRoot);
+				nav.scanId = currentScanId;
+				nav.begin();
+				pendingNavigation = nav;
+			} catch (Throwable t) {
+				markJfrBroken(t);
+				pendingNavigation = null;
+			}
+		}
+
 		if (currentVisualization != sunburst) {
+			// Heatmap and Voronoi run their own AnimationTimers internally via viewRootChanged();
+			// only sunburst needs host-side layout pre-compute and the cross-layout lerp below.
 			DirectoryNode previousViewRoot = viewRoot;
 			viewRoot = newViewRoot;
 			currentVisualization.viewRootChanged(previousViewRoot, newViewRoot);
@@ -2087,11 +2136,19 @@ public final class DiskView {
 
 	private void toggleRenderMode() {
 		endVizEvent();
-		currentMode = (currentMode == RenderMode.SUNBURST) ? RenderMode.HEATMAP : RenderMode.SUNBURST;
+		currentMode = switch (currentMode) {
+			case SUNBURST -> RenderMode.HEATMAP;
+			case HEATMAP -> RenderMode.VORONOI;
+			case VORONOI -> RenderMode.SUNBURST;
+		};
 		// Cancel any in-flight animation on the outgoing visualisation; the new one draws statically (or kicks
 		// off its own animation if it wants to).
 		sunburst.cancelAnimation();
-		currentVisualization = (currentMode == RenderMode.SUNBURST) ? sunburst : heatmap;
+		currentVisualization = switch (currentMode) {
+			case SUNBURST -> sunburst;
+			case HEATMAP -> heatmap;
+			case VORONOI -> voronoi;
+		};
 		startVizEvent();
 		hoverNode = null;
 		hoveringHub = false;
@@ -2115,7 +2172,8 @@ public final class DiskView {
 					progressBytes, progressPath, scanner.hubState());
 			Map<DirectoryNode, SunburstVisualization.Layout> oldL = sunburst.computeLayout(viewRoot, w, h, before);
 			hideFreeSpace = !hideFreeSpace;
-			if (hideFreeSpace) hoveringFreeSpace = false;
+			if (hideFreeSpace)
+				hoveringFreeSpace = false;
 			RenderContext after = new RenderContext(scanRoot, viewRoot, hiddenNode, hoverNode, hoveringHub,
 					hoveringFreeSpace, hoveringUnaccounted, hideFreeSpace, target, scanning, progressFiles,
 					progressBytes, progressPath, scanner.hubState());
@@ -2124,7 +2182,8 @@ public final class DiskView {
 		} else {
 			currentVisualization.layoutWillChange();
 			hideFreeSpace = !hideFreeSpace;
-			if (hideFreeSpace) hoveringFreeSpace = false;
+			if (hideFreeSpace)
+				hoveringFreeSpace = false;
 		}
 		root.requestFocus();
 		redrawWith("hide-free-space-change");
@@ -2306,17 +2365,40 @@ public final class DiskView {
 		try {
 			doRedraw();
 		} finally {
+			// Snapshot the post-paint site count once and reuse across both events so they agree even if a
+			// later visualization mutation changes it. Voronoi reports its aggregate-capped cell count;
+			// sunburst returns its rendered sector count (post sub-pixel-arc cull and "Smaller files"
+			// aggregate); heatmap returns its hit-test rectangle count across all visible depths. A future
+			// visualization that doesn't override Visualization.lastRenderSiteCount() falls back to 0.
+			int siteCount = (currentVisualization != null) ? currentVisualization.lastRenderSiteCount() : 0;
 			if (renderEvent != null) {
 				try {
 					renderEvent.mode = currentMode.name();
 					renderEvent.widthPx = (int) canvas.getWidth();
 					renderEvent.heightPx = (int) canvas.getHeight();
 					renderEvent.nodeCount = progressFiles;
+					renderEvent.siteCount = siteCount;
+					renderEvent.navId = currentNavId;
 					renderEvent.end();
 					renderEvent.commit();
 				} catch (Throwable t) {
 					markJfrBroken(t);
 				}
+			}
+			// First render after select() completes the in-flight Navigation event. Mode + nodeCount +
+			// siteCount captured at commit time so they reflect the state the user actually sees post-render.
+			if (pendingNavigation != null) {
+				try {
+					pendingNavigation.mode = currentMode.name();
+					pendingNavigation.nodeCount = progressFiles;
+					pendingNavigation.siteCount = siteCount;
+					pendingNavigation.end();
+					pendingNavigation.commit();
+				} catch (Throwable t) {
+					markJfrBroken(t);
+				}
+				pendingNavigation = null;
+				currentNavId = 0;
 			}
 			vizEventRenderCount++;
 		}
@@ -2344,6 +2426,7 @@ public final class DiskView {
 			// see what blew up.
 			LOG.log(java.util.logging.Level.WARNING, currentMode + " render failed", ex);
 		}
+
 	}
 
 	// ---- interaction -----------------------------------------------------
@@ -2854,8 +2937,11 @@ public final class DiskView {
 		@jdk.jfr.Description("Why this render was scheduled: scan-update / mode-change / resize / user / scan-start / scan-complete / scan-error / rescan / anim / auto.")
 		String trigger;
 		@jdk.jfr.Label("Node Count")
-		@jdk.jfr.Description("Approximate live file count at render time (tracks tree growth during a scan).")
+		@jdk.jfr.Description("Approximate live file count in the underlying data at render time (tracks tree growth during a scan). This is the data size, not the layout-input size — see Site Count for the count of cells the layout algorithm actually processed.")
 		long nodeCount;
+		@jdk.jfr.Label("Site Count")
+		@jdk.jfr.Description("Number of geometric primitives the visualization actually drew this paint — Voronoi cells, sunburst sectors, or heatmap rectangles depending on mode. For Voronoi this is the post-LOD count (capped by diskspace.voronoi.maxSites.* properties, with the long tail rolled into a single 'Smaller' cell); for sunburst and heatmap it's the rendered count after sub-pixel culling and any 'Smaller files' leaf aggregate. Compare to Node Count to see the LOD ratio (Voronoi) or the visual-detail level (others). 0 is a fallback sentinel for any future visualization that doesn't override Visualization.lastRenderSiteCount() — use Node Count in that case.")
+		int siteCount;
 		@jdk.jfr.Label("Width")
 		@jdk.jfr.Description("Canvas width in pixels at render time.")
 		int widthPx;
@@ -2865,6 +2951,9 @@ public final class DiskView {
 		@jdk.jfr.Label("Scan ID")
 		@jdk.jfr.Description("Correlation ID matching the Scan event of the active scan, or 0 if no scan is in flight.")
 		long scanId;
+		@jdk.jfr.Label("Nav ID")
+		@jdk.jfr.Description("Correlation ID matching the Navigation event of the active user navigation, or 0 if the render is autonomous (scan-update, resize, anim, …). Lets JMC join Render → Navigation directly.")
+		long navId;
 	}
 
 	/**
@@ -2889,6 +2978,79 @@ public final class DiskView {
 		@jdk.jfr.Description("Visualization mode at the time of the action.")
 		String mode;
 		@jdk.jfr.Label("Scan ID")
+		long scanId;
+	}
+
+	/**
+	 * Display label for a {@link DirectoryNode} suitable for a JFR field: the absolute path when the node is backed by
+	 * a real filesystem path, otherwise the node's display name (covers synthetic roots like {@code Hidden} whose path
+	 * is {@code null}). Returns {@code null} for a null node.
+	 */
+	private static String pathLabel(DirectoryNode node) {
+		if (node == null)
+			return null;
+		return (node.path() != null) ? node.path().toString() : node.name();
+	}
+
+	/**
+	 * Classifies a navigation from {@code from} to {@code to} as {@code drill-in} (descent into a child),
+	 * {@code drill-out} (ascent to an ancestor), or {@code jump} (neither — sibling navigation via breadcrumb,
+	 * forward-stack pop, or table-row click that isn't a direct child). Walks ancestor chains; cheap for the typical
+	 * small depths.
+	 */
+	private static String navDirection(DirectoryNode from, DirectoryNode to) {
+		if (from == null || to == null)
+			return "jump";
+		for (DirectoryNode w = to.parent(); w != null; w = w.parent()) {
+			if (w == from)
+				return "drill-in";
+		}
+		for (DirectoryNode w = from.parent(); w != null; w = w.parent()) {
+			if (w == to)
+				return "drill-out";
+		}
+		return "jump";
+	}
+
+	/**
+	 * JFR duration event spanning a single user-initiated folder navigation: from the click (or keypress, or breadcrumb
+	 * jump) that called {@link #select} to the completion of the first {@link RenderEvent} at the new view root.
+	 * Captures the user-perceived navigation latency — including any synchronous layout cost a visualization may incur
+	 * on its first paint at the new root.
+	 * <p>The {@code navId} is stamped onto every {@link RenderEvent} that fires while the navigation is in flight,
+	 * so the renders caused by the navigation can be joined back to this event by ID rather than relying on timestamp
+	 * overlap. Pairs with {@link UserActionEvent} (the instant marker for the click itself) and the
+	 * {@link RenderEvent}s that follow (the actual paint cost).
+	 */
+	@jdk.jfr.Name("se.hirt.diskspace.Navigation")
+	@jdk.jfr.Label("Folder Navigation")
+	@jdk.jfr.Category({"DiskSpace", "UI"})
+	@jdk.jfr.Description("User-initiated navigation to a new view root. Duration spans click → first render complete.")
+	@jdk.jfr.StackTrace(false)
+	public static class NavigationEvent extends jdk.jfr.Event {
+		@jdk.jfr.Label("Nav ID")
+		@jdk.jfr.Description("Unique correlation ID for this navigation. Stamped on every RenderEvent that fires during this event's begin..commit window.")
+		long navId;
+		@jdk.jfr.Label("From Path")
+		@jdk.jfr.Description("Path of the view root being left, or the display name for synthetic roots like Hidden.")
+		String fromPath;
+		@jdk.jfr.Label("To Path")
+		@jdk.jfr.Description("Path of the new view root being entered.")
+		String toPath;
+		@jdk.jfr.Label("Direction")
+		@jdk.jfr.Description("drill-in (target is a descendant of the previous root), drill-out (target is an ancestor), or jump (neither — sibling/breadcrumb/forward-stack navigation).")
+		String direction;
+		@jdk.jfr.Label("Mode")
+		@jdk.jfr.Description("Visualization mode at the time of the navigation.")
+		String mode;
+		@jdk.jfr.Label("Node Count")
+		@jdk.jfr.Description("Approximate live file count in the underlying data at the time the navigation completed. The data size, not the layout-input size — see Site Count for the count of cells the layout algorithm actually processed when this navigation's closing render finished.")
+		long nodeCount;
+		@jdk.jfr.Label("Site Count")
+		@jdk.jfr.Description("Number of geometric primitives the visualization actually drew in the render that closed this navigation — Voronoi cells, sunburst sectors, or heatmap rectangles depending on mode. For Voronoi this reflects post-LOD aggregation: e.g. a 3.78M-Node-Count drill-in completing with Site Count = 129 means the LOD cap reduced the layout's input by ~4 orders of magnitude. Sunburst and heatmap report their rendered count after sub-pixel culling. 0 is a fallback sentinel for any future visualization that doesn't override Visualization.lastRenderSiteCount().")
+		int siteCount;
+		@jdk.jfr.Label("Scan ID")
+		@jdk.jfr.Description("Correlation ID matching the Scan event of the in-flight scan, or 0 if scan is complete or not yet started.")
 		long scanId;
 	}
 

@@ -7,10 +7,11 @@
 [![GraalVM Native](https://img.shields.io/badge/GraalVM-native--image-orange)](https://www.graalvm.org/)
 [![License: BSD-3](https://img.shields.io/badge/License-BSD--3-green)](https://opensource.org/licenses/BSD-3-Clause)
 
-A cross-platform disk space visualizer that shows where your space went, with two complementary views: a **sunburst**
-(hierarchical radial layout, good for spotting depth-imbalanced subtrees and proportional weight at a glance) and a
-**squarified-treemap heatmap** (good for finding the largest individual cells across the whole tree). Press `V` to
-toggle.
+A cross-platform disk space visualizer that shows where your space went, with three complementary views: a **sunburst**
+(hierarchical radial layout, good for spotting depth-imbalanced subtrees and proportional weight at a glance), a
+**squarified-treemap heatmap** (good for finding the largest individual cells across the whole tree), and a
+**weighted Voronoi treemap** (organic polygonal cells with two hierarchy levels visible at once — good for spotting
+dominant subtrees without depth bias). Press `V` to cycle.
 
 ![DiskSpace sunburst view, drilled into Program Files](docs/screenshots/diskspace.png)
 ![DiskSpace sunburst view, light mode](docs/screenshots/diskspace-light.png)
@@ -47,7 +48,7 @@ Building from source and contributing: see [docs/DEVGUIDE.md](docs/DEVGUIDE.md).
 | `S`       | (picker only) Cycle scan strategy: Auto → MFT → Parallel → Sequential.                             |
 | `H`       | (picker only) Show / hide unavailable disks (off-screen, unreadable media). Hidden by default.     |
 | `U`       | Toggle size units between decimal (GB, default) and binary (GiB).                                  |
-| `V`       | Toggle visualization between sunburst (default) and heatmap (squarified treemap).                  |
+| `V`       | Cycle visualization: sunburst (default) → heatmap (squarified treemap) → Voronoi (weighted).       |
 | `C`       | Cycle coloring mode (Classic, Black & White, …).                                                   |
 | `H`       | Hide / show free space in the visualization (disk view only).                                      |
 | `Esc`     | Show / hide the keyboard-shortcut overlay (renders on top of the live view).                       |

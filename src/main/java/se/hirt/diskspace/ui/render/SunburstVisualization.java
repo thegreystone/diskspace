@@ -116,6 +116,17 @@ public final class SunburstVisualization implements Visualization {
 		return animating;
 	}
 
+	/**
+	 * Number of annular sectors painted in the most recently rendered frame. The sunburst applies sub-pixel arc culling
+	 * (sectors projecting to less than one pixel of sweep don't draw) plus a "Smaller files" leaf aggregate, so this is
+	 * typically less than the raw subtree size — closer to {@code nodeCount} on shallow-but-wide trees, further from it
+	 * on deep ones where many rings end up sub-pixel.
+	 */
+	@Override
+	public int lastRenderSiteCount() {
+		return sectors.size();
+	}
+
 	@Override
 	public void shutdown() {
 		animTimer.stop();

@@ -617,11 +617,10 @@ public final class PickerView {
 	}
 
 	/**
-	 * Releases the picker's background work when its tab is swapped to a disk view or closed (see
-	 * {@code MainWindow}). The resolve/probe virtual threads can't be interrupted mid-syscall, but this stops the
-	 * progress pulse immediately and flips {@link #disposed} so any results they post afterwards are dropped — so an
-	 * abandoned enumeration doesn't keep animating or compete for CPU with a freshly-started scan. Idempotent; must be
-	 * called on the FX thread.
+	 * Releases the picker's background work when its tab is swapped to a disk view or closed (see {@code MainWindow}).
+	 * The resolve/probe virtual threads can't be interrupted mid-syscall, but this stops the progress pulse immediately
+	 * and flips {@link #disposed} so any results they post afterwards are dropped — so an abandoned enumeration doesn't
+	 * keep animating or compete for CPU with a freshly-started scan. Idempotent; must be called on the FX thread.
 	 */
 	public void dispose() {
 		disposed = true;

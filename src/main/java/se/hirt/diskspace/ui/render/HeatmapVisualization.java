@@ -71,8 +71,8 @@ public final class HeatmapVisualization implements Visualization {
 	/** Top-level cell positions for the new layout; null until computed on the first animation frame. */
 	private List<LayoutCell> animNewCells;
 	/**
-	 * For drill-in: the old canvas-space rectangle of the cell that was clicked (we expand from it).
-	 * For drill-out: null (we collapse old cells into the parent's new position instead).
+	 * For drill-in: the old canvas-space rectangle of the cell that was clicked (we expand from it). For drill-out:
+	 * null (we collapse old cells into the parent's new position instead).
 	 */
 	private double[] animDrillRect;   // {x, y, w, h} or null
 	/** The node we came FROM (old viewRoot) — used in drill-out to find the target rect in the new layout. */
@@ -106,9 +106,22 @@ public final class HeatmapVisualization implements Visualization {
 		return animating;
 	}
 
+	/**
+	 * Total rectangles in the most recently rendered treemap across all visible depths. Unlike Voronoi this
+	 * visualization does no LOD aggregation — every visible directory and large file contributes one rectangle — so the
+	 * value scales with the rendered subset of the tree. Differs from the {@code nodeCount} field on the same Render
+	 * event by the depth-limited recursion and the sub-pixel cull (cells projecting too small to be drawn don't enter
+	 * the hit-test cache).
+	 */
+	@Override
+	public int lastRenderSiteCount() {
+		return rects.size();
+	}
+
 	@Override
 	public void layoutWillChange() {
-		if (rects.isEmpty()) return;
+		if (rects.isEmpty())
+			return;
 		animOldCells = rectsToLayoutCells();
 		animNewCells = null;
 		animDrillRect = null;
@@ -129,7 +142,7 @@ public final class HeatmapVisualization implements Visualization {
 		animDrillRect = null;
 		for (RectHit r : rects) {
 			if (r.node() == current) {
-				animDrillRect = new double[]{r.x(), r.y(), r.w(), r.h()};
+				animDrillRect = new double[] {r.x(), r.y(), r.w(), r.h()};
 				break;
 			}
 		}
@@ -196,11 +209,12 @@ public final class HeatmapVisualization implements Visualization {
 
 			// Disappearing cells (e.g. free-space being hidden): shrink in place.
 			for (LayoutCell old : animOldCells) {
-				if (old.node() != null && old.node().parent() != null) continue; // only top-level
+				if (old.node() != null && old.node().parent() != null)
+					continue; // only top-level
 				if (!newByKey.containsKey(cellKey(old))) {
 					double cx = old.x() + old.w() / 2, cy = old.y() + old.h() / 2;
-					drawCellAlpha(g, old, lerp(old.x(), cx, t), lerp(old.y(), cy, t),
-							lerp(old.w(), 0, t), lerp(old.h(), 0, t), 1.0 - t);
+					drawCellAlpha(g, old, lerp(old.x(), cx, t), lerp(old.y(), cy, t), lerp(old.w(), 0, t),
+							lerp(old.h(), 0, t), 1.0 - t);
 				}
 			}
 			// All new cells: lerp from old position (if matched) or grow from centroid.
@@ -210,8 +224,8 @@ public final class HeatmapVisualization implements Visualization {
 				double sy = oldCell != null ? oldCell.y() : newCell.y() + newCell.h() / 2;
 				double sw = oldCell != null ? oldCell.w() : 0;
 				double sh = oldCell != null ? oldCell.h() : 0;
-				drawCell(g, newCell, lerp(sx, newCell.x(), t), lerp(sy, newCell.y(), t),
-						lerp(sw, newCell.w(), t), lerp(sh, newCell.h(), t));
+				drawCell(g, newCell, lerp(sx, newCell.x(), t), lerp(sy, newCell.y(), t), lerp(sw, newCell.w(), t),
+						lerp(sh, newCell.h(), t));
 			}
 		} else if (animDrillRect != null) {
 			// ---- Drill-in ------------------------------------------------
@@ -227,9 +241,8 @@ public final class HeatmapVisualization implements Visualization {
 				double endY = HEATMAP_TOP_INSET + (cell.y() - dy) / dh * availH;
 				double endW = cell.w() / dw * canvasW;
 				double endH = cell.h() / dh * availH;
-				drawCell(g, cell,
-						lerp(cell.x(), endX, t), lerp(cell.y(), endY, t),
-						lerp(cell.w(), endW, t), lerp(cell.h(), endH, t));
+				drawCell(g, cell, lerp(cell.x(), endX, t), lerp(cell.y(), endY, t), lerp(cell.w(), endW, t),
+						lerp(cell.h(), endH, t));
 			}
 			// New cells: grow from their position inside the old drill rect to fill the canvas.
 			for (LayoutCell cell : animNewCells) {
@@ -237,9 +250,8 @@ public final class HeatmapVisualization implements Visualization {
 				double startY = dy + ((cell.y() - HEATMAP_TOP_INSET) / availH) * dh;
 				double startW = (cell.w() / canvasW) * dw;
 				double startH = (cell.h() / availH) * dh;
-				drawCell(g, cell,
-						lerp(startX, cell.x(), t), lerp(startY, cell.y(), t),
-						lerp(startW, cell.w(), t), lerp(startH, cell.h(), t));
+				drawCell(g, cell, lerp(startX, cell.x(), t), lerp(startY, cell.y(), t), lerp(startW, cell.w(), t),
+						lerp(startH, cell.h(), t));
 			}
 		} else {
 			// ---- Drill-out -----------------------------------------------
@@ -247,7 +259,10 @@ public final class HeatmapVisualization implements Visualization {
 			double px = 0, py = HEATMAP_TOP_INSET, pw = canvasW, ph = availH;
 			for (LayoutCell cell : animNewCells) {
 				if (cell.node() == animFromNode) {
-					px = cell.x(); py = cell.y(); pw = cell.w(); ph = cell.h();
+					px = cell.x();
+					py = cell.y();
+					pw = cell.w();
+					ph = cell.h();
 					break;
 				}
 			}
@@ -259,14 +274,14 @@ public final class HeatmapVisualization implements Visualization {
 				double endY = fpy + ((cell.y() - HEATMAP_TOP_INSET) / availH) * fph;
 				double endW = (cell.w() / canvasW) * fpw;
 				double endH = (cell.h() / availH) * fph;
-				drawCell(g, cell,
-						lerp(cell.x(), endX, t), lerp(cell.y(), endY, t),
-						lerp(cell.w(), endW, t), lerp(cell.h(), endH, t));
+				drawCell(g, cell, lerp(cell.x(), endX, t), lerp(cell.y(), endY, t), lerp(cell.w(), endW, t),
+						lerp(cell.h(), endH, t));
 			}
 			// New sibling cells (everything except animFromNode and its children) zoom in
 			// from outside the parent rect.
 			for (LayoutCell cell : animNewCells) {
-				if (cell.node() == animFromNode) continue;
+				if (cell.node() == animFromNode)
+					continue;
 				double startX = fpx + (cell.x() / canvasW) * fpw;
 				double startY = fpy + ((cell.y() - HEATMAP_TOP_INSET) / availH) * fph;
 				double startW = (cell.w() / canvasW) * fpw;
@@ -276,9 +291,8 @@ public final class HeatmapVisualization implements Visualization {
 				double zoomY = HEATMAP_TOP_INSET + (cell.y() - fpy) / fph * availH;
 				double zoomW = cell.w() / fpw * canvasW;
 				double zoomH = cell.h() / fph * availH;
-				drawCell(g, cell,
-						lerp(zoomX, cell.x(), t), lerp(zoomY, cell.y(), t),
-						lerp(zoomW, cell.w(), t), lerp(zoomH, cell.h(), t));
+				drawCell(g, cell, lerp(zoomX, cell.x(), t), lerp(zoomY, cell.y(), t), lerp(zoomW, cell.w(), t),
+						lerp(zoomH, cell.h(), t));
 			}
 		}
 	}
@@ -287,10 +301,13 @@ public final class HeatmapVisualization implements Visualization {
 		drawCellAlpha(g, cell, x, y, w, h, 1.0);
 	}
 
-	private void drawCellAlpha(GraphicsContext g, LayoutCell cell, double x, double y, double w, double h, double alpha) {
-		if (w < 0.5 || h < 0.5 || alpha <= 0.01) return;
+	private void drawCellAlpha(
+			GraphicsContext g, LayoutCell cell, double x, double y, double w, double h, double alpha) {
+		if (w < 0.5 || h < 0.5 || alpha <= 0.01)
+			return;
 		Color base = cell.color();
-		Color fill = alpha >= 1.0 ? base : new Color(base.getRed(), base.getGreen(), base.getBlue(), base.getOpacity() * alpha);
+		Color fill = alpha >= 1.0 ? base
+				: new Color(base.getRed(), base.getGreen(), base.getBlue(), base.getOpacity() * alpha);
 		g.setFill(fill);
 		g.fillRect(x, y, w, h);
 		if (w > 1.5 && h > 1.5) {
@@ -300,8 +317,8 @@ public final class HeatmapVisualization implements Visualization {
 			g.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
 		}
 		if (w >= HEATMAP_LABEL_MIN_W && h >= HEATMAP_LABEL_MIN_H) {
-			String name = cell.freeSpace() ? "Free" : cell.unaccounted() ? "Other"
-					: cell.node() != null ? cell.node().name() : null;
+			String name = cell.freeSpace() ? "Free"
+					: cell.unaccounted() ? "Other" : cell.node() != null ? cell.node().name() : null;
 			if (name != null) {
 				long bytes = cell.node() != null ? cell.node().totalBytes() : cell.bytes();
 				Color tc = textOn(base);
@@ -317,41 +334,53 @@ public final class HeatmapVisualization implements Visualization {
 	}
 
 	private static Object cellKey(LayoutCell c) {
-		if (c.node() != null) return c.node();
-		if (c.freeSpace()) return "FREE";
+		if (c.node() != null)
+			return c.node();
+		if (c.freeSpace())
+			return "FREE";
 		return "UNACCOUNTED";
 	}
 
 	private static java.util.Map<Object, LayoutCell> buildCellMap(List<LayoutCell> cells) {
 		java.util.Map<Object, LayoutCell> map = new java.util.LinkedHashMap<>();
-		for (LayoutCell c : cells) map.putIfAbsent(cellKey(c), c);
+		for (LayoutCell c : cells)
+			map.putIfAbsent(cellKey(c), c);
 		return map;
 	}
 
-	private static double lerp(double a, double b, double t) { return a + (b - a) * t; }
+	private static double lerp(double a, double b, double t) {
+		return a + (b - a) * t;
+	}
 
 	/**
-	 * Compute every visible cell position (all depths) without drawing.
-	 * Mirrors the full recursive logic of {@link #drawHeatmap} + {@link #drawTreemapCell}.
+	 * Compute every visible cell position (all depths) without drawing. Mirrors the full recursive logic of
+	 * {@link #drawHeatmap} + {@link #drawTreemapCell}.
 	 */
 	private List<LayoutCell> computeFullLayout(RenderContext ctx, double canvasW, double canvasH) {
 		DirectoryNode viewRoot = ctx.viewRoot();
-		if (viewRoot == null) return List.of();
+		if (viewRoot == null)
+			return List.of();
 		double x = 0, y = HEATMAP_TOP_INSET;
 		double availW = canvasW, availH = canvasH - HEATMAP_TOP_INSET;
-		if (availW < 4 || availH < 4) return List.of();
+		if (availW < 4 || availH < 4)
+			return List.of();
 
 		List<TreemapItem> items = buildTopLevelTreemapItems(ctx);
 		long totalBytes = 0;
-		for (TreemapItem it : items) totalBytes += Math.max(0, it.bytes());
-		if (totalBytes <= 0 || items.isEmpty()) return List.of();
+		for (TreemapItem it : items)
+			totalBytes += Math.max(0, it.bytes());
+		if (totalBytes <= 0 || items.isEmpty())
+			return List.of();
 
 		double scale = (availW * availH) / (double) totalBytes;
 		List<LayoutCell> out = new ArrayList<>();
 
 		TreemapItem freeItem = null;
 		for (int i = 0; i < items.size(); i++) {
-			if (items.get(i).freeSpace()) { freeItem = items.remove(i); break; }
+			if (items.get(i).freeSpace()) {
+				freeItem = items.remove(i);
+				break;
+			}
 		}
 		if (freeItem != null && freeItem.bytes() > 0) {
 			double freeArea = freeItem.bytes() * scale;
@@ -369,9 +398,11 @@ public final class HeatmapVisualization implements Visualization {
 		return out;
 	}
 
-	private void squarifyCollect(List<TreemapItem> items, double x, double y, double w, double h,
-	                              double scale, int depth, List<LayoutCell> out, RenderContext ctx) {
-		if (items.isEmpty() || w < 1 || h < 1) return;
+	private void squarifyCollect(
+			List<TreemapItem> items, double x, double y, double w, double h, double scale,
+			int depth, List<LayoutCell> out, RenderContext ctx) {
+		if (items.isEmpty() || w < 1 || h < 1)
+			return;
 		List<TreemapItem> remaining = new ArrayList<>(items);
 		while (!remaining.isEmpty() && w >= 1 && h >= 1) {
 			double shortSide = Math.min(w, h);
@@ -380,17 +411,26 @@ public final class HeatmapVisualization implements Visualization {
 			while (!remaining.isEmpty()) {
 				TreemapItem next = remaining.get(0);
 				double nextArea = Math.max(0, next.bytes()) * scale;
-				if (nextArea <= 0) { remaining.remove(0); continue; }
+				if (nextArea <= 0) {
+					remaining.remove(0);
+					continue;
+				}
 				double trialSum = rowSum + nextArea;
 				double trialMin = Math.min(rowMin, nextArea);
 				double trialMax = Math.max(rowMax, nextArea);
-				double curWorst = row.isEmpty() ? Double.POSITIVE_INFINITY : worstAspect(rowSum, rowMin, rowMax, shortSide);
+				double curWorst =
+						row.isEmpty() ? Double.POSITIVE_INFINITY : worstAspect(rowSum, rowMin, rowMax, shortSide);
 				if (row.isEmpty() || worstAspect(trialSum, trialMin, trialMax, shortSide) <= curWorst) {
-					row.add(next); rowSum = trialSum; rowMin = trialMin; rowMax = trialMax;
+					row.add(next);
+					rowSum = trialSum;
+					rowMin = trialMin;
+					rowMax = trialMax;
 					remaining.remove(0);
-				} else break;
+				} else
+					break;
 			}
-			if (row.isEmpty()) break;
+			if (row.isEmpty())
+				break;
 			double thickness = rowSum / shortSide;
 			boolean along = w < h;
 			double rw = along ? w : thickness, rh = along ? thickness : h;
@@ -403,40 +443,57 @@ public final class HeatmapVisualization implements Visualization {
 				double tw = along ? rw * frac : rw;
 				double th = along ? rh : rh * frac;
 				collectCell(t, rx, ry, tw, th, depth, out, ctx);
-				if (along) offset += tw; else offset += th;
+				if (along)
+					offset += tw;
+				else
+					offset += th;
 			}
-			if (along) { y += thickness; h -= thickness; }
-			else       { x += thickness; w -= thickness; }
+			if (along) {
+				y += thickness;
+				h -= thickness;
+			} else {
+				x += thickness;
+				w -= thickness;
+			}
 		}
 	}
 
-	private void collectCell(TreemapItem item, double x, double y, double w, double h,
-	                          int depth, List<LayoutCell> out, RenderContext ctx) {
-		if (w < 1.0 || h < 1.0) return;
-		out.add(new LayoutCell(item.node(), x, y, w, h, item.color(), item.bytes(), item.unaccounted(), item.freeSpace()));
+	private void collectCell(
+			TreemapItem item, double x, double y, double w, double h, int depth, List<LayoutCell> out,
+			RenderContext ctx) {
+		if (w < 1.0 || h < 1.0)
+			return;
+		out.add(new LayoutCell(item.node(), x, y, w, h, item.color(), item.bytes(), item.unaccounted(),
+				item.freeSpace()));
 
-		if (item.node() == null || item.node().isFileSector() || item.node().children().isEmpty()) return;
+		if (item.node() == null || item.node().isFileSector() || item.node().children().isEmpty())
+			return;
 		double childX = x + HEATMAP_INNER_PAD, childY = y + HEATMAP_INNER_PAD;
 		double childW = w - 2 * HEATMAP_INNER_PAD, childH = h - 2 * HEATMAP_INNER_PAD;
 		if (w >= HEATMAP_LABEL_MIN_W && h >= HEATMAP_LABEL_MIN_H) {
 			double labelBand = 16;
-			if (childH > labelBand + HEATMAP_MIN_RECURSE_PX) { childY += labelBand; childH -= labelBand; }
+			if (childH > labelBand + HEATMAP_MIN_RECURSE_PX) {
+				childY += labelBand;
+				childH -= labelBand;
+			}
 		}
-		if (childW < HEATMAP_MIN_RECURSE_PX || childH < HEATMAP_MIN_RECURSE_PX) return;
+		if (childW < HEATMAP_MIN_RECURSE_PX || childH < HEATMAP_MIN_RECURSE_PX)
+			return;
 
 		List<DirectoryNode> kids = item.node().children();
 		List<TreemapItem> childItems = new ArrayList<>(kids.size());
 		long childTotal = 0;
 		for (DirectoryNode k : kids) {
 			long b = k.totalBytes();
-			if (b <= 0) continue;
+			if (b <= 0)
+				continue;
 			childItems.add(new TreemapItem(k, b, host.colors().colorFor(k), false, false));
 			childTotal += b;
 		}
 		if (childTotal > 0 && !childItems.isEmpty()) {
 			childItems.sort((a, b) -> Long.compare(b.bytes(), a.bytes()));
-			squarifyCollect(childItems, childX, childY, childW, childH,
-					(childW * childH) / (double) childTotal, depth + 1, out, ctx);
+			squarifyCollect(childItems, childX, childY, childW, childH, (childW * childH) / (double) childTotal,
+					depth + 1, out, ctx);
 		}
 	}
 
@@ -444,19 +501,24 @@ public final class HeatmapVisualization implements Visualization {
 	private List<LayoutCell> rectsToLayoutCells() {
 		List<LayoutCell> out = new ArrayList<>(rects.size());
 		for (RectHit r : rects)
-			out.add(new LayoutCell(r.node(), r.x(), r.y(), r.w(), r.h(),
-					colorForRect(r), 0, r.unaccounted(), r.freeSpace()));
+			out.add(new LayoutCell(r.node(), r.x(), r.y(), r.w(), r.h(), colorForRect(r), 0, r.unaccounted(),
+					r.freeSpace()));
 		return out;
 	}
 
 	private Color colorForRect(RectHit r) {
-		if (r.freeSpace())    return host.scheme().capacityTrack();
-		if (r.unaccounted())  return host.scheme().surface().brighter();
-		if (r.node() != null) return host.colors().colorFor(r.node());
+		if (r.freeSpace())
+			return host.scheme().capacityTrack();
+		if (r.unaccounted())
+			return host.scheme().surface().brighter();
+		if (r.node() != null)
+			return host.colors().colorFor(r.node());
 		return host.scheme().surface();
 	}
 
-	private static double smoothStep(double t) { return t * t * (3.0 - 2.0 * t); }
+	private static double smoothStep(double t) {
+		return t * t * (3.0 - 2.0 * t);
+	}
 
 	// ---- drawing --------------------------------------------------------
 
@@ -825,7 +887,7 @@ public final class HeatmapVisualization implements Visualization {
 	}
 
 	/** A top-level cell captured for animation — its position, color, and identity. */
-	private record LayoutCell(DirectoryNode node, double x, double y, double w, double h,
-	                           Color color, long bytes, boolean unaccounted, boolean freeSpace) {
+	private record LayoutCell(DirectoryNode node, double x, double y, double w, double h, Color color, long bytes,
+	                          boolean unaccounted, boolean freeSpace) {
 	}
 }

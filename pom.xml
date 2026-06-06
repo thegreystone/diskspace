@@ -144,6 +144,39 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
     <profiles>
         <!--
+          Debug logging + JFR for `mvn javafx:run`:
+            * -Ddiskspace.log.level=FINE   → se.hirt.diskspace.* logs at FINE level
+            * StartFlightRecording=...     → JFR recording running for the whole session,
+                                              dumped to diskspace.jfr in the working dir on
+                                              exit. Open with `jfr summary diskspace.jfr`
+                                              or load in JDK Mission Control / VisualVM.
+                                              `settings=profile` captures methods + locks +
+                                              GC + allocation; heavier than `default` but
+                                              what you want for diagnosing freezes.
+          Run: `mvn -Pdebug-logging javafx:run`
+        -->
+        <profile>
+            <id>debug-logging</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.openjfx</groupId>
+                        <artifactId>javafx-maven-plugin</artifactId>
+                        <configuration>
+                            <mainClass>${main.class}</mainClass>
+                            <options>
+                                <option>-Ddiskspace.log.level=FINE</option>
+                                <option>
+                                    -XX:StartFlightRecording=name=diskspace,filename=diskspace.jfr,dumponexit=true,settings=profile
+                                </option>
+                            </options>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
           Native build via Gluon Substrate.
           Run: `mvn -Pnative gluonfx:build gluonfx:nativerun`
           Prerequisites: Oracle GraalVM for JDK 21 LTS + native-image, plus platform toolchain

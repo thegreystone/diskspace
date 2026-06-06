@@ -107,19 +107,25 @@ contention in plain prose so you can skip the manual click-through. From there:
 
 ### Custom events
 
-Four event types ship in-tree (all under the `se.hirt.diskspace.*` namespace) and answer questions that built-in JFR
+Five event types ship in-tree (all under the `se.hirt.diskspace.*` namespace) and answer questions that built-in JFR
 events can't:
 
-| Event                                   | Type     | When it fires                                       | Useful for                                                                                                |
-|-----------------------------------------|----------|-----------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
-| `se.hirt.diskspace.Scan`                | Duration | One per scan, start → completion / cancellation     | Strategy + outcome + file/byte counts per scan. Correlates downstream events via `scanId`.                |
-| `se.hirt.diskspace.VisualizationActive` | Duration | One per window of a particular mode being on screen | "Did the user actually look at heatmap?" Render-count field tells you how many frames painted per window. |
-| `se.hirt.diskspace.Render`              | Duration | Per repaint of the canvas on the FX thread          | Per-frame cost attributed by `trigger` (resize / mode-change / scan-update / user / anim / …).            |
-| `se.hirt.diskspace.UserAction`          | Instant  | Keypress or right-click menu action                 | Reconstructs the user's interaction timeline; pairs with renders to attribute pauses to a specific input. |
+| Event                                   | Type     | When it fires                                                | Useful for                                                                                                                                                                                                                                 |
+|-----------------------------------------|----------|--------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `se.hirt.diskspace.Scan`                | Duration | One per scan, start → completion / cancellation              | Strategy + outcome + file/byte counts per scan. Correlates downstream events via `scanId`.                                                                                                                                                 |
+| `se.hirt.diskspace.VisualizationActive` | Duration | One per window of a particular mode being on screen          | "Did the user actually look at voronoi?" Render-count field tells you how many frames painted per window.                                                                                                                                  |
+| `se.hirt.diskspace.Navigation`          | Duration | One per user folder navigation, click → first render at root | End-to-end user-perceived latency for a navigation. Carries `direction` (drill-in / drill-out / jump), `fromPath` / `toPath`, `nodeCount`, `siteCount`. Every `Render` fired during it shares the same `navId` so the join is unambiguous. |
+| `se.hirt.diskspace.Render`              | Duration | Per repaint of the canvas on the FX thread                   | Per-frame cost attributed by `trigger` (resize / mode-change / scan-update / user / anim / …). The `navId` joins back to the `Navigation` event that caused it (or `0` for autonomous repaints); `siteCount` records post-LOD cell count.  |
+| `se.hirt.diskspace.UserAction`          | Instant  | Keypress or right-click menu action                          | Reconstructs the user's interaction timeline; pairs with renders to attribute pauses to a specific input.                                                                                                                                  |
 
 Every event from a given scan run carries the same `scanId` correlation id, so filtering on it gives you "everything
-that happened during scan #N" in one slice. The `Render` event also captures `nodeCount`, `width`, and `height` so
-you can plot render-cost-vs-tree-size or render-cost-vs-canvas-size without leaving JMC.
+that happened during scan #N" in one slice. `Navigation` adds a second correlation key — `navId` — stamped onto every
+`Render` fired during the navigation's begin → commit window, so you can directly join "click → renders it caused"
+without timestamp overlap. The `Render` event also captures `nodeCount`, `siteCount`, `width`, and `height`, so you can
+plot render-cost-vs-tree-size or render-cost-vs-canvas-size without leaving JMC. **`siteCount` is post-LOD**: for
+Voronoi it's typically 100–400 even on million-node trees (see
+[DOCUMENTATION.md § Level of detail](DOCUMENTATION.md#level-of-detail-lod)); for sunburst and heatmap it's `0`, meaning
+"no LOD in play — use `nodeCount` instead". Compare the two fields to read the LOD ratio directly off any frame.
 
 > Gluon-distributed GraalVM historically shipped a broken FlightRecorder engine
 > ([gluonhq/substrate#1354](https://github.com/gluonhq/substrate/issues/1354)) — recordings open but contain no

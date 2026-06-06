@@ -136,16 +136,16 @@ public final class Darwin {
 	 */
 	public static final int ATTR_CMNEXT_PRIVATESIZE = 0x00000008;
 	/**
-	 * {@code ATTR_CMNEXT_CLONEID} — uint64 APFS data-stream identifier. Every APFS inode has a unique non-zero
-	 * cloneid. Two files that share extents via {@code clonefile(2)} or {@code cp -c} can be grouped by their
-	 * (currently identical) cloneids only in combination with {@link #ATTR_CMNEXT_CLONE_REFCNT} &gt; 1, which is what
-	 * actually indicates the file is currently sharing extents with at least one other file in the clone family.
-	 * macOS 10.13+ on APFS; returns {@code 0} on other filesystems.
+	 * {@code ATTR_CMNEXT_CLONEID} — uint64 APFS data-stream identifier. Every APFS inode has a unique non-zero cloneid.
+	 * Two files that share extents via {@code clonefile(2)} or {@code cp -c} can be grouped by their (currently
+	 * identical) cloneids only in combination with {@link #ATTR_CMNEXT_CLONE_REFCNT} &gt; 1, which is what actually
+	 * indicates the file is currently sharing extents with at least one other file in the clone family. macOS 10.13+ on
+	 * APFS; returns {@code 0} on other filesystems.
 	 */
 	public static final int ATTR_CMNEXT_CLONEID = 0x00000100;
 	/**
-	 * {@code ATTR_CMNEXT_CLONE_REFCNT} — uint32 count of files currently sharing extents via the clone family this
-	 * file belongs to. A value of {@code 1} (or {@code 0} on non-APFS / older kernels) means the file isn't currently
+	 * {@code ATTR_CMNEXT_CLONE_REFCNT} — uint32 count of files currently sharing extents via the clone family this file
+	 * belongs to. A value of {@code 1} (or {@code 0} on non-APFS / older kernels) means the file isn't currently
 	 * sharing any extents and should be charged at its full {@code allocsize}. A value of {@code 2+} means at least one
 	 * sibling shares extents with this file, and per-family dedup should fire. macOS 12+ on APFS (volume must have
 	 * {@code VOL_CAP_FMT_CLONE_MAPPING}); 0 elsewhere.
