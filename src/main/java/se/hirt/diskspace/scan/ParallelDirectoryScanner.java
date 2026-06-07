@@ -329,10 +329,16 @@ public final class ParallelDirectoryScanner implements Scanner {
 	}
 
 	/**
-	 * Extracts the device ID from a POSIX fileKey whose toString() is "(dev=0x...,ino=...)". Returns -1 if the format
-	 * is not recognised (Windows, unknown OS).
+	 * Extracts the device ID from a POSIX fileKey. {@code sun.nio.fs.UnixFileKey#toString()} (shared by Linux, macOS and
+	 * the BSDs) renders the device as bare lowercase hex with no {@code 0x} prefix — e.g. {@code "(dev=fd00,ino=2)"} —
+	 * so we parse it explicitly as base 16. {@code Long.decode} is wrong here: lacking the {@code 0x} prefix it reads
+	 * the digits as decimal, which silently yields the wrong number for digit-only values (harmless on macOS, where the
+	 * guard only compares for equality) and throws outright for letter-containing values like {@code fd00} (common for
+	 * btrfs/LVM/overlay roots on Linux), collapsing {@code rootDev} to -1 and disabling cross-mount filtering entirely.
+	 * Returns -1 if the format is not recognised (Windows, where fileKey is null or non-POSIX; unknown OS).
 	 */
-	private static long deviceOf(Object fileKey) {
+	// package-private for testing
+	static long deviceOf(Object fileKey) {
 		if (fileKey == null)
 			return -1;
 		String s = fileKey.toString();
@@ -345,7 +351,7 @@ public final class ParallelDirectoryScanner implements Scanner {
 		if (j < 0)
 			return -1;
 		try {
-			return Long.decode(s.substring(i + 4, j));
+			return Long.parseLong(s.substring(i + 4, j), 16);
 		} catch (NumberFormatException e) {
 			return -1;
 		}
