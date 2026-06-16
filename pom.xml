@@ -325,15 +325,35 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         </profile>
 
         <!--
-          Linux-auto-activated. Same `-lmanagement_ext` story as native-mac: with
-          `enable-monitoring=jfr` on in the `native` profile, JFR pulls in
-          com.sun.management.OperatingSystemImpl whose JNI methods live in
-          libmanagement_ext.a, and Substrate's default Linux link line doesn't include
-          it. Without this entry the link step fails with
-            "undefined reference to `Java_com_sun_management_internal_OperatingSystemImpl_initialize0'"
-          on the Linux CI runner. The .a lives in $GRAALVM_HOME/lib/static/linux-amd64/
-          (or linux-aarch64/ when we ship that flavour) and Substrate's -L search path
-          already covers that directory, so the bare -l is enough.
+          Linux-auto-activated. Two things going on here:
+
+          1. `enableSWRendering=true` — fixes "no suitable pipeline found" at startup on
+             Linux hosts where the ES2 pipeline fails its hardware-qualifier check (common:
+             llvmpipe / software Mesa, NVIDIA proprietary on Wayland sessions, headless
+             servers, VMs without GPU passthrough). Default Substrate Linux builds only
+             register the ES2 prism classes for reflection and only link `libprism_es2.a`;
+             when ES2 hits "Failed Graphics Hardware Qualifier check" the QuantumRenderer
+             fallback path tries `Class.forName("com.sun.prism.sw.SWPipeline")` and dies
+             with ClassNotFoundException because Substrate dead-stripped the SW classes.
+             Flipping this on tells gluonfx to (a) pull in Substrate's bundled
+             `reflectionconfig-javafxsw.json` + `jniconfig-javafxsw.json` (so SWPipeline,
+             SWResourceFactory, and the SSE/JSW effect peers survive the analysis) and
+             (b) add `-lprism_sw` to the link line so libprism_sw.a is statically linked.
+             Result: ES2 still tried first; if it fails, the SW pipeline now actually
+             initializes instead of bailing. Net binary-size cost is ~1-2 MB.
+
+             Not enabled on macOS (uses Metal — ES2 path never taken) or Windows (uses
+             D3D — ES2 fallback already covers most failures, and SW was never the
+             reported failure mode there).
+
+          2. `-lmanagement_ext`: with `enable-monitoring=jfr` on in the `native` profile,
+             JFR pulls in com.sun.management.OperatingSystemImpl whose JNI methods live
+             in libmanagement_ext.a, and Substrate's default Linux link line doesn't
+             include it. Without this entry the link step fails with
+               "undefined reference to `Java_com_sun_management_internal_OperatingSystemImpl_initialize0'"
+             on the Linux CI runner. The .a lives in $GRAALVM_HOME/lib/static/linux-amd64/
+             (or linux-aarch64/ when we ship that flavour) and Substrate's -L search path
+             already covers that directory, so the bare -l is enough.
         -->
         <profile>
             <id>native-linux</id>
@@ -350,6 +370,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         <artifactId>gluonfx-maven-plugin</artifactId>
                         <version>${gluonfx-maven-plugin.version}</version>
                         <configuration>
+                            <enableSWRendering>true</enableSWRendering>
                             <linkerArgs>
                                 <arg>-lmanagement_ext</arg>
                             </linkerArgs>

@@ -4,9 +4,13 @@ on:
   push:
     tags:
       - 'v*'
-
-permissions:
-  contents: write
+  # Manual trigger from the Actions tab. Same matrix runs (Linux + macOS + Windows
+  # native builds), artifacts are uploaded as workflow artifacts, but no GitHub
+  # Release is created and macOS signing/notarization is skipped. Use this to
+  # verify the release build end-to-end without publishing or burning notarization
+  # quota. Artifacts download from the workflow run page; version label keeps the
+  # pom's -SNAPSHOT suffix to keep them visibly distinct from real releases.
+  workflow_dispatch:
 
 jobs:
   # ── Native images, one per release platform ──────────────────────────
@@ -54,9 +58,26 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # Tag push: rewrite pom version to match the tag (e.g. v0.3.3 → 0.3.3) so
+      # downstream artifact names line up with the release. workflow_dispatch:
+      # leave the pom version untouched (e.g. 0.3.3-SNAPSHOT) so dispatched
+      # artifacts are visibly distinct from real release artifacts.
       - name: Set version from tag
+        if: github.event_name == 'push'
         shell: bash
         run: mvn -B versions:set -DnewVersion="${GITHUB_REF_NAME#v}" -DgenerateBackupPoms=false
+
+      # Single source of truth for the artifact-name version. Tag push strips the
+      # leading `v`; dispatch reads the (now possibly -SNAPSHOT) pom version.
+      - name: Compute artifact version
+        shell: bash
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            VER=$(mvn -B -q help:evaluate -Dexpression=project.version -DforceStdout)
+            echo "VERSION=${VER}" >> "$GITHUB_ENV"
+          fi
 
       # Workaround for gluonhq/substrate#1318: see scripts/ header for details.
       - name: Patch GraalVM static-libs layout (Linux)
@@ -66,11 +87,12 @@ jobs:
       - name: Native build
         run: mvn -B -Pnative gluonfx:build
 
-      - name: Rename binary (Linux / Windows)
-        if: runner.os != 'macOS'
+      # Rename for Linux / Windows on every trigger, and for macOS on dispatch
+      # (tag push has its own macOS step that signs + packages a DMG instead).
+      - name: Rename binary
+        if: runner.os != 'macOS' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           SRC=$(find target/gluonfx -maxdepth 3 -type f -name '${{ matrix.exe }}' | head -n 1)
           if [ -z "$SRC" ]; then echo "binary not found" >&2; exit 1; fi
           if [ "${{ matrix.exe }}" = "DiskSpace.exe" ]; then
@@ -90,7 +112,7 @@ jobs:
       # § Signing Windows artifacts.
 
       - name: Import signing certificate (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name == 'push'
         shell: bash
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
@@ -110,12 +132,12 @@ jobs:
             -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
 
       - name: List signing identities (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name == 'push'
         shell: bash
         run: security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain"
 
       - name: Assemble, sign, notarize and package DMG (macOS)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name == 'push'
         shell: bash
         env:
           MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
@@ -123,7 +145,6 @@ jobs:
           NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
           NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           BINARY=$(find target/gluonfx -maxdepth 3 -type f -name 'DiskSpace' | head -n 1)
           if [ -z "$BINARY" ]; then echo "binary not found" >&2; exit 1; fi
           APP="target/DiskSpace.app"
@@ -152,7 +173,7 @@ jobs:
           xcrun stapler staple "$DMG"
 
       - name: Clean up keychain (macOS)
-        if: runner.os == 'macOS' && always()
+        if: runner.os == 'macOS' && github.event_name == 'push' && always()
         shell: bash
         run: security delete-keychain "$RUNNER_TEMP/build.keychain"
 
@@ -166,9 +187,18 @@ jobs:
             target/diskspace-*-${{ matrix.suffix }}.dmg
 
   # ── Create GitHub release with all artifacts ─────────────────────────
+  # Only fires on tag push. workflow_dispatch stops at the per-platform
+  # upload-artifact step above, so dispatched runs leave no GitHub Release
+  # and no published assets — only workflow artifacts on the run page.
   release:
+    if: github.event_name == 'push'
     needs: [ native ]
     runs-on: ubuntu-latest
+    # Only the release job needs write access (to create the GitHub Release and
+    # attach assets). The native job runs with the workflow's default read-only
+    # GITHUB_TOKEN — least privilege especially for manually dispatched runs.
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v5
