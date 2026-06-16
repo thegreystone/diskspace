@@ -12,9 +12,6 @@ on:
   # pom's -SNAPSHOT suffix to keep them visibly distinct from real releases.
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   # ── Native images, one per release platform ──────────────────────────
   native:
@@ -148,7 +145,6 @@ jobs:
           NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
           NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           BINARY=$(find target/gluonfx -maxdepth 3 -type f -name 'DiskSpace' | head -n 1)
           if [ -z "$BINARY" ]; then echo "binary not found" >&2; exit 1; fi
           APP="target/DiskSpace.app"
@@ -198,6 +194,11 @@ jobs:
     if: github.event_name == 'push'
     needs: [ native ]
     runs-on: ubuntu-latest
+    # Only the release job needs write access (to create the GitHub Release and
+    # attach assets). The native job runs with the workflow's default read-only
+    # GITHUB_TOKEN — least privilege especially for manually dispatched runs.
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v5
