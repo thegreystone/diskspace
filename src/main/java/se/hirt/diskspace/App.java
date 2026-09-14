@@ -242,7 +242,7 @@ public final class App extends Application {
 	 */
 	private static java.util.List<Image> loadAppIcons() {
 		java.util.List<Image> icons = new java.util.ArrayList<>();
-		for (int size : new int[] {16, 32, 64, 128, 256}) {
+		for (int size : new int[] {16, 24, 32, 48, 64, 128, 256}) {
 			var url = App.class.getResource("/se/hirt/diskspace/icon-" + size + ".png");
 			if (url != null) {
 				icons.add(new Image(url.toExternalForm()));
