@@ -5,7 +5,10 @@ import AppKit
 
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 func write(_ data: Data, _ path: String) throws {
-    try data.write(to: root.appendingPathComponent(path))
+    let destination = root.appendingPathComponent(path)
+    try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+    try data.write(to: destination)
 }
 func color(_ hex: UInt32) -> NSColor {
     NSColor(srgbRed: CGFloat((hex >> 16) & 255) / 255,
