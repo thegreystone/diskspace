@@ -46,6 +46,7 @@ bin/
 
 # Logs
 *.log
+*.log.*
 logs/
 hs_err_pid*
 replay_pid*
