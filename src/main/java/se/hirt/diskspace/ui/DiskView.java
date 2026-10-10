@@ -241,6 +241,8 @@ public final class DiskView {
 	private long navIdSeq;
 	private DirectoryNode scanRoot;
 	private DirectoryNode viewRoot;
+	/** Root whose rows are currently displayed; selection is only preserved within this directory. */
+	private DirectoryNode displayedTableRoot;
 	private DirectoryNode hoverNode;
 	private boolean hoveringHub;
 	private boolean hoveringFreeSpace;
@@ -310,13 +312,19 @@ public final class DiskView {
 	private final Deque<DirectoryNode> forwardStack = new ArrayDeque<>();
 
 	public DiskView(Volume target, ColorScheme initialScheme) {
+		this(target, initialScheme, Scanner.forVolume(target));
+		startScan();
+	}
+
+	/** Initializes the view with a supplied scanner without starting a scan. */
+	DiskView(Volume target, ColorScheme initialScheme, Scanner scanner) {
 		this.target = target;
 		this.scheme = initialScheme;
 		// Build the resolver from the persisted coloring mode. New tabs honour the saved choice;
 		// the C keybinding can swap it later in this tab — see cycleColoringMode().
 		this.currentColoringMode = se.hirt.diskspace.settings.Settings.get().defaultColoringMode();
 		this.nodeColors = currentColoringMode.createResolver(initialScheme, this::sortedRank);
-		this.scanner = Scanner.forVolume(target);
+		this.scanner = scanner;
 		// Honour the persisted "default visualization" preference for newly opened tabs.
 		// Existing tabs retain whatever mode they were in — only new constructions consult Settings.
 		this.currentMode = se.hirt.diskspace.settings.Settings.get().defaultVisualization();
@@ -535,7 +543,6 @@ public final class DiskView {
 		restyle();
 
 		startVizEvent();
-		startScan();
 	}
 
 	public Region getRoot() {
@@ -609,6 +616,17 @@ public final class DiskView {
 			e.consume();
 			return;
 		}
+		// Ctrl+A (Cmd+A on macOS) selects every row in the contents table. TableView handles the chord
+		// itself while it has focus (and consumes it, so we never see it here); this covers focus being
+		// on the canvas, breadcrumb or tab header so the chord works from anywhere in the view.
+		if (e.getCode() == javafx.scene.input.KeyCode.A && e.isShortcutDown() && !e.isAltDown() && !e.isShiftDown()) {
+			if (!anyOverlayVisible() && !tableItems.isEmpty()) {
+				emitUserAction(isMac() ? "Cmd+A" : "Ctrl+A", "select-all");
+				table.getSelectionModel().selectAll();
+			}
+			e.consume();
+			return;
+		}
 		// Modifier-held keys (Cmd-Q, etc.) belong to native handlers — get out of the way.
 		if (e.isShortcutDown() || e.isAltDown() || e.isShiftDown())
 			return;
@@ -639,7 +657,7 @@ public final class DiskView {
 		}
 		// While any overlay is visible swallow other keys so they don't trigger silently
 		// behind the overlay.
-		if ((helpOverlay != null && helpOverlay.isVisible()) || (aboutOverlay != null && aboutOverlay.isVisible()) || (licenseOverlay != null && licenseOverlay.isVisible())) {
+		if (anyOverlayVisible()) {
 			e.consume();
 			return;
 		}
@@ -715,9 +733,26 @@ public final class DiskView {
 		}
 	}
 
+	private boolean anyOverlayVisible() {
+		return (helpOverlay != null && helpOverlay.isVisible()) || (aboutOverlay != null && aboutOverlay.isVisible())
+				|| (licenseOverlay != null && licenseOverlay.isVisible());
+	}
+
 	private void configureTable() {
 		table.setItems(tableItems);
 		table.setPlaceholder(new Label(""));
+		// Keyboard counterpart of the double-click: Enter drills into the lead selected folder.
+		// Only fires while the table itself has focus; the view-level dispatch never sees Enter.
+		table.addEventHandler(KeyEvent.KEY_PRESSED, e -> {
+			if (e.getCode() != javafx.scene.input.KeyCode.ENTER || e.isShortcutDown() || e.isAltDown())
+				return;
+			Entry lead = table.getSelectionModel().getSelectedItem();
+			if (lead != null && lead.isDirectory()) {
+				emitUserAction("Enter", "drill-in");
+				drillInto(lead);
+				e.consume();
+			}
+		});
 		styleRefreshers.add(() -> table.setStyle(
 				"-fx-background-color: " + css(scheme.background()) + ";" + "-fx-control-inner-background: " + css(
 						scheme.background()) + ";" + "-fx-text-fill: " + css(
@@ -819,11 +854,17 @@ public final class DiskView {
 				selectedProperty().addListener((o, a, b) -> applyRowStyle());
 				hoverProperty().addListener((o, a, b) -> applyRowStyle());
 				setOnMouseClicked(e -> {
-					if (e.getButton() == MouseButton.PRIMARY && !isEmpty()) {
-						Entry it = getItem();
-						if (it != null && it.isDirectory() && it.dirNode() != null) {
-							select(it.dirNode());
-						}
+					// A single click only selects — folders included — so a Shift-range can start on
+					// any row and Ctrl (Cmd on macOS) can toggle it. Drilling into a folder from the
+					// table is a double-click (or Enter on the selected row); the sunburst keeps its
+					// single-click drill. A click with a selection modifier is never a navigation:
+					// the cell behaviour has already updated the selection model by the time this
+					// fires, so we stay out of the way. Plain Ctrl is checked explicitly as well
+					// because on macOS Ctrl+click is the context-menu gesture.
+					if (isSelectionModifierDown(e))
+						return;
+					if (e.getButton() == MouseButton.PRIMARY && e.getClickCount() == 2 && !isEmpty()) {
+						drillInto(getItem());
 					}
 				});
 				// Right-click should act on the row under the cursor, not the prior selection. If
@@ -834,7 +875,15 @@ public final class DiskView {
 					if (!isEmpty() && !isSelected())
 						getTableView().getSelectionModel().clearAndSelect(getIndex());
 				});
-				pathContextMenu.install(this, e -> targetFor(getItem()));
+				// When the clicked row is one of several selected rows, the menu acts on the
+				// whole selection (Copy Paths / Stage for Removal) like a file manager would.
+				pathContextMenu.install(this, e -> {
+					Entry item = getItem();
+					ObservableList<Entry> sel = getTableView().getSelectionModel().getSelectedItems();
+					if (item != null && sel.size() > 1 && sel.contains(item))
+						return selectionTarget(sel);
+					return targetFor(item);
+				});
 			}
 
 			@Override
@@ -1217,6 +1266,8 @@ public final class DiskView {
 		stableRankCache.clear();
 		currentFiles = List.of();
 		tableItems.clear();
+		clearTableSelection();
+		displayedTableRoot = null;
 		sunburst.cancelAnimation();
 		rebuildBreadcrumb();
 		redrawWith("rescan");
@@ -1535,6 +1586,10 @@ public final class DiskView {
 	private void refreshTable() {
 		if (viewRoot == null) {
 			tableItems.clear();
+			clearTableSelection();
+			displayedTableRoot = null;
+			lastListedRoot = null;
+			currentFiles = List.of();
 			rightHeader.setText("");
 			rightHeaderInfo.setText("");
 			currentHeaderPath = null;
@@ -1596,8 +1651,14 @@ public final class DiskView {
 			return Long.compare(entrySizes.get(b), entrySizes.get(a));
 		});
 
-		if (!sameOrder(tableItems, entries)) {
+		if (viewRoot != displayedTableRoot) {
+			// File names only identify rows within one directory. Navigation must also
+			// replace identical-looking lists, whose file sizes may differ.
 			tableItems.setAll(entries);
+			clearTableSelection();
+			displayedTableRoot = viewRoot;
+		} else if (!sameOrder(tableItems, entries)) {
+			replaceTableItems(entries);
 		} else {
 			// Same items in same positions; force a cell repaint so live size and state
 			// changes (e.g. SCANNING → DONE between live ticks) become visible. The
@@ -1619,8 +1680,19 @@ public final class DiskView {
 	}
 
 	private void copyPathToClipboard(Path p) {
+		copyPathsToClipboard(List.of(p));
+	}
+
+	/** Copies one path per line, so a multi-row selection pastes cleanly into a shell or editor. */
+	private void copyPathsToClipboard(List<Path> paths) {
+		StringBuilder sb = new StringBuilder();
+		for (Path p : paths) {
+			if (sb.length() > 0)
+				sb.append(System.lineSeparator());
+			sb.append(p);
+		}
 		ClipboardContent content = new ClipboardContent();
-		content.putString(p.toString());
+		content.putString(sb.toString());
 		Clipboard.getSystemClipboard().setContent(content);
 	}
 
@@ -1696,6 +1768,34 @@ public final class DiskView {
 		var hs = se.hirt.diskspace.App.hostServices();
 		if (hs != null)
 			hs.showDocument(p.toUri().toString());
+	}
+
+	/**
+	 * Builds a {@link TargetKind#SELECTION} target spanning several selected rows. {@code path} is the first resolvable
+	 * path so the menu's "has a path" gate passes; {@code paths} carries all of them for Copy Paths. The stage action
+	 * stages every stageable row (synthetic rows without a path are skipped), or is null when none can be staged.
+	 * The selected count includes synthetic rows so the menu header matches the table's selection.
+	 */
+	private PathTarget selectionTarget(List<Entry> selection) {
+		List<PathTarget> targets = new ArrayList<>(selection.size());
+		List<Path> paths = new ArrayList<>(selection.size());
+		boolean stageable = false;
+		for (Entry e : new ArrayList<>(selection)) {
+			PathTarget t = targetFor(e);
+			if (t == null || t.path() == null)
+				continue;
+			targets.add(t);
+			paths.add(t.path());
+			stageable |= t.stageAction() != null;
+		}
+		if (paths.isEmpty())
+			return null;
+		Runnable stageAll = stageable ? () -> {
+			for (PathTarget t : targets)
+				if (t.stageAction() != null)
+					t.stageAction().run();
+		} : null;
+		return new PathTarget(paths.get(0), TargetKind.SELECTION, stageAll, List.copyOf(paths), selection.size());
 	}
 
 	/** Resolves the {@link PathTarget} for a table {@link Entry}, or {@code null} when the row has no on-disk path. */
@@ -1844,6 +1944,41 @@ public final class DiskView {
 		scanRootNode.addSyntheticBytes(hiddenTotal);
 	}
 
+	/**
+	 * Replaces the table's rows via {@link TableSelectionKeeper} so a Shift-range or Ctrl-toggled multi-selection (plus
+	 * focus and anchor) survives the live ticker re-sorting entries by size mid-scan. Rows are matched by identity —
+	 * the {@link DirectoryNode} for folders, the name for files — not by {@link Entry#equals}, because a file entry
+	 * carries its size in the record.
+	 */
+	private void replaceTableItems(List<Entry> entries) {
+		TableSelectionKeeper.replaceAll(table, tableItems, entries, DiskView::rowKey);
+	}
+
+	private void clearTableSelection() {
+		table.getSelectionModel().clearSelection();
+		table.getFocusModel().focus(-1);
+		table.getProperties().remove(TableSelectionKeeper.FX_ANCHOR_KEY);
+	}
+
+	/** Navigates into the folder behind a table row; a no-op for file rows and synthetic rows without a node. */
+	private void drillInto(Entry entry) {
+		if (entry != null && entry.isDirectory() && entry.dirNode() != null)
+			select(entry.dirNode());
+	}
+
+	/** Identity of a row for matching across refreshes: the node for a folder, the name for a file. */
+	private static Object rowKey(Entry e) {
+		return e.isDirectory() ? e.dirNode() : e.name();
+	}
+
+	/**
+	 * True when the mouse event carries a multi-selection modifier: Shift (range), the platform shortcut key (Ctrl on
+	 * Windows / Linux, Cmd on macOS — toggle), or Ctrl on macOS, where Ctrl+click is the context-menu gesture.
+	 */
+	private static boolean isSelectionModifierDown(MouseEvent e) {
+		return e.isShiftDown() || e.isShortcutDown() || e.isControlDown() || e.isMetaDown();
+	}
+
 	private static boolean sameOrder(List<Entry> a, List<Entry> b) {
 		if (a.size() != b.size())
 			return false;
@@ -1981,6 +2116,10 @@ public final class DiskView {
 		addHelpRow(grid, row++, "→  ↓", "Go forward (replay an up step)");
 		addHelpRow(grid, row++, "E  F", "Open in system file explorer");
 		addHelpRow(grid, row++, "Del", "Stage / unstage selection for deletion");
+		addHelpRow(grid, row++, "Enter", "Open the selected folder (double-click also works)");
+		addHelpRow(grid, row++, isMac() ? "\u21e7 click" : "Shift+click", "Select a range of rows");
+		addHelpRow(grid, row++, isMac() ? "\u2318 click" : "Ctrl+click", "Add / remove a row from the selection");
+		addHelpRow(grid, row++, isMac() ? "\u2318 A" : "Ctrl+A", "Select all rows");
 		addHelpRow(grid, row++, "R", "Re-scan the current disk");
 		addHelpRow(grid, row++, "U", "Toggle size units (GB / GiB)");
 		addHelpRow(grid, row++, "V", "Toggle visualization (sunburst / heatmap)");
@@ -2662,7 +2801,7 @@ public final class DiskView {
 	 *       there's no single thing to launch.</li>
 	 * </ul>
 	 */
-	private enum TargetKind {DIRECTORY, FILE, AGGREGATE}
+	private enum TargetKind {DIRECTORY, FILE, AGGREGATE, SELECTION}
 
 	/**
 	 * What the context menu acts on: an on-disk path, the {@link TargetKind} (which controls menu shape and
@@ -2671,9 +2810,22 @@ public final class DiskView {
 	 * node, file vs directory). {@code null} stage action → menu item is disabled (e.g. the scan root, which we refuse
 	 * to stage as a footgun guard, or aggregates which have no concrete delete target).
 	 */
-	private record PathTarget(Path path, TargetKind kind, Runnable stageAction) {
+	private record PathTarget(Path path, TargetKind kind, Runnable stageAction, List<Path> paths, int selectedCount) {
+		PathTarget(Path path, TargetKind kind, Runnable stageAction) {
+			this(path, kind, stageAction, List.of(), 1);
+		}
+
+		String selectionLabel() {
+			return selectedCount + (selectedCount == 1 ? " item selected" : " items selected");
+		}
+
 		boolean isDirectory() {
 			return kind == TargetKind.DIRECTORY;
+		}
+
+		/** Every path the target covers: the selection's paths for {@link TargetKind#SELECTION}, else the single path. */
+		List<Path> allPaths() {
+			return paths.isEmpty() && path != null ? List.of(path) : paths;
 		}
 	}
 
@@ -2764,7 +2916,7 @@ public final class DiskView {
 			});
 			copyItem.setOnAction(e -> {
 				if (pending != null && pending.path() != null)
-					copyPathToClipboard(pending.path());
+					copyPathsToClipboard(pending.allPaths());
 			});
 			stageItem.setOnAction(e -> {
 				if (pending != null && pending.stageAction() != null)
@@ -2845,13 +2997,18 @@ public final class DiskView {
 				menu.getItems().clear();
 				if (hasPath) {
 					pending = t;
-					headerItem.setText(shortLabel(t.path()));
+					boolean multi = t.kind() == TargetKind.SELECTION;
+					headerItem.setText(multi ? t.selectionLabel() : shortLabel(t.path()));
+					copyItem.setText(multi ? "Copy Paths" : "Copy Path");
 					stageItem.setDisable(t.stageAction() == null);
 					menu.getItems().addAll(headerItem, new SeparatorMenuItem());
+					// Open-style actions need one concrete thing to launch, so a multi-row
+					// selection offers only the actions that make sense for a set.
 					switch (t.kind()) {
 					case DIRECTORY -> menu.getItems().add(openItem);
 					case FILE -> menu.getItems().addAll(openItem, openLocationItem);
 					case AGGREGATE -> menu.getItems().add(openLocationItem);
+					case SELECTION -> { /* Copy Paths + Stage only */ }
 					}
 					menu.getItems().addAll(copyItem, new SeparatorMenuItem(), stageItem);
 				} else {

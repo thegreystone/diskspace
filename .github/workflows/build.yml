@@ -20,8 +20,14 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      - name: Install JavaFX test runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libgtk-3-0t64 libgl1 libxtst6
+
       - name: Build and test
-        run: mvn -B package -DskipTests=false
+        # JavaFX controls require a display even when no window is shown.
+        run: xvfb-run --auto-servernum mvn -B package -DskipTests=false -Dprism.order=sw
 
   # ── Sanity-build native image on each release platform ───────────────
   native:
