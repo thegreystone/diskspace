@@ -28,7 +28,6 @@
  */
 package se.hirt.diskspace.ui;
 
-import javafx.application.Platform;
 import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -40,36 +39,20 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static se.hirt.diskspace.ui.FxTestSupport.onFxThread;
 
 /**
  * Exercises {@link TableSelectionKeeper} against a real {@link TableView}, since the behaviour it compensates for lives
- * inside JavaFX's selection and focus models. Needs a JavaFX toolkit; on a headless CI runner the toolkit cannot start
- * and the tests are skipped rather than failed.
+ * inside JavaFX's selection and focus models. Needs a JavaFX toolkit; headless Linux runners use Xvfb.
  */
 class TableSelectionKeeperTest {
-	private static volatile boolean toolkitAvailable;
-
 	@BeforeAll
-	static void startToolkit() {
-		try {
-			Platform.startup(() -> {
-			});
-			toolkitAvailable = true;
-		} catch (IllegalStateException alreadyStarted) {
-			toolkitAvailable = true;
-		} catch (Throwable headless) {
-			toolkitAvailable = false;
-		}
-		if (toolkitAvailable)
-			Platform.setImplicitExit(false);
+	static void startToolkit() throws InterruptedException {
+		FxTestSupport.startToolkit();
 	}
 
 	/** Rows are mutable-looking records: equality is by both fields, identity for the keeper is the name only. */
@@ -111,28 +94,6 @@ class TableSelectionKeeperTest {
 		List<Integer> selectedIndices() {
 			return table.getSelectionModel().getSelectedIndices().stream().sorted().toList();
 		}
-	}
-
-	private static <T> T onFxThread(java.util.concurrent.Callable<T> body) throws Exception {
-		assumeTrue(toolkitAvailable, "JavaFX toolkit not available (headless)");
-		AtomicReference<T> result = new AtomicReference<>();
-		AtomicReference<Throwable> failure = new AtomicReference<>();
-		CountDownLatch done = new CountDownLatch(1);
-		Platform.runLater(() -> {
-			try {
-				result.set(body.call());
-			} catch (Throwable t) {
-				failure.set(t);
-			} finally {
-				done.countDown();
-			}
-		});
-		assumeTrue(done.await(10, TimeUnit.SECONDS), "FX thread did not run the test body");
-		if (failure.get() instanceof Exception ex)
-			throw ex;
-		if (failure.get() != null)
-			throw new AssertionError(failure.get());
-		return result.get();
 	}
 
 	@Test
@@ -201,6 +162,34 @@ class TableSelectionKeeperTest {
 			f.table.getProperties().put(TableSelectionKeeper.FX_ANCHOR_KEY, new TablePosition<>(f.table, 0, f.nameCol));
 			f.replaceWith("b");
 			assertNull(f.table.getProperties().get(TableSelectionKeeper.FX_ANCHOR_KEY));
+			return null;
+		});
+	}
+
+	@Test
+	void focusOnAVanishedRowIsCleared() throws Exception {
+		onFxThread(() -> {
+			Fixture f = new Fixture("a", "b", "c");
+			f.table.getSelectionModel().selectIndices(0, 2);
+			f.table.getFocusModel().focus(1); // b is focused independently of the selection
+			f.replaceWith("c", "a");
+			assertEquals(List.of("a", "c"), f.selectedNames());
+			assertEquals(-1, f.table.getFocusModel().getFocusedIndex(), "focus is cleared when its row vanishes");
+			assertNull(f.table.getFocusModel().getFocusedItem());
+			return null;
+		});
+	}
+
+	@Test
+	void clearedFocusStaysCleared() throws Exception {
+		onFxThread(() -> {
+			Fixture f = new Fixture("a", "b", "c");
+			f.table.getSelectionModel().select(0);
+			f.table.getFocusModel().focus(-1);
+			f.replaceWith("c", "b", "a");
+			assertEquals(List.of("a"), f.selectedNames());
+			assertEquals(-1, f.table.getFocusModel().getFocusedIndex());
+			assertNull(f.table.getFocusModel().getFocusedItem());
 			return null;
 		});
 	}

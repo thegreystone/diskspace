@@ -241,6 +241,8 @@ public final class DiskView {
 	private long navIdSeq;
 	private DirectoryNode scanRoot;
 	private DirectoryNode viewRoot;
+	/** Root whose rows are currently displayed; selection is only preserved within this directory. */
+	private DirectoryNode displayedTableRoot;
 	private DirectoryNode hoverNode;
 	private boolean hoveringHub;
 	private boolean hoveringFreeSpace;
@@ -310,13 +312,19 @@ public final class DiskView {
 	private final Deque<DirectoryNode> forwardStack = new ArrayDeque<>();
 
 	public DiskView(Volume target, ColorScheme initialScheme) {
+		this(target, initialScheme, Scanner.forVolume(target));
+		startScan();
+	}
+
+	/** Initializes the view with a supplied scanner without starting a scan. */
+	DiskView(Volume target, ColorScheme initialScheme, Scanner scanner) {
 		this.target = target;
 		this.scheme = initialScheme;
 		// Build the resolver from the persisted coloring mode. New tabs honour the saved choice;
 		// the C keybinding can swap it later in this tab — see cycleColoringMode().
 		this.currentColoringMode = se.hirt.diskspace.settings.Settings.get().defaultColoringMode();
 		this.nodeColors = currentColoringMode.createResolver(initialScheme, this::sortedRank);
-		this.scanner = Scanner.forVolume(target);
+		this.scanner = scanner;
 		// Honour the persisted "default visualization" preference for newly opened tabs.
 		// Existing tabs retain whatever mode they were in — only new constructions consult Settings.
 		this.currentMode = se.hirt.diskspace.settings.Settings.get().defaultVisualization();
@@ -535,7 +543,6 @@ public final class DiskView {
 		restyle();
 
 		startVizEvent();
-		startScan();
 	}
 
 	public Region getRoot() {
@@ -1259,6 +1266,8 @@ public final class DiskView {
 		stableRankCache.clear();
 		currentFiles = List.of();
 		tableItems.clear();
+		clearTableSelection();
+		displayedTableRoot = null;
 		sunburst.cancelAnimation();
 		rebuildBreadcrumb();
 		redrawWith("rescan");
@@ -1577,6 +1586,10 @@ public final class DiskView {
 	private void refreshTable() {
 		if (viewRoot == null) {
 			tableItems.clear();
+			clearTableSelection();
+			displayedTableRoot = null;
+			lastListedRoot = null;
+			currentFiles = List.of();
 			rightHeader.setText("");
 			rightHeaderInfo.setText("");
 			currentHeaderPath = null;
@@ -1638,7 +1651,13 @@ public final class DiskView {
 			return Long.compare(entrySizes.get(b), entrySizes.get(a));
 		});
 
-		if (!sameOrder(tableItems, entries)) {
+		if (viewRoot != displayedTableRoot) {
+			// File names only identify rows within one directory. Navigation must also
+			// replace identical-looking lists, whose file sizes may differ.
+			tableItems.setAll(entries);
+			clearTableSelection();
+			displayedTableRoot = viewRoot;
+		} else if (!sameOrder(tableItems, entries)) {
 			replaceTableItems(entries);
 		} else {
 			// Same items in same positions; force a cell repaint so live size and state
@@ -1755,6 +1774,7 @@ public final class DiskView {
 	 * Builds a {@link TargetKind#SELECTION} target spanning several selected rows. {@code path} is the first resolvable
 	 * path so the menu's "has a path" gate passes; {@code paths} carries all of them for Copy Paths. The stage action
 	 * stages every stageable row (synthetic rows without a path are skipped), or is null when none can be staged.
+	 * The selected count includes synthetic rows so the menu header matches the table's selection.
 	 */
 	private PathTarget selectionTarget(List<Entry> selection) {
 		List<PathTarget> targets = new ArrayList<>(selection.size());
@@ -1775,7 +1795,7 @@ public final class DiskView {
 				if (t.stageAction() != null)
 					t.stageAction().run();
 		} : null;
-		return new PathTarget(paths.get(0), TargetKind.SELECTION, stageAll, List.copyOf(paths));
+		return new PathTarget(paths.get(0), TargetKind.SELECTION, stageAll, List.copyOf(paths), selection.size());
 	}
 
 	/** Resolves the {@link PathTarget} for a table {@link Entry}, or {@code null} when the row has no on-disk path. */
@@ -1932,6 +1952,12 @@ public final class DiskView {
 	 */
 	private void replaceTableItems(List<Entry> entries) {
 		TableSelectionKeeper.replaceAll(table, tableItems, entries, DiskView::rowKey);
+	}
+
+	private void clearTableSelection() {
+		table.getSelectionModel().clearSelection();
+		table.getFocusModel().focus(-1);
+		table.getProperties().remove(TableSelectionKeeper.FX_ANCHOR_KEY);
 	}
 
 	/** Navigates into the folder behind a table row; a no-op for file rows and synthetic rows without a node. */
@@ -2784,9 +2810,13 @@ public final class DiskView {
 	 * node, file vs directory). {@code null} stage action → menu item is disabled (e.g. the scan root, which we refuse
 	 * to stage as a footgun guard, or aggregates which have no concrete delete target).
 	 */
-	private record PathTarget(Path path, TargetKind kind, Runnable stageAction, List<Path> paths) {
+	private record PathTarget(Path path, TargetKind kind, Runnable stageAction, List<Path> paths, int selectedCount) {
 		PathTarget(Path path, TargetKind kind, Runnable stageAction) {
-			this(path, kind, stageAction, List.of());
+			this(path, kind, stageAction, List.of(), 1);
+		}
+
+		String selectionLabel() {
+			return selectedCount + (selectedCount == 1 ? " item selected" : " items selected");
 		}
 
 		boolean isDirectory() {
@@ -2968,7 +2998,7 @@ public final class DiskView {
 				if (hasPath) {
 					pending = t;
 					boolean multi = t.kind() == TargetKind.SELECTION;
-					headerItem.setText(multi ? t.paths().size() + " items selected" : shortLabel(t.path()));
+					headerItem.setText(multi ? t.selectionLabel() : shortLabel(t.path()));
 					copyItem.setText(multi ? "Copy Paths" : "Copy Path");
 					stageItem.setDisable(t.stageAction() == null);
 					menu.getItems().addAll(headerItem, new SeparatorMenuItem());

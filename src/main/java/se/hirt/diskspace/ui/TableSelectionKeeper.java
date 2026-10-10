@@ -111,11 +111,8 @@ final class TableSelectionKeeper {
 				sm.selectIndices(indices.get(0), rest);
 			}
 		}
-		if (focused != null) {
-			Integer idx = indexByKey.get(key.apply(focused));
-			if (idx != null)
-				table.getFocusModel().focus(idx);
-		}
+		Integer focusedRow = (focused != null) ? indexByKey.get(key.apply(focused)) : null;
+		table.getFocusModel().focus(focusedRow != null ? focusedRow : -1);
 		if (anchorPos != null) {
 			Integer idx = (anchor != null) ? indexByKey.get(key.apply(anchor)) : null;
 			if (idx != null) {
