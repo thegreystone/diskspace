@@ -44,6 +44,10 @@ Building from source and contributing: see [docs/DEVGUIDE.md](docs/DEVGUIDE.md).
 | `→` / `↓` | Go forward. Replay a step you went up from. Stops when there's nothing left.                       |
 | `E` / `F` | Open the hovered sector (or the current view) in your system file explorer.                        |
 | `Del`     | Stage selected rows (or the current section) for deletion. Press again on a staged row to unstage. |
+| `Enter`   | Open the selected folder in the file table (double-clicking a folder row does the same).           |
+| `Shift`+click | Select a range of rows in the file table.                                                      |
+| `Ctrl`+click | Add / remove a single row from the selection (`Cmd`+click on macOS).                            |
+| `Ctrl`+`A` | Select all rows in the file table (`Cmd`+`A` on macOS).                                           |
 | `R`       | Re-scan the current disk from scratch.                                                             |
 | `S`       | (picker only) Cycle scan strategy: Auto → MFT → Parallel → Sequential.                             |
 | `H`       | (picker only) Show / hide unavailable disks (off-screen, unreadable media). Hidden by default.     |
