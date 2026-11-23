@@ -239,14 +239,14 @@ and Disk Utility's "First Aid" can flag filesystem errors that inflate this buck
 
 - **Window appears blank or fails to render**: confirm hardware acceleration / OpenGL drivers are installed. JavaFX
   falls back to software rendering, but it is slow.
-- **Linux native binary exits at startup with `Error initializing QuantumRenderer: no suitable pipeline found`**:
-  JavaFX's hardware-qualifier check rejects what XWayland exposes on many Wayland desktops, and the GluonFX native
-  image doesn't include the software Prism pipeline as a fallback, so the app fails to start. Bypass the qualifier
-  check with `-Dprism.forceGPU=true`:
+- **Linux native binary falls back to slow software rendering on Wayland / Mesa llvmpipe**:
+  JavaFX's hardware-qualifier check rejects some Wayland/XWayland or software-OpenGL drivers and falls back to the
+  Prism SW pipeline. If your GPU driver actually supports OpenGL, bypass the qualifier check with
+  `-Dprism.forceGPU=true`:
   ```bash
   ./diskspace-<version>-linux-x86_64 -Dprism.forceGPU=true
   ```
-  Add an alias / desktop file if it's a recurring need. (Not needed on `mvn javafx:run` — the JVM-mode JavaFX runtime
-  includes the SW pipeline and degrades gracefully.)
+  Add an alias / desktop file if it's a recurring need. If JavaFX's extracted native libraries ever fail to load, delete
+  `~/.openjfx/cache` so they are extracted again.
 
 Build / native-image issues live in [DEVGUIDE § Developer troubleshooting](DEVGUIDE.md#developer-troubleshooting).

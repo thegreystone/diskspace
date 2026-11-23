@@ -1017,6 +1017,11 @@ public final class DiskView {
 	// ---- deletion --------------------------------------------------------
 
 	private static boolean canMoveToTrash() {
+		// Never touch java.awt.Desktop in a native-image build: ImageInfo.inImageRuntimeCode()
+		// folds to a compile-time constant so Substrate dead-strips AWT completely (avoiding
+		// AppKit clashes on macOS and AWT toolkit bloat everywhere).
+		if (org.graalvm.nativeimage.ImageInfo.inImageRuntimeCode())
+			return false;
 		// TODO(awt-free): replace AWT Desktop probe with per-platform checks (Finder/osascript on macOS,
 		// gio trash on Linux, SHFileOperation on Windows) so we don't initialize AWT on macOS at all.
 		try {
@@ -1085,7 +1090,7 @@ public final class DiskView {
 					failures.add(si.displayPath() + ": no longer exists");
 					continue;
 				}
-				if (trash) {
+				if (!org.graalvm.nativeimage.ImageInfo.inImageRuntimeCode() && trash) {
 					// TODO(awt-free): swap Desktop.moveToTrash for a per-platform implementation to avoid AWT init.
 					boolean ok = java.awt.Desktop.getDesktop().moveToTrash(si.path().toFile());
 					if (!ok)

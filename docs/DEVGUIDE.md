@@ -23,7 +23,7 @@ For contributors. End-user docs (downloading, preferences, macOS quirks) live in
 
 ### Run on the JVM
 
-**Prerequisites:** Java 21+ and Maven 3.9+.
+**Prerequisites:** Java 25 and Maven 3.9+.
 
 ```bash
 mvn javafx:run
@@ -41,33 +41,61 @@ mvn javafx:run -Djavafx.args="-debug"
 
 ### Native image
 
-**Prerequisites:** [GraalVM 21 LTS](https://www.oracle.com/java/technologies/downloads/#graalvmjava21) with
+**Prerequisites:** [Oracle GraalVM for JDK 25](https://www.oracle.com/java/technologies/downloads/#graalvmjava25) with
 `native-image`, Maven 3.9+, and the platform toolchain:
 
-- **Windows**: Visual Studio 2022 with the "Desktop development with C++" workload.
+- **Windows**: Visual Studio 2022 with the "Desktop development with C++" workload (build from an x64 Native Tools
+  Command Prompt, or run `.\scripts\build-native.ps1`).
 - **macOS**: Xcode Command Line Tools.
-- **Linux**: `gcc`, plus dev headers for X11/GTK as required by JavaFX.
+- **Linux**: `build-essential` and `zlib1g-dev` (no GTK, X11, OpenGL, or FFmpeg `-dev` packages are needed to build —
+  standard OpenJFX shared libraries are embedded as resources and extracted at runtime).
+
+Point both `JAVA_HOME` and `GRAALVM_HOME` at GraalVM 25 (Maven must also run on Java 25):
 
 ```bash
-mvn -Pnative gluonfx:build gluonfx:nativerun
+mvn -Pnative -DskipTests clean package
 ```
 
-The native binary will be at `target/gluonfx/<arch>-<os>/diskspace[.exe]`.
+The native executable is written to `target/native/DiskSpace` (`target\native\DiskSpace.exe` on Windows).
 
-> Native builds are pinned to GraalVM 21 LTS — GraalVM 25's Substrate VM has a JNI version regression that breaks
-> JavaFX `glass` at startup. The `gluonfx-maven-plugin` reads `GRAALVM_HOME` (not `JAVA_HOME`) —
-> `scripts/build-native.ps1` overrides both.
+- **macOS**: wrap the bare executable in `DiskSpace.app` and a compressed `.dmg` before launching (Glass asks macOS for
+  the bundle's application name at startup, and Apple Silicon requires at least an ad-hoc signature):
+  ```bash
+  scripts/package-macos.sh --version 0.3.4
+  open target/DiskSpace.app
+  ```
+- **Windows**: `scripts/build-native.ps1` loads `vcvars64.bat`, locates GraalVM 25 under `C:\Java\JDKs`, and runs the
+  build. For a console-subsystem debug build with stdout/stderr attached, run
+  `mvn -Pnative,native-console -DskipTests clean package`.
+- **Linux**: `./target/native/DiskSpace`. Both the ES2 (OpenGL) and SW (software) Prism pipelines are covered by the
+  reachability metadata.
 
-> **Linux only**: recent GraalVM 21.x builds moved their static libraries into a `glibc/` subdirectory that
-> `gluonfx-maven-plugin` 1.0.27 (Substrate 0.0.68) doesn't know about, so `gluonfx:build` fails at the link step
-> with `Missing library libjvm.a not in linkpath …/lib/svm/clibraries/linux-amd64`. Until upstream
-> ([gluonhq/substrate#1318](https://github.com/gluonhq/substrate/issues/1318)) ships a fix, run
-> `bash scripts/patch-graalvm-static-libs-linux.sh` once after installing/upgrading GraalVM — it symlinks the
-> libraries to the location Substrate expects. CI does this automatically.
+#### Updating reachability metadata
+
+Per-platform GraalVM Native Image reachability metadata lives under `config/native/{macos,linux,windows}/reachability-metadata.json`.
+When upgrading OpenJFX or adding new JavaFX controls, collect and review fresh metadata with GraalVM 25's tracing agent
+using `config/native/TraceDriver.java`:
+
+```bash
+mvn -DskipTests package dependency:build-classpath -Dmdep.outputFile=target/native-classpath.txt
+CP="target/classes:$(cat target/native-classpath.txt)"
+mkdir -p target/trace-classes
+javac -cp "$CP" -d target/trace-classes config/native/TraceDriver.java
+java --enable-native-access=ALL-UNNAMED \
+    -Duser.home="$(mktemp -d)" \
+    -Ddiskspace.settings.file="$(mktemp -d)/settings.properties" \
+    -agentlib:native-image-agent=config-merge-dir=config/native/macos \
+    -cp "target/trace-classes:$CP" TraceDriver --quit=exit -debug
+```
+
+To verify that no registrations are missing in a real native executable, compile `TraceDriver` with
+`native-image` using the same flags as the `native` profile and run it with
+`-XX:MissingRegistrationReportingMode=Exit` (also inspect stderr for JNI errors such as `OS_NATIVE error` or
+`NoClassDefFoundError`, since `--exact-reachability-metadata` is omitted for JFR compatibility).
 
 ## Profiling
 
-DiskSpace is instrumented for [JDK Flight Recorder](https://docs.oracle.com/en/java/javase/21/jfapi/) and ships four
+DiskSpace is instrumented for [JDK Flight Recorder](https://docs.oracle.com/en/java/javase/25/jfapi/) and ships five
 custom events that make it straightforward to correlate user interactions, scans, and per-frame render cost in a
 recording. The native image is built with `--enable-monitoring=jfr` so production binaries can be profiled the same
 way as JVM-mode runs.
@@ -127,10 +155,8 @@ Voronoi it's typically 100–400 even on million-node trees (see
 [DOCUMENTATION.md § Level of detail](DOCUMENTATION.md#level-of-detail-lod)); for sunburst and heatmap it's `0`, meaning
 "no LOD in play — use `nodeCount` instead". Compare the two fields to read the LOD ratio directly off any frame.
 
-> Gluon-distributed GraalVM historically shipped a broken FlightRecorder engine
-> ([gluonhq/substrate#1354](https://github.com/gluonhq/substrate/issues/1354)) — recordings open but contain no
-> events. CI native builds use Oracle GraalVM directly; if you're rolling your own and the recording is empty,
-> check which distribution is on `GRAALVM_HOME`.
+> CI native builds use Oracle GraalVM 25 directly so JFR works out of the box across all platforms. If you're rolling
+> your own and the recording is empty, verify that `JAVA_HOME` / `GRAALVM_HOME` points to Oracle GraalVM 25.
 
 ## Adding a coloring mode
 
@@ -314,17 +340,15 @@ the same curve.
 
 ## Developer troubleshooting
 
-- **`mvn javafx:run` complains about missing JavaFX modules**: ensure `JAVA_HOME` points to a JDK 21+ and that Maven
+- **`mvn javafx:run` complains about missing JavaFX modules**: ensure `JAVA_HOME` points to JDK 25 and that Maven
   is using it (`mvn -v`). The plugin downloads JavaFX automatically.
-- **Native build fails on Windows**: open a "x64 Native Tools Command Prompt for VS 2022" and run
-  `mvn -Pnative gluonfx:build` from there — the C++ toolchain must be on `PATH`.
-- **Native build fails on Linux with `Missing library libjvm.a`**: GraalVM static-library layout changed; run
-  `bash scripts/patch-graalvm-static-libs-linux.sh` once. See the Linux note in
-  [Native image](#native-image).
+- **Native build fails on Windows**: open an "x64 Native Tools Command Prompt for VS 2022" and run
+  `mvn -Pnative -DskipTests clean package` from there (or use `.\scripts\build-native.ps1`) — the C++ toolchain and
+  `rc.exe` must be on `PATH`.
+- **JavaFX native libraries fail to load in a native build**: delete `~/.openjfx/cache` so OpenJFX re-extracts its
+  bundled libraries on the next launch.
 - **JFR file is empty in a native build**: make sure the build includes `--enable-monitoring=jfr` and
-  `-R:+FlightRecorder` (set in the `native` profile), and that the link step pulls in `libmanagement_ext` (set in
-  the `native-mac` / `native-linux` profiles). Gluon-distributed GraalVM historically shipped a broken FlightRecorder
-  engine (gluonhq/substrate#1354) — build against Oracle GraalVM for a working JFR.
+  `-R:+FlightRecorder` (set in the `native` profile) and uses Oracle GraalVM 25.
 
 End-user-facing issues (blank window, Wayland pipeline fallback) live in
 [DOCUMENTATION.md § Troubleshooting](DOCUMENTATION.md#troubleshooting).

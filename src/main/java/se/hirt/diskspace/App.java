@@ -66,6 +66,7 @@ public final class App extends Application {
 
 	private static volatile MainWindow mainWindow;
 	private static volatile boolean shuttingDown;
+	private static volatile jdk.jfr.Recording activeRecording;
 	/**
 	 * JavaFX-provided launcher for opening URIs through the platform's native handler — internally routes through
 	 * {@code LSOpenCFURLRef} on macOS, {@code ShellExecute} on Windows, and {@code xdg-open} on Linux. We stash it here
@@ -102,7 +103,10 @@ public final class App extends Application {
 		stage.setTitle("DiskSpace");
 		stage.getIcons().addAll(loadAppIcons());
 		stage.setScene(scene);
-		stage.setOnCloseRequest(ev -> requestQuit());
+		stage.setOnCloseRequest(ev -> {
+			ev.consume();
+			requestQuit();
+		});
 		stage.show();
 
 		// On Windows, offer to relaunch elevated so the MFT scanner becomes available.
@@ -215,10 +219,13 @@ public final class App extends Application {
 	}
 
 	/**
-	 * Centralized graceful quit. Cancels in-flight scans and stops per-view animation timers, then defers
-	 * {@link Platform#exit()} to the next pulse so the current event finishes before the toolkit starts tearing down.
-	 * Avoids the JavaFX 21 macOS Glass shutdown race where {@code Toolkit.checkFxUserThread} throws while
-	 * {@code Window.hide} runs during destroy notifications.
+	 * Centralized graceful quit. Cancels in-flight scans and stops per-view animation timers, flushes any active
+	 * JFR recording and log handlers, then exits the process.
+	 * <p>On macOS native-image builds (where {@link Platform#startup} runs Glass on the process main thread),
+	 * {@link Platform#exit()} unwinds {@code MacApplication._runLoop} with an uncaught {@code NullPointerException}
+	 * during Cocoa teardown. Once scans, JFR, and logs are flushed synchronously, exiting via
+	 * {@link Runtime#halt(int)} avoids that Glass teardown failure cleanly (JVM runs still use {@link Platform#exit()}
+	 * so shutdown hooks — including GraalVM's tracing agent — execute normally).
 	 */
 	public static void requestQuit() {
 		if (shuttingDown)
@@ -232,7 +239,52 @@ public final class App extends Application {
 				// Swallow shutdown-path exceptions — we're tearing down anyway.
 			}
 		}
+		stopJfrRecording();
+		flushAndCloseLogHandlers();
+		if (isMacNativeImage()) {
+			System.out.flush();
+			System.err.flush();
+			Runtime.getRuntime().halt(0);
+			return;
+		}
 		Platform.runLater(Platform::exit);
+	}
+
+	private static boolean isMacNativeImage() {
+		return org.graalvm.nativeimage.ImageInfo.inImageRuntimeCode()
+				&& System.getProperty("os.name", "").startsWith("Mac");
+	}
+
+	private static void flushAndCloseLogHandlers() {
+		try {
+			Logger pkg = Logger.getLogger("se.hirt.diskspace");
+			for (Handler h : pkg.getHandlers()) {
+				try {
+					h.flush();
+					if (h instanceof FileHandler) {
+						h.close();
+					}
+				} catch (Throwable ignored) {
+				}
+			}
+		} catch (Throwable ignored) {
+		}
+	}
+
+	private static void stopJfrRecording() {
+		jdk.jfr.Recording r = activeRecording;
+		if (r == null)
+			return;
+		activeRecording = null;
+		try {
+			r.stop();
+		} catch (Throwable ignored) {
+			// Best-effort flush on exit.
+		}
+		try {
+			r.close();
+		} catch (Throwable ignored) {
+		}
 	}
 
 	/**
@@ -282,7 +334,12 @@ public final class App extends Application {
 		// Same dance for the theme: seed Theme.current() from the persisted preference before any view is constructed
 		// so the very first paint uses the user's chosen scheme rather than DARK-by-default.
 		Theme.set(se.hirt.diskspace.settings.Settings.get().defaultColorScheme());
-		launch(args);
+		// Native executables own the process main thread. Cocoa requires Glass on that thread.
+		if (isMacNativeImage()) {
+			Platform.startup(() -> new App().start(new Stage()));
+		} else {
+			launch(args);
+		}
 	}
 
 	/**
@@ -325,22 +382,11 @@ public final class App extends Application {
 	 * Starts a JFR recording programmatically when {@code -Ddiskspace.jfr.file=PATH} is set on the command line —
 	 * typically from the {@code -debug} shorthand wired up in {@link #applyDebugFlagIfPresent(String[])}, but also
 	 * usable directly.
-	 * <p>We drive the JFR API instead of {@code -XX:StartFlightRecording=...} because
-	 * Substrate VM (GraalVM 21 LTS) doesn't honour that command-line flag in native-image mode — both the {@code -XX:}
-	 * runtime form and the {@code -R:} build-time baked-in form are silently no-ops.
-	 * <p>On HotSpot and on Oracle GraalVM 21+ Substrate (our CI distribution),
-	 * the API path Just Works once the build has {@code --enable-monitoring=jfr} + {@code -R:+FlightRecorder} (set in
-	 * the {@code native} profile) plus {@code -lmanagement_ext} in the link step (set in {@code native-mac}, since JFR
-	 * pulls in {@code com.sun.management.OperatingSystemImpl}'s JNI methods which aren't on Substrate's default macOS
-	 * link line). The Gluon-distributed GraalVM build used to ship a broken FlightRecorder engine (see
-	 * <a href="https://github.com/gluonhq/substrate/issues/1354">gluonhq/substrate#1354</a>,
-	 * minimal reproducer at
-	 * <a href="https://github.com/thegreystone/jfr-gluonfx-repro">thegreystone/jfr-gluonfx-repro</a>);
-	 * we sidestep that by building with Oracle GraalVM directly.
-	 * <p>The catch block remains as a defence-in-depth measure: if a build ever
-	 * ships without JFR compiled in (a different Substrate distribution, a different graalvmHome on a contributor's
-	 * box), {@code new Recording()} throws and we swallow it — JFR is strictly opt-in. Dump-on-exit is enabled so the
-	 * file appears when the user closes the app normally.
+	 * <p>On HotSpot and on Oracle GraalVM 25 Native Image (built with {@code --enable-monitoring=jfr} and
+	 * {@code -R:+FlightRecorder} in the {@code native} profile), the API path works identically across platforms.
+	 * <p>The catch block remains as a defence-in-depth measure: if a build ever ships without JFR compiled in,
+	 * {@code new Recording()} throws and we swallow it — JFR is strictly opt-in. Dump-on-exit is enabled and
+	 * {@link #requestQuit()} also stops and closes the recording explicitly so it flushes deterministically.
 	 */
 	private static void maybeStartJfrRecording() {
 		String filename = System.getProperty("diskspace.jfr.file");
@@ -364,6 +410,7 @@ public final class App extends Application {
 			r.setDestination(java.nio.file.Paths.get(filename).toAbsolutePath());
 			r.setDumpOnExit(true);
 			r.start();
+			activeRecording = r;
 			jdk.jfr.Recording finalR = r;
 			Logger.getLogger("se.hirt.diskspace").info(() -> "JFR recording started -> " + finalR.getDestination());
 		} catch (Throwable t) {
@@ -444,9 +491,9 @@ public final class App extends Application {
 	}
 
 	/**
-	 * JavaFX 21 has a known Glass shutdown race on macOS where {@code Toolkit.checkFxUserThread} can throw an
+	 * JavaFX has a known Glass shutdown race on macOS where {@code Toolkit.checkFxUserThread} can throw an
 	 * {@code IllegalStateException} from a window-destroy notification while we're already exiting. The exception is
-	 * harmless — the JVM is on its way out — but the stack trace looks alarming in the console. Silence it once we've
+	 * harmless — the process is on its way out — but the stack trace looks alarming in the console. Silence it once we've
 	 * started shutting down.
 	 * <p>Wraps whatever handler {@link #installCrashHandler()} installed previously, so genuine crashes still land in
 	 * {@code <TEMP_DIR>/diskspace-crash.log} — only the macOS shutdown noise is dropped.

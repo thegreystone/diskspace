@@ -9,14 +9,14 @@ on:
 jobs:
   # ── JVM compile + tests on a single Linux runner ─────────────────────
   jvm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - name: Set up JDK 21
+      - name: Set up JDK 25
         uses: actions/setup-java@v5
         with:
-          java-version: '21'
+          java-version: '25'
           distribution: 'temurin'
           cache: maven
 
@@ -35,48 +35,49 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    suffix: linux-x86_64 }
-          # linux-aarch64 dropped for 0.1.0: OpenJFX 21.x doesn't publish that classifier
-          # on Maven Central. Re-enable when we bump JavaFX past 21.x.
-          - { os: macos-latest,     suffix: macos-aarch64 }
-          - { os: windows-latest,   suffix: windows-x86_64 }
+          - { os: ubuntu-24.04,  suffix: linux-x86_64,   exe: DiskSpace }
+          - { os: macos-15,      suffix: macos-aarch64,  exe: DiskSpace }
+          - { os: windows-2022,  suffix: windows-x86_64, exe: DiskSpace.exe }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - name: Set up GraalVM 21 LTS
+      - name: Set up GraalVM 25
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '21'
-          # macOS + Windows on Oracle GraalVM, Linux on Community — see release.yml
-          # for the rationale (JFR JNI symbols on darwin CE; libjvm.a layout mismatch
-          # on Oracle Linux tarball).
-          distribution: ${{ runner.os == 'Linux' && 'graalvm-community' || 'graalvm' }}
+          java-version: '25'
+          distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 
-      - name: Install JavaFX native deps (Linux)
+      - name: Install Linux C toolchain
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libfreetype6-dev libgl1-mesa-dev libgtk-3-dev \
-            libpango1.0-dev libxtst-dev \
-            libasound2-dev libavcodec-dev libavformat-dev libavutil-dev
+          sudo apt-get install -y build-essential zlib1g-dev
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-
-      # Workaround for gluonhq/substrate#1318: see scripts/ header for details.
-      - name: Patch GraalVM static-libs layout (Linux)
-        if: runner.os == 'Linux'
-        run: bash scripts/patch-graalvm-static-libs-linux.sh
+        with:
+          arch: x64
 
       - name: Native build
-        run: mvn -B -Pnative gluonfx:build
+        run: mvn -B -Pnative -DskipTests clean package
 
-      - name: Locate binary
+      - name: Verify binary
         shell: bash
         run: |
-          find target/gluonfx -maxdepth 3 -type f \( -name 'diskspace' -o -name 'diskspace.exe' \) -ls
+          set -euo pipefail
+          test -f "target/native/${{ matrix.exe }}"
+          ls -lh "target/native/${{ matrix.exe }}"
+
+      - name: Upload native build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ matrix.suffix }}
+          path: |
+            target/native/**/*.log
+            target/native/svm_err_*.md
+          if-no-files-found: ignore
