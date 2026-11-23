@@ -48,6 +48,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
         <native.icon.skip>true</native.icon.skip>
         <main.class>se.hirt.diskspace.App</main.class>
 
+        <resources-plugin.version>3.3.1</resources-plugin.version>
         <compiler-plugin.version>3.16.0</compiler-plugin.version>
         <surefire-plugin.version>3.5.2</surefire-plugin.version>
         <enforcer-plugin.version>3.7.0</enforcer-plugin.version>
@@ -117,6 +118,14 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             </resource>
         </resources>
         <plugins>
+            <plugin>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>${resources-plugin.version}</version>
+                <configuration>
+                    <propertiesEncoding>${project.build.sourceEncoding}</propertiesEncoding>
+                </configuration>
+            </plugin>
+
             <plugin>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${compiler-plugin.version}</version>
@@ -239,7 +248,9 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                      with ArithmeticException: / by zero whenever a JFR event (such as ThreadSleep)
                                      fires. -->
                                 <buildArg>-march=compatibility</buildArg>
+                                <buildArg>-H:+UnlockExperimentalVMOptions</buildArg>
                                 <buildArg>-H:+IncludeAllLocales</buildArg>
+                                <buildArg>-H:-UnlockExperimentalVMOptions</buildArg>
                                 <buildArg>-H:ConfigurationFileDirectories=${project.basedir}/config/native/${native.platform}</buildArg>
                                 <!-- Cap the heap at 4 GB. Serial GC's stop-the-world full
                                      collections scale with heap size; without a cap, Substrate
@@ -257,12 +268,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                                 <!-- GC logging via `-R:+PrintGC` is intentionally NOT enabled:
                                      Windows GUI subsystem exes have an invalid stderr handle by
                                      default and native GC writes segfault on first write. Use
-                                     `-debug` (JFR) for GC diagnostics instead. -->
-                                <!-- Enable Flight Recorder so production builds can capture
-                                     JFR recordings (App.maybeStartJfrRecording auto-starts one
-                                     when `-debug` is passed). -->
-                                <buildArg>--enable-monitoring=jfr</buildArg>
-                                <buildArg>-R:+FlightRecorder</buildArg>
+                                     JVM-mode JFR for Windows GC diagnostics. -->
                                 <!-- Quarantine the build-host JVM from other Java processes on
                                      the box (JMC, IntelliJ, etc.) so probing its attach socket
                                      doesn't pull sun.rmi.* into the image build. -->
@@ -304,6 +310,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
                         <version>${native-maven-plugin.version}</version>
                         <configuration>
                             <buildArgs combine.children="append">
+                                <buildArg>--enable-monitoring=jfr</buildArg>
+                                <buildArg>-R:+FlightRecorder</buildArg>
                                 <buildArg>-H:NativeLinkerOption=-framework</buildArg>
                                 <buildArg>-H:NativeLinkerOption=CoreFoundation</buildArg>
                                 <buildArg>-H:NativeLinkerOption=-framework</buildArg>
@@ -329,6 +337,21 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
             <properties>
                 <native.platform>linux</native.platform>
             </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>${native-maven-plugin.version}</version>
+                        <configuration>
+                            <buildArgs combine.children="append">
+                                <buildArg>--enable-monitoring=jfr</buildArg>
+                                <buildArg>-R:+FlightRecorder</buildArg>
+                            </buildArgs>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
 
         <!-- Windows-auto-activated: selects Windows metadata, compiles the .ico resource into

@@ -347,7 +347,7 @@ public final class App extends Application {
 	 * normally needs:
 	 * <ul>
 	 *   <li>{@code diskspace.log.level=FINE} — turns on FINE logging to {@code <TEMP>/diskspace.log}</li>
-	 *   <li>{@code diskspace.jfr.file=…} — auto-starts a JFR recording, dumped on exit</li>
+	 *   <li>{@code diskspace.jfr.file=…} — auto-starts a JFR recording on supported runtimes, dumped on exit</li>
 	 * </ul>
 	 * <p>Either property already set by the user wins (we don't clobber explicit choices).
 	 * The flag itself is left in {@code args} so {@code launch(args)} sees it; JavaFX
@@ -372,7 +372,7 @@ public final class App extends Application {
 		if (System.getProperty("diskspace.log.level") == null) {
 			System.setProperty("diskspace.log.level", "FINE");
 		}
-		if (System.getProperty("diskspace.jfr.file") == null) {
+		if (System.getProperty("diskspace.jfr.file") == null && jdk.jfr.FlightRecorder.isAvailable()) {
 			boolean inNativeImage = "runtime".equals(System.getProperty("org.graalvm.nativeimage.imagecode"));
 			System.setProperty("diskspace.jfr.file", inNativeImage ? "diskspace-native.jfr" : "diskspace.jfr");
 		}
@@ -382,10 +382,7 @@ public final class App extends Application {
 	 * Starts a JFR recording programmatically when {@code -Ddiskspace.jfr.file=PATH} is set on the command line —
 	 * typically from the {@code -debug} shorthand wired up in {@link #applyDebugFlagIfPresent(String[])}, but also
 	 * usable directly.
-	 * <p>On HotSpot and on Oracle GraalVM 25 Native Image (built with {@code --enable-monitoring=jfr} and
-	 * {@code -R:+FlightRecorder} in the {@code native} profile), the API path works identically across platforms.
-	 * <p>The catch block remains as a defence-in-depth measure: if a build ever ships without JFR compiled in,
-	 * {@code new Recording()} throws and we swallow it — JFR is strictly opt-in. Dump-on-exit is enabled and
+	 * <p>HotSpot and the macOS and Linux native build profiles support recording. Dump-on-exit is enabled and
 	 * {@link #requestQuit()} also stops and closes the recording explicitly so it flushes deterministically.
 	 */
 	private static void maybeStartJfrRecording() {
@@ -393,6 +390,10 @@ public final class App extends Application {
 		if (filename == null)
 			return;
 		try {
+			if (!jdk.jfr.FlightRecorder.isAvailable()) {
+				Logger.getLogger("se.hirt.diskspace").warning("JFR recording is unavailable in this runtime");
+				return;
+			}
 			// Use the "profile" preset (method profiling at higher rates, lock contention, TLAB allocations)
 			// rather than JFR's default ("continuous") settings. -debug is opt-in and short-lived, so the
 			// extra few percent CPU is worth the much richer data when someone is actually investigating a
@@ -414,9 +415,6 @@ public final class App extends Application {
 			jdk.jfr.Recording finalR = r;
 			Logger.getLogger("se.hirt.diskspace").info(() -> "JFR recording started -> " + finalR.getDestination());
 		} catch (Throwable t) {
-			// JFR not compiled into this binary (default native build does not include
-			// --enable-monitoring=jfr) or the runtime rejected the request. Either way,
-			// skip silently — JFR is opt-in.
 			Logger.getLogger("se.hirt.diskspace").fine(() -> "JFR auto-start skipped: " + t);
 		}
 	}

@@ -96,19 +96,19 @@ To verify that no registrations are missing in a real native executable, compile
 ## Profiling
 
 DiskSpace is instrumented for [JDK Flight Recorder](https://docs.oracle.com/en/java/javase/25/jfapi/) and ships five
-custom events that make it straightforward to correlate user interactions, scans, and per-frame render cost in a
-recording. The native image is built with `--enable-monitoring=jfr` so production binaries can be profiled the same
-way as JVM-mode runs.
+custom events that correlate user interactions, scans, and per-frame render cost. Recording is available in JVM
+mode and in the macOS and Linux native builds. On Windows, use JVM mode for JFR and the native build for FINE file
+logging.
 
 ### Capturing a recording
 
-The `-debug` flag turns on FINE logging and starts a JFR recording dumped on exit:
+The `-debug` flag turns on FINE logging. On runtimes with JFR support, it also starts a recording that is dumped on exit.
 
 ```bash
 # JVM dev (note: -Djavafx.args, NOT -Dexec.args — the javafx-maven-plugin uses its own property)
 mvn javafx:run -Djavafx.args="-debug"
 
-# Native binary
+# macOS and Linux native binary
 ./DiskSpace -debug
 ```
 
@@ -154,9 +154,6 @@ plot render-cost-vs-tree-size or render-cost-vs-canvas-size without leaving JMC.
 Voronoi it's typically 100–400 even on million-node trees (see
 [DOCUMENTATION.md § Level of detail](DOCUMENTATION.md#level-of-detail-lod)); for sunburst and heatmap it's `0`, meaning
 "no LOD in play — use `nodeCount` instead". Compare the two fields to read the LOD ratio directly off any frame.
-
-> CI native builds use Oracle GraalVM 25 directly so JFR works out of the box across all platforms. If you're rolling
-> your own and the recording is empty, verify that `JAVA_HOME` / `GRAALVM_HOME` points to Oracle GraalVM 25.
 
 ## Adding a coloring mode
 
@@ -347,8 +344,8 @@ the same curve.
   `rc.exe` must be on `PATH`.
 - **JavaFX native libraries fail to load in a native build**: delete `~/.openjfx/cache` so OpenJFX re-extracts its
   bundled libraries on the next launch.
-- **JFR file is empty in a native build**: make sure the build includes `--enable-monitoring=jfr` and
-  `-R:+FlightRecorder` (set in the `native` profile) and uses Oracle GraalVM 25.
+- **JFR file is empty on macOS or Linux**: verify that the native build uses Oracle GraalVM 25 and includes
+  `--enable-monitoring=jfr` and `-R:+FlightRecorder` from the platform profile.
 
 End-user-facing issues (blank window, Wayland pipeline fallback) live in
 [DOCUMENTATION.md § Troubleshooting](DOCUMENTATION.md#troubleshooting).

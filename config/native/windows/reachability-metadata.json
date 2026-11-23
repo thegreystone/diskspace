@@ -5,9 +5,9 @@
       "jniAccessible": true,
       "methods": [
         {
-          "name": "notifyThemeChanged",
+          "name": "notifyPreferencesChanged",
           "parameterTypes": [
-            "java.lang.String"
+            "java.util.Map"
           ]
         },
         {
@@ -114,6 +114,10 @@
             "float",
             "float"
           ]
+        },
+        {
+          "name": "notifySettingsChanged",
+          "parameterTypes": []
         }
       ]
     },
@@ -331,6 +335,11 @@
       ]
     },
     {
+      "type": "com.sun.glass.ui.win.WinAccessible",
+      "jniAccessible": true,
+      "allDeclaredMethods": true
+    },
+    {
       "type": "com.sun.glass.ui.win.WinApplication"
     },
     {
@@ -446,9 +455,57 @@
       ]
     },
     {
+      "type": "com.sun.glass.ui.win.WinTextRangeProvider",
+      "jniAccessible": true,
+      "allDeclaredMethods": true
+    },
+    {
+      "type": "com.sun.glass.ui.win.WinVariant",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "boolVal"
+        },
+        {
+          "name": "bstrVal"
+        },
+        {
+          "name": "dblVal"
+        },
+        {
+          "name": "fltVal"
+        },
+        {
+          "name": "iVal"
+        },
+        {
+          "name": "lVal"
+        },
+        {
+          "name": "pDblVal"
+        },
+        {
+          "name": "punkVal"
+        },
+        {
+          "name": "vt"
+        }
+      ]
+    },
+    {
       "type": "com.sun.glass.ui.win.WinView",
       "jniAccessible": true,
       "methods": [
+        {
+          "name": "notifyMenu",
+          "parameterTypes": [
+            "int",
+            "int",
+            "int",
+            "int",
+            "boolean"
+          ]
+        },
         {
           "name": "notifyResize",
           "parameterTypes": [
@@ -462,6 +519,13 @@
       "type": "com.sun.glass.ui.win.WinWindow",
       "jniAccessible": true,
       "methods": [
+        {
+          "name": "nonClientHitTest",
+          "parameterTypes": [
+            "int",
+            "int"
+          ]
+        },
         {
           "name": "notifyMoving",
           "parameterTypes": [
@@ -682,6 +746,54 @@
         },
         {
           "name": "isSideways"
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.javafx.font.directwrite.DWRITE_MATRIX",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "dx"
+        },
+        {
+          "name": "dy"
+        },
+        {
+          "name": "m11"
+        },
+        {
+          "name": "m12"
+        },
+        {
+          "name": "m21"
+        },
+        {
+          "name": "m22"
+        }
+      ],
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "com.sun.javafx.font.directwrite.DWRITE_SCRIPT_ANALYSIS",
+      "jniAccessible": true,
+      "fields": [
+        {
+          "name": "script"
+        },
+        {
+          "name": "shapes"
         }
       ],
       "methods": [
@@ -3931,6 +4043,18 @@
       ]
     },
     {
+      "type": "java.lang.String",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "toLowerCase",
+          "parameterTypes": [
+            "java.util.Locale"
+          ]
+        }
+      ]
+    },
+    {
       "type": "java.lang.System",
       "methods": [
         {
@@ -3956,6 +4080,24 @@
         {
           "name": "nativeOrder",
           "parameterTypes": []
+        }
+      ]
+    },
+    {
+      "type": "java.util.ArrayList",
+      "jniAccessible": true,
+      "methods": [
+        {
+          "name": "<init>",
+          "parameterTypes": [
+            "int"
+          ]
+        },
+        {
+          "name": "add",
+          "parameterTypes": [
+            "java.lang.Object"
+          ]
         }
       ]
     },
