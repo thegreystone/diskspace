@@ -30,6 +30,7 @@ package se.hirt.diskspace.ui;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.KeyValue;
+import javafx.animation.PauseTransition;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.beans.property.DoubleProperty;
@@ -60,6 +61,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public final class PickerView {
 
@@ -117,10 +119,19 @@ public final class PickerView {
 	 * freshly-started scan. FX-thread-only.
 	 */
 	private boolean disposed;
+	/** Where the disk roots come from: {@link Volume#rootDirectories()}, or a fixed list in tests. */
+	private final Supplier<List<Path>> rootSource;
+	/** Backstop timer started by {@link #startEnumeration}; see {@link #ENUMERATION_GRACE_MS}. */
+	private PauseTransition enumerationWatchdog;
 
 	public PickerView(ColorScheme scheme, Consumer<Volume> onSelection) {
+		this(scheme, onSelection, Volume::rootDirectories);
+	}
+
+	PickerView(ColorScheme scheme, Consumer<Volume> onSelection, Supplier<List<Path>> rootSource) {
 		this.scheme = scheme;
 		this.onSelection = onSelection;
+		this.rootSource = rootSource;
 
 		Label title = new Label("Choose a disk");
 		styleRefreshers.add(() -> title.setStyle("-fx-text-fill: " + toCss(
@@ -281,19 +292,23 @@ public final class PickerView {
 	private static final long ENUMERATION_GRACE_MS = 30_000;
 
 	/**
-	 * Builds a placeholder row for every disk up front (in root order) and resolves them off the FX thread, one virtual
-	 * thread per root. A row starts dimmed, breathing, and non-clickable; it becomes clickable only once <em>both</em>
-	 * its size has resolved <em>and</em> its medium has been classified — the storage type picks the optimal scanner,
-	 * so a scan mustn't start without it. A root that can't be read (or that the watchdog gives up on) settles to a
-	 * dimmed "Unavailable" entry rather than vanishing.
+	 * Builds a placeholder row for every disk up front (in root order) and resolves them off the FX thread, one
+	 * platform thread per root. A row starts dimmed, breathing, and non-clickable; it becomes clickable only once
+	 * <em>both</em> its size has resolved <em>and</em> its medium has been classified — the storage type picks the
+	 * optimal scanner, so a scan mustn't start without it. A root that can't be read (or that the watchdog gives up on)
+	 * settles to a dimmed "Unavailable" entry rather than vanishing; one that turns out not to be a disk of its own is
+	 * removed (see {@link #dropRow}).
 	 * <p>The {@code scanningLabel} text tracks the phase: "Looking for disks…" while any size is still resolving, then
 	 * "Identifying disk types…" once they're all in and only the medium probes remain.
+	 * <p>Platform threads, not virtual ones: the file-system calls involved ({@code stat} and friends) don't release
+	 * their carrier thread while blocked, so as many hung network mounts as there are CPU cores would otherwise stall
+	 * every virtual thread in the process, the healthy disks' rows included.
 	 * <p>The background threads only do the blocking work and marshal results back via {@link Platform#runLater};
 	 * every counter and row mutation happens on the FX thread, so {@link #pendingRows} / {@link #resolvesRemaining}
 	 * need no synchronization.
 	 */
 	private void startEnumeration(VBox rows) {
-		List<Path> roots = Volume.rootDirectories();
+		List<Path> roots = rootSource.get();
 		if (roots.isEmpty()) {
 			hideProgress();
 			return;
@@ -315,7 +330,15 @@ public final class PickerView {
 		restyle();
 
 		for (DiskRow row : diskRows) {
-			Thread.ofVirtual().name("picker-resolve-" + row.root).start(() -> {
+			Thread.ofPlatform().daemon().name("picker-resolve-" + row.root).start(() -> {
+				// A Unix mount-table candidate can turn out to be an alias of a disk already listed (the
+				// /Volumes/<boot volume> -> / symlink on macOS, a bind mount on Linux). Checking needs a
+				// stat, which can block on a dead network mount, so it runs here rather than in
+				// rootDirectories() on the FX thread.
+				if (!Volume.isSeparateMount(row.root)) {
+					Platform.runLater(() -> dropRow(rows, row));
+					return;
+				}
 				Volume v = Volume.resolve(row.root); // may block for a long time on dead media
 				Platform.runLater(() -> {
 					if (disposed)
@@ -333,36 +356,32 @@ public final class PickerView {
 		}
 
 		// Backstop: force any row still pending after the grace period to a terminal state, so the
-		// list can't breathe forever on stuck media.
-		Thread.ofVirtual().name("picker-enum-watchdog").start(() -> {
-			try {
-				Thread.sleep(ENUMERATION_GRACE_MS);
-			} catch (InterruptedException e) {
+		// list can't breathe forever on stuck media. An FX timer rather than a sleeping thread, so it
+		// fires on time however many background threads are stuck.
+		enumerationWatchdog = new PauseTransition(Duration.millis(ENUMERATION_GRACE_MS));
+		enumerationWatchdog.setOnFinished(e -> {
+			if (disposed)
 				return;
-			}
-			Platform.runLater(() -> {
-				if (disposed)
-					return;
-				for (DiskRow row : diskRows) {
-					if (row.resolved) {
-						if (row.markReady(StorageProfile.UNKNOWN))
-							rowSettled();
-					} else {
-						onUnavailable(row);
-					}
+			for (DiskRow row : diskRows) {
+				if (row.resolved) {
+					if (row.markReady(StorageProfile.UNKNOWN))
+						rowSettled();
+				} else {
+					onUnavailable(row);
 				}
-			});
+			}
 		});
+		enumerationWatchdog.play();
 	}
 
 	/**
-	 * Classifies the medium behind {@code v} on a virtual thread (the probe can block), then marks {@code row} ready on
-	 * the FX thread — filling in the storage-type tag and finally enabling the click that starts a scan. An
+	 * Classifies the medium behind {@code v} on a platform thread (the probe can block), then marks {@code row} ready
+	 * on the FX thread — filling in the storage-type tag and finally enabling the click that starts a scan. An
 	 * {@link StorageProfile#UNKNOWN} result still readies the row (the scanner falls back to its default); it just
 	 * shows no tag.
 	 */
 	private void fillStorageTag(Volume v, DiskRow row) {
-		Thread.ofVirtual().name("picker-profile-" + v.root()).start(() -> {
+		Thread.ofPlatform().daemon().name("picker-profile-" + v.root()).start(() -> {
 			StorageProfile probed;
 			try {
 				probed = Volume.probeStorageProfile(v);
@@ -377,6 +396,23 @@ public final class PickerView {
 					rowSettled();
 			});
 		});
+	}
+
+	/**
+	 * Removes a placeholder row whose root turned out not to be a disk of its own (see {@link Volume#isSeparateMount}).
+	 * Counts it as settled only if it was still pending, so a row the watchdog already gave up on isn't counted twice.
+	 * FX thread only.
+	 */
+	private void dropRow(VBox rows, DiskRow row) {
+		if (disposed)
+			return;
+		if (--resolvesRemaining == 0)
+			scanningLabel.setText("Identifying disk types…");
+		boolean wasPending = row.markDropped();
+		diskRows.remove(row);
+		rows.getChildren().remove(row.node);
+		if (wasPending)
+			rowSettled();
 	}
 
 	/**
@@ -603,6 +639,18 @@ public final class PickerView {
 			return true;
 		}
 
+		/**
+		 * Settles a row that is about to be taken out of the list. Returns {@code false} if it was already terminal
+		 * (the watchdog got to it first).
+		 */
+		boolean markDropped() {
+			if (terminal)
+				return false;
+			terminal = true;
+			node.opacityProperty().unbind();
+			return true;
+		}
+
 		private String tooltipText() {
 			if (resolved && current != null)
 				return buildVolumeTooltip(current);
@@ -618,13 +666,26 @@ public final class PickerView {
 
 	/**
 	 * Releases the picker's background work when its tab is swapped to a disk view or closed (see {@code MainWindow}).
-	 * The resolve/probe virtual threads can't be interrupted mid-syscall, but this stops the progress pulse immediately
-	 * and flips {@link #disposed} so any results they post afterwards are dropped — so an abandoned enumeration doesn't
-	 * keep animating or compete for CPU with a freshly-started scan. Idempotent; must be called on the FX thread.
+	 * The resolve/probe threads can't be interrupted mid-syscall, but this stops the progress pulse and the watchdog
+	 * immediately and flips {@link #disposed} so any results they post afterwards are dropped — so an abandoned
+	 * enumeration doesn't keep animating or compete for CPU with a freshly-started scan. Idempotent; must be called on
+	 * the FX thread.
 	 */
 	public void dispose() {
 		disposed = true;
 		progressPulse.stop();
+		if (enumerationWatchdog != null)
+			enumerationWatchdog.stop();
+	}
+
+	/** Number of disk rows currently in the list. For tests. */
+	int diskRowCount() {
+		return diskRows.size();
+	}
+
+	/** Whether every disk row has reached a terminal state (ready, unavailable or dropped). For tests. */
+	boolean isEnumerationSettled() {
+		return pendingRows == 0;
 	}
 
 	/**

@@ -71,6 +71,12 @@ jobs:
           set -euo pipefail
           test -f "target/native/${{ matrix.exe }}"
           ls -lh "target/native/${{ matrix.exe }}"
+          # AWT, Java2D and ImageIO are kept out of the image (docs/DEVGUIDE.md, "Native image"). native-image
+          # writes the JDK libraries they need next to the executable, so finding any means AWT is back.
+          if ls target/native | grep -Ei 'awt|javajpeg|lcms|fontmanager|mlib_image'; then
+            echo "::error::AWT/Java2D libraries in target/native; see docs/DEVGUIDE.md for how to trace why."
+            exit 1
+          fi
 
       - name: Upload native build diagnostics
         if: failure()

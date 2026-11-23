@@ -158,8 +158,10 @@ public final class StorageProfileProbe {
 		if (os.contains("win")) {
 			results.putAll(probeWindowsBatch(needsProbe));
 		} else {
-			// macOS / Linux: per-volume parallel probes via the cached single-volume entry.
-			try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {
+			// macOS / Linux: per-volume parallel probes via the cached single-volume entry. Platform
+			// threads, like the picker's: a probe stuck on a hung mount must not hold a virtual-thread
+			// carrier (see PickerView#startEnumeration).
+			try (ExecutorService exec = Executors.newThreadPerTaskExecutor(Thread.ofPlatform().daemon().factory())) {
 				List<Future<?>> futures = new ArrayList<>(needsProbe.size());
 				for (Volume v : needsProbe) {
 					futures.add(exec.submit(() -> {

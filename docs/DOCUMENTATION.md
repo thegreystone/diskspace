@@ -83,6 +83,24 @@ flaky USB card reader — never holds up the others. A disk that can't be read (
 is **left out of the picker by default**; press `H` to toggle showing it, where it appears as a dimmed, non-selectable
 **Unavailable** entry. The default is configurable under **Preferences → Disk picker → Hide unavailable disks**.
 
+Which disks are listed depends on the platform:
+
+- **Windows** lists every drive letter.
+- **Linux** lists `/` plus every other mounted filesystem, wherever it is mounted (`/home`, `/mnt/…`, `/run/media/…`,
+  or a custom path such as `/data`). It leaves out virtual filesystems, snap packages, container storage, WSL's
+  internal mounts, anything mounted inside a hidden directory (running AppImages, ZFS snapshots), and bind mounts that
+  only show part of a disk that is already listed. Each btrfs subvolume and ZFS dataset gets its own row, since each is
+  a filesystem of its own. When `/` itself is a virtual filesystem — a live session, Fedora Atomic's composefs, or a
+  NixOS root on tmpfs — it shows as unavailable; pick the disk holding the actual data instead (`/sysroot`, `/nix`,
+  your persistent volume).
+- **macOS** lists the startup disk plus everything under `/Volumes` — external drives, network shares and mounted disk
+  images.
+
+A scan stays on the filesystem it started on. A disk mounted inside another is not included when scanning the outer
+one (scanning `/` stops at `/home` if that is a separate disk), so pick it on its own to see what's on it. btrfs
+subvolumes nested inside the one you scan are skipped the same way, even when they aren't mounted anywhere; to scan one
+that isn't listed, open its folder with **Choose folder…**.
+
 **The visualizations.** A scan streams its results into the sunburst / heatmap / Voronoi view as it walks the tree, so
 the picture builds up live instead of appearing only once the scan finishes. You can **interact with the view the whole
 time** — drill into a folder, navigate up and down with the arrow keys, hover for details, or cycle visualization (`V`)

@@ -70,6 +70,23 @@ The native executable is written to `target/native/DiskSpace` (`target\native\Di
 - **Linux**: `./target/native/DiskSpace`. Both the ES2 (OpenGL) and SW (software) Prism pipelines are covered by the
   reachability metadata.
 
+The build should produce only the executable. AWT, Java2D and ImageIO are kept out by a GraalVM substitution in
+`se.hirt.diskspace.nativeimage`, which disables JavaFX's ImageIO fallback for image formats it can't decode itself, and
+the CI build fails if their libraries (`libawt.so` / `awt.dll`, `libjavajpeg`, `liblcms`, `libfontmanager`, …) show up
+next to the executable again. native-image ships a JDK library whenever reachable code loads it, and JDK 25 loads
+`awt` from ten places, several of them static initializers. To find which one is reachable and why, add these build
+arguments (one line each in the `native` profile's `<buildArgs>`):
+
+```
+-H:+UnlockExperimentalVMOptions
+-H:AbortOnMethodReachable=java.awt.Toolkit.*,java.awt.image.ColorModel.*,java.awt.event.NativeLibLoader.*,sun.awt.NativeLibLoader.*,sun.awt.image.NativeLibLoader.*,sun.java2d.Disposer.*,sun.java2d.cmm.lcms.LCMS.*,sun.font.FontManagerNativeLibrary.*,sun.awt.X11GraphicsEnvironment.*,sun.print.CUPSPrinter.*
+```
+
+The build then stops after the analysis phase and writes the call chain that reaches each match to a
+`reports/trace_methods_*.txt` file (the error message prints its path). The report lists every matching method and
+runs to thousands of lines; search it for `se.hirt.diskspace` or `com.sun.javafx` to find the chains that start in
+DiskSpace or JavaFX code. The ones that end in "Class initialization" only say that a class was initialized, not why.
+
 #### Updating reachability metadata
 
 Per-platform GraalVM Native Image reachability metadata lives under `config/native/{macos,linux,windows}/reachability-metadata.json`.
