@@ -6,10 +6,11 @@ on:
       - 'v*'
   # Manual trigger from the Actions tab. Same matrix runs (Linux + macOS + Windows
   # native builds), artifacts are uploaded as workflow artifacts, but no GitHub
-  # Release is created and macOS signing/notarization is skipped. Use this to
-  # verify the release build end-to-end without publishing or burning notarization
-  # quota. Artifacts download from the workflow run page; version label keeps the
-  # pom's -SNAPSHOT suffix to keep them visibly distinct from real releases.
+  # Release is created and macOS Developer ID signing/notarization is skipped
+  # (an ad-hoc signed DMG is produced instead). Use this to verify the release
+  # build end-to-end without publishing or burning notarization quota. Artifacts
+  # download from the workflow run page; version label keeps the pom's -SNAPSHOT
+  # suffix to keep them visibly distinct from real releases.
   workflow_dispatch:
 
 jobs:
@@ -19,48 +20,36 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    suffix: linux-x86_64,   exe: DiskSpace }
-          # linux-aarch64 dropped for 0.1.0: OpenJFX 21.x doesn't publish that classifier
-          # on Maven Central. Re-enable when we bump JavaFX past 21.x.
-          - { os: macos-latest,     suffix: macos-aarch64,  exe: DiskSpace }
-          - { os: windows-latest,   suffix: windows-x86_64, exe: DiskSpace.exe }
+          - { os: ubuntu-24.04,  suffix: linux-x86_64,   exe: DiskSpace }
+          - { os: macos-15,      suffix: macos-aarch64,  exe: DiskSpace }
+          - { os: windows-2022,  suffix: windows-x86_64, exe: DiskSpace.exe }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
-      - name: Set up GraalVM 21 LTS
+      - name: Set up GraalVM
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '21'
-          # macOS + Windows use Oracle GraalVM: CE Substrate did not link the JFR JNI
-          # symbols (jdk.jfr.internal.JVM.isExcluded et al.) on darwin, breaking <clinit>
-          # of every jdk.jfr.Event subclass — that was the 0.2.7 regression. Windows
-          # Oracle builds fine and presumably wouldn't hit the same JFR gap on CE either,
-          # but we standardise on Oracle there too for symmetry with Mac.
-          # Linux stays on graalvm-community because the Oracle Linux tarball doesn't
-          # ship lib/svm/clibraries/linux-amd64/libjvm.a at the path Gluon Substrate 0.0.67
-          # expects (PosixTargetConfiguration.checkPlatformSpecificClibs fails pre-link).
-          # DiskView's defensive JFR guard backs us up if Linux CE has a JFR gap too.
-          distribution: ${{ runner.os == 'Linux' && 'graalvm-community' || 'graalvm' }}
+          version: '25.0.5.1' # Includes the MemorySegment optimization used by JavaFX Marlin.
+          distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
 
-      - name: Install JavaFX native deps (Linux)
+      - name: Install Linux C toolchain
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libfreetype6-dev libgl1-mesa-dev libgtk-3-dev \
-            libpango1.0-dev libxtst-dev \
-            libasound2-dev libavcodec-dev libavformat-dev libavutil-dev
+          sudo apt-get install -y build-essential zlib1g-dev
 
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-      # Tag push: rewrite pom version to match the tag (e.g. v0.3.3 → 0.3.3) so
+      # Tag push: rewrite pom version to match the tag (e.g. v0.3.4 → 0.3.4) so
       # downstream artifact names line up with the release. workflow_dispatch:
-      # leave the pom version untouched (e.g. 0.3.3-SNAPSHOT) so dispatched
+      # leave the pom version untouched (e.g. 0.3.4-SNAPSHOT) so dispatched
       # artifacts are visibly distinct from real release artifacts.
       - name: Set version from tag
         if: github.event_name == 'push'
@@ -79,22 +68,16 @@ jobs:
             echo "VERSION=${VER}" >> "$GITHUB_ENV"
           fi
 
-      # Workaround for gluonhq/substrate#1318: see scripts/ header for details.
-      - name: Patch GraalVM static-libs layout (Linux)
-        if: runner.os == 'Linux'
-        run: bash scripts/patch-graalvm-static-libs-linux.sh
-
       - name: Native build
-        run: mvn -B -Pnative gluonfx:build
+        run: mvn -B -Pnative -DskipTests clean package
 
-      # Rename for Linux / Windows on every trigger, and for macOS on dispatch
-      # (tag push has its own macOS step that signs + packages a DMG instead).
-      - name: Rename binary
-        if: runner.os != 'macOS' || github.event_name == 'workflow_dispatch'
+      - name: Stage Linux / Windows binary
+        if: runner.os != 'macOS'
         shell: bash
         run: |
-          SRC=$(find target/gluonfx -maxdepth 3 -type f -name '${{ matrix.exe }}' | head -n 1)
-          if [ -z "$SRC" ]; then echo "binary not found" >&2; exit 1; fi
+          set -euo pipefail
+          SRC="target/native/${{ matrix.exe }}"
+          test -f "$SRC"
           if [ "${{ matrix.exe }}" = "DiskSpace.exe" ]; then
             DST="target/diskspace-${VERSION}-${{ matrix.suffix }}.exe"
           else
@@ -110,6 +93,15 @@ jobs:
       # clean headless path on GitHub-hosted runners, so signing + installer build
       # both happen on the maintainer's machine. See docs/DEVGUIDE.md
       # § Signing Windows artifacts.
+
+      - name: Assemble ad-hoc signed DMG (macOS dispatch)
+        if: runner.os == 'macOS' && github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          bash scripts/package-macos.sh \
+            --version "$VERSION" \
+            --output-dir target \
+            --dmg-name "diskspace-${VERSION}-${{ matrix.suffix }}.dmg"
 
       - name: Import signing certificate (macOS)
         if: runner.os == 'macOS' && github.event_name == 'push'
@@ -145,26 +137,13 @@ jobs:
           NOTARIZATION_PASSWORD: ${{ secrets.NOTARIZATION_PASSWORD }}
           NOTARIZATION_TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
         run: |
-          BINARY=$(find target/gluonfx -maxdepth 3 -type f -name 'DiskSpace' | head -n 1)
-          if [ -z "$BINARY" ]; then echo "binary not found" >&2; exit 1; fi
-          APP="target/DiskSpace.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp "$BINARY" "$APP/Contents/MacOS/DiskSpace"
-          chmod +x "$APP/Contents/MacOS/DiskSpace"
-          cp src/macos/assets/icon.icns "$APP/Contents/Resources/icon.icns"
-          sed "s/__VERSION__/${VERSION}/g" src/macos/Info.plist > "$APP/Contents/Info.plist"
-          codesign --force --deep --options runtime \
-            --sign "$MACOS_SIGNING_IDENTITY" "$APP"
           DMG="target/diskspace-${VERSION}-${{ matrix.suffix }}.dmg"
-          SIZE_MB=$(( $(du -sm "$APP" | cut -f1) + 50 ))
-          TMPIMG="$RUNNER_TEMP/tmp.dmg"
-          hdiutil create -megabytes $SIZE_MB -volname "DiskSpace" -fs "HFS+" -ov -o "$TMPIMG"
-          hdiutil attach -nobrowse -noverify "$TMPIMG"
-          cp -R "$APP" "/Volumes/DiskSpace/"
-          ln -s /Applications "/Volumes/DiskSpace/Applications"
-          hdiutil detach "/Volumes/DiskSpace" -force
-          hdiutil convert "$TMPIMG" -format UDZO -ov -o "$DMG"
-          codesign --force --sign "$MACOS_SIGNING_IDENTITY" "$DMG"
+          bash scripts/package-macos.sh \
+            --version "$VERSION" \
+            --output-dir target \
+            --dmg-name "diskspace-${VERSION}-${{ matrix.suffix }}.dmg" \
+            --sign-identity "$MACOS_SIGNING_IDENTITY" \
+            --entitlements installer/entitlements.plist
           xcrun notarytool submit "$DMG" \
             --apple-id "$NOTARIZATION_APPLE_ID" \
             --password "$NOTARIZATION_PASSWORD" \
@@ -177,14 +156,25 @@ jobs:
         shell: bash
         run: security delete-keychain "$RUNNER_TEMP/build.keychain"
 
+      - name: Upload native build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ matrix.suffix }}
+          path: |
+            target/native/**/*.log
+            target/native/svm_err_*.md
+          if-no-files-found: ignore
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.suffix }}
           path: |
             target/diskspace-*-${{ matrix.suffix }}
             target/diskspace-*-${{ matrix.suffix }}.exe
             target/diskspace-*-${{ matrix.suffix }}.dmg
+          if-no-files-found: error
 
   # ── Create GitHub release with all artifacts ─────────────────────────
   # Only fires on tag push. workflow_dispatch stops at the per-platform
@@ -193,7 +183,7 @@ jobs:
   release:
     if: github.event_name == 'push'
     needs: [ native ]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Only the release job needs write access (to create the GitHub Release and
     # attach assets). The native job runs with the workflow's default read-only
     # GITHUB_TOKEN — least privilege especially for manually dispatched runs.
@@ -201,7 +191,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true

@@ -83,6 +83,24 @@ flaky USB card reader — never holds up the others. A disk that can't be read (
 is **left out of the picker by default**; press `H` to toggle showing it, where it appears as a dimmed, non-selectable
 **Unavailable** entry. The default is configurable under **Preferences → Disk picker → Hide unavailable disks**.
 
+Which disks are listed depends on the platform:
+
+- **Windows** lists every drive letter.
+- **Linux** lists `/` plus every other mounted filesystem, wherever it is mounted (`/home`, `/mnt/…`, `/run/media/…`,
+  or a custom path such as `/data`). It leaves out virtual filesystems, snap packages, container storage, WSL's
+  internal mounts, anything mounted inside a hidden directory (running AppImages, ZFS snapshots), and bind mounts that
+  only show part of a disk that is already listed. Each btrfs subvolume and ZFS dataset gets its own row, since each is
+  a filesystem of its own. When `/` itself is a virtual filesystem — a live session, Fedora Atomic's composefs, or a
+  NixOS root on tmpfs — it shows as unavailable; pick the disk holding the actual data instead (`/sysroot`, `/nix`,
+  your persistent volume).
+- **macOS** lists the startup disk plus everything under `/Volumes` — external drives, network shares and mounted disk
+  images.
+
+A scan stays on the filesystem it started on. A disk mounted inside another is not included when scanning the outer
+one (scanning `/` stops at `/home` if that is a separate disk), so pick it on its own to see what's on it. btrfs
+subvolumes nested inside the one you scan are skipped the same way, even when they aren't mounted anywhere; to scan one
+that isn't listed, open its folder with **Choose folder…**.
+
 **The visualizations.** A scan streams its results into the sunburst / heatmap / Voronoi view as it walks the tree, so
 the picture builds up live instead of appearing only once the scan finishes. You can **interact with the view the whole
 time** — drill into a folder, navigate up and down with the arrow keys, hover for details, or cycle visualization (`V`)
@@ -239,14 +257,14 @@ and Disk Utility's "First Aid" can flag filesystem errors that inflate this buck
 
 - **Window appears blank or fails to render**: confirm hardware acceleration / OpenGL drivers are installed. JavaFX
   falls back to software rendering, but it is slow.
-- **Linux native binary exits at startup with `Error initializing QuantumRenderer: no suitable pipeline found`**:
-  JavaFX's hardware-qualifier check rejects what XWayland exposes on many Wayland desktops, and the GluonFX native
-  image doesn't include the software Prism pipeline as a fallback, so the app fails to start. Bypass the qualifier
-  check with `-Dprism.forceGPU=true`:
+- **Linux native binary falls back to slow software rendering on Wayland / Mesa llvmpipe**:
+  JavaFX's hardware-qualifier check rejects some Wayland/XWayland or software-OpenGL drivers and falls back to the
+  Prism SW pipeline. If your GPU driver actually supports OpenGL, bypass the qualifier check with
+  `-Dprism.forceGPU=true`:
   ```bash
   ./diskspace-<version>-linux-x86_64 -Dprism.forceGPU=true
   ```
-  Add an alias / desktop file if it's a recurring need. (Not needed on `mvn javafx:run` — the JVM-mode JavaFX runtime
-  includes the SW pipeline and degrades gracefully.)
+  Add an alias / desktop file if it's a recurring need. If JavaFX's extracted native libraries ever fail to load, delete
+  `~/.openjfx/cache` so they are extracted again.
 
 Build / native-image issues live in [DEVGUIDE § Developer troubleshooting](DEVGUIDE.md#developer-troubleshooting).

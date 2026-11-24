@@ -71,7 +71,35 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 		for (Path root : FileSystems.getDefault().getRootDirectories()) {
 			roots.add(root);
 		}
+		// On Linux and macOS the NIO root list is just "/", which hides every other disk. Read the
+		// mount table (Linux) or /Volumes (macOS) instead.
+		if (roots.size() == 1 && "/".equals(roots.get(0).toString())) {
+			return MountTable.unixRoots();
+		}
 		return roots;
+	}
+
+	/**
+	 * Whether {@code root} is a filesystem of its own rather than another path onto one that is already listed. Only a
+	 * directory on a different device from its parent qualifies, which rules out symlinks (macOS keeps
+	 * {@code /Volumes/Macintosh HD -> /}), stale empty mount-point directories in {@code /Volumes}, bind mounts of a
+	 * directory within one filesystem, and bind-mounted files (a container's {@code /etc/hosts}). Filesystem roots such
+	 * as {@code /} and Windows drives always qualify. When the check itself can't be made, the answer is {@code true}
+	 * so that {@link #resolve} gets to decide.
+	 * <p><b>May block on unresponsive network mounts</b> — call it off the FX thread, like {@link #resolve}.
+	 */
+	public static boolean isSeparateMount(Path root) {
+		Path parent = root.getParent();
+		if (parent == null)
+			return true;
+		try {
+			Map<String, Object> attrs = Files.readAttributes(root, "unix:dev,isDirectory", LinkOption.NOFOLLOW_LINKS);
+			if (!Boolean.TRUE.equals(attrs.get("isDirectory")))
+				return false;
+			return !attrs.get("dev").equals(Files.getAttribute(parent, "unix:dev"));
+		} catch (IOException | UnsupportedOperationException | IllegalArgumentException e) {
+			return true;
+		}
 	}
 
 	/**
@@ -150,8 +178,8 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 	}
 
 	/**
-	 * Looks in /Volumes/ for a Finder-visible label whose inode matches {@code scanRoot}. Falls back to
-	 * {@code fallback} when not on macOS or nothing matches.
+	 * Builds a volume for an arbitrary folder the user picked ("Choose folder…"), sized by the filesystem it lives on
+	 * and classified like a picker disk. Never throws: an unreadable folder gives a zero-sized volume.
 	 */
 	public static Volume from(Path target) {
 		try {
@@ -178,22 +206,30 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 		}
 	}
 
+	/**
+	 * The Finder-visible name of the volume mounted at {@code scanRoot}, or {@code fallback} when it isn't a volume
+	 * root on macOS. A {@code /Volumes/<name>} mount is named by its mount point. The startup disk {@code /} is named
+	 * by the {@code /Volumes} entry that links back to it ({@code Macintosh HD -> /}).
+	 * <p>Only links are read, never the volumes themselves: stat'ing every {@code /Volumes} entry would touch each
+	 * mounted filesystem, and one unresponsive network share would stall every caller.
+	 */
 	public static String resolveDisplayName(Path scanRoot, String fallback) {
-		Path volumes = Path.of("/Volumes");
-		if (!Files.isDirectory(volumes))
+		Path name = scanRoot.getFileName();
+		if (name != null && MountTable.MAC_VOLUMES.equals(scanRoot.getParent()))
+			return name.toString();
+		if (scanRoot.getParent() != null || !Files.isDirectory(MountTable.MAC_VOLUMES))
 			return fallback;
-		try (DirectoryStream<Path> ds = Files.newDirectoryStream(volumes)) {
+		try (DirectoryStream<Path> ds = Files.newDirectoryStream(MountTable.MAC_VOLUMES)) {
 			for (Path entry : ds) {
 				try {
-					LOG.info(String.format("  /Volumes entry: %s  isSameFile(%s)=%b", entry, scanRoot,
-							Files.isSameFile(entry, scanRoot)));
-					if (Files.isSameFile(entry, scanRoot)) {
-						Path name = entry.getFileName();
-						if (name != null)
-							return name.toString();
-					}
-				} catch (IOException e) {
-					LOG.info("  /Volumes entry " + entry + " isSameFile failed: " + e);
+					Path target = MountTable.MAC_VOLUMES.resolve(Files.readSymbolicLink(entry)).normalize();
+					Path entryName = entry.getFileName();
+					if (entryName != null && target.equals(scanRoot))
+						return entryName.toString();
+				} catch (NotLinkException e) {
+					// A mounted volume rather than the link back to the startup disk.
+				} catch (IOException | UnsupportedOperationException e) {
+					LOG.fine(() -> "resolveDisplayName: could not read link " + entry + ": " + e);
 				}
 			}
 		} catch (IOException e) {
@@ -210,13 +246,14 @@ public record Volume(String displayName, String deviceName, Path root, long tota
 		return Files.isDirectory(dataVol) ? dataVol : root;
 	}
 
-	private static boolean isPseudoFs(String type) {
+	static boolean isPseudoFs(String type) {
 		if (type == null)
 			return false;
 		return switch (type.toLowerCase()) {
 			case "proc", "sysfs", "tmpfs", "devtmpfs", "cgroup", "cgroup2", "devpts", "securityfs", "pstore", "autofs",
 			     "overlay", "squashfs", "fuse.gvfsd-fuse", "fuse.portal", "tracefs", "debugfs", "configfs", "bpf",
-			     "binfmt_misc", "mqueue", "hugetlbfs", "rpc_pipefs", "fusectl" -> true;
+			     "binfmt_misc", "mqueue", "hugetlbfs", "rpc_pipefs", "fusectl", "nsfs", "efivarfs", "ramfs",
+			     "selinuxfs", "fuse.snapfuse", "fuse.lxcfs", "devfs", "nullfs" -> true;
 			default -> false;
 		};
 	}

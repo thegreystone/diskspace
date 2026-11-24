@@ -2,8 +2,8 @@
 
 [![Build](https://github.com/thegreystone/diskspace/actions/workflows/build.yml/badge.svg)](https://github.com/thegreystone/diskspace/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/thegreystone/diskspace)](https://github.com/thegreystone/diskspace/releases/latest)
-[![Java 21 LTS](https://img.shields.io/badge/Java-21%20LTS-blue)](https://adoptium.net/)
-[![JavaFX](https://img.shields.io/badge/JavaFX-21-blueviolet)](https://openjfx.io/)
+[![Java 25 LTS](https://img.shields.io/badge/Java-25%20LTS-blue)](https://adoptium.net/)
+[![JavaFX](https://img.shields.io/badge/JavaFX-25-blueviolet)](https://openjfx.io/)
 [![GraalVM Native](https://img.shields.io/badge/GraalVM-native--image-orange)](https://www.graalvm.org/)
 [![License: BSD-3](https://img.shields.io/badge/License-BSD--3-green)](https://opensource.org/licenses/BSD-3-Clause)
 
